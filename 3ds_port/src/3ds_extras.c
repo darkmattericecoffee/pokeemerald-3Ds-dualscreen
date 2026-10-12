@@ -181,6 +181,15 @@ static const u8 *SpeedText(void)
     return text;
 }
 
+/* The stereoscopic planes' editor (3ds_stereo_edit.c), opened from OPTIONS. */
+static const char *const sStereoEditText[] = {"TAP TO OPEN"};
+void CtrStereoMonGame_OpenEditor(void);
+static void OpenStereoEditor(void)
+{
+    PlaySE(SE_SELECT);
+    CtrStereoMonGame_OpenEditor();
+}
+
 const CtrExtra gCtrExtras[] =
 {
     /* Features add their lines here. */
@@ -202,6 +211,8 @@ const CtrExtra gCtrExtras[] =
     /* Moves physical or special by their own category, as from Gen IV on
      * (pokemon.c, MoveSplitEnabled). */
     {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PHYS/SPEC SPLIT", "PHYS/SPEC SPLIT", "PHYS./SPÉC."), "move_split", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    /* On ENHANCEMENTS' second screen: the first one is full. */
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("3D SPRITE EDITOR", "EDITOR 3D", "ÉDITEUR 3D"), "stereo_edit", 0, 0, sStereoEditText, OpenStereoEditor, NULL, NULL},
     {CTR_EXTRAS_CHEATS, CTR_TEXT("WILD ENCOUNTERS", "WILD ENCOUNTERS", "RENCONTRES"), "encounter_rate", 5, 0, sEncounterRate, NULL, NULL, NULL},
     {CTR_EXTRAS_CHEATS, CTR_TEXT("SHINY ODDS", "SHINY ODDS", "CHROMATIQUES"), "shiny_odds", 6, 0, sShinyOdds, NULL, NULL, NULL},
     /* Only wild Pokémon with depth planes, to try the 3D battle anywhere

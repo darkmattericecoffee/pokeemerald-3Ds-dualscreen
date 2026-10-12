@@ -75,6 +75,8 @@ build/bridge/3ds_bottom_ui.o: FULLCFLAGS += -DCTR_APP_VERSION='"$(APP_VERSION)"'
 BACKEND_SRCS += src/3ds_extras.c
 # The stereoscopic Pokémon viewer's game side (include/3ds_stereo_mon.h).
 BACKEND_SRCS += src/3ds_stereo_mon_game.c
+# The plane editor, the viewer's bottom screen (include/3ds_stereo_mon.h).
+BACKEND_SRCS += src/3ds_stereo_edit.c
 # The frame profiler times the engine's own routines through linker wrappers.
 BACKEND_SRCS += src/3ds_prof_wrap.c
 PROF_WRAPPED := RunTasks AnimateSprites BuildOamBuffer ProcessDma3Requests \

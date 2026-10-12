@@ -760,6 +760,19 @@ void CtrGame_WaitFrame(void)
         }
     }
 #endif
+#ifdef CTR_TEST_EDIT
+    /* Azahar aid (-DCTR_TEST_EDIT=frame): the plane editor opened from the
+     * field at that frame, as OPTIONS opens it. */
+    {
+        static bool opened;
+
+        if (!opened && sFrames >= CTR_TEST_EDIT && gMain.callback2 == CB2_Overworld)
+        {
+            opened = true;
+            CtrStereoMonGame_OpenEditor();
+        }
+    }
+#endif
 #ifdef CTR_TEST_BATTLE
     /* Azahar measurement aid (-DCTR_TEST_BATTLE=frame): a wild battle from
      * wherever the save stands, once the field is up at that frame. */

@@ -103,6 +103,8 @@
 
 #include "3ds_data.h"
 #include "3ds_bottom.h"
+#include "3ds_bottom_draw.h"
+#include "3ds_stereo_mon.h"
 #include "3ds_extras.h"
 #include "3ds_bottom_art.h"
 #include "3ds_input.h"
@@ -690,7 +692,7 @@ static bool8 sIconBudget;
 static u32 sIconClock;
 
 /* Mon icons: two 32x32 frames each, a few species at a time. */
-#define MON_ICON_SLOTS 12
+#define MON_ICON_SLOTS 40
 static struct
 {
     u16 key;
@@ -7940,6 +7942,13 @@ void CtrBottom_Frame(void)
 
     if (!sRes.ready)
         return;
+    /* The plane editor has the whole screen while it is open; the regular
+     * screen is drawn whole again once it closes. */
+    if (CtrStereoEdit_BottomFrame())
+    {
+        sForceRedraw = TRUE;
+        return;
+    }
     ++frames;
     ticks[0] = CtrPlatform_Ticks();
     sAsked = sAsk;
@@ -8083,3 +8092,103 @@ void CtrBottom_Frame(void)
     BottomProfile(frames, mode, ticks, 0);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Drawing for other port screens (3ds_bottom_draw.h)                       */
+/* ------------------------------------------------------------------------ */
+
+bool CtrBottomDraw_Ready(void) { return sRes.ready; }
+
+void CtrBottomDraw_Begin(uint16_t *canvas)
+{
+    ResolveFonts();
+    sIconBudget = TRUE;
+    sDst = canvas;
+    sOX = 0;
+    sClipX0 = sClipY0 = 0;
+    sClipX1 = W;
+    sClipY1 = H;
+}
+
+void CtrBottomDraw_End(void)
+{
+    sDst = sCanvas;
+    sOX = 0;
+    sClipX0 = sClipY0 = 0;
+    sClipX1 = W;
+    sClipY1 = H;
+}
+
+void CtrBottom_ForceRedraw(void) { sForceRedraw = TRUE; }
+
+uint16_t CtrBottomDraw_Rgb565(uint16_t bgr555) { return Rgb565(bgr555); }
+void CtrBottomDraw_Pixel(int x, int y, uint16_t rgb565) { Put(x, y, rgb565); }
+void CtrBottomDraw_Fill(int x, int y, int w, int h, uint16_t rgb565) { FillRect(x, y, w, h, rgb565); }
+void CtrBottomDraw_Section(int x0, int y0, int x1, int y1) { DrawSection(x0, y0, x1, y1); }
+void CtrBottomDraw_Panel(int x0, int y0, int x1, int y1)
+{
+    int w = x1 - x0, h = y1 - y0;
+
+    FillRect(x0, y0, w, h, sLook.section[SECTION_BASE]);
+    FillRect(x0 + 1, y0 + 1, w - 2, 1, sLook.section[SECTION_LINE]);
+    FillRect(x0 + 1, y1 - 2, w - 2, 1, sLook.section[SECTION_LINE]);
+    FillRect(x0 + 1, y0 + 2, w - 2, 1, sLook.section[SECTION_LIGHT]);
+    FillRect(x0 + 1, y1 - 1, w - 2, 1, sLook.section[SECTION_LIGHT]);
+    FillRect(x0 + 1, y0 + 1, 1, h - 2, sLook.section[SECTION_LINE]);
+    FillRect(x1 - 2, y0 + 1, 1, h - 2, sLook.section[SECTION_LINE]);
+    FillRect(x0 + 2, y0 + 1, 1, h - 2, sLook.section[SECTION_LIGHT]);
+}
+void CtrBottomDraw_Box(int kind, int x, int y, int wt, int ht, bool dark)
+{
+    DrawBoxEx(kind == 0 ? BOX_MENU : BOX_MESSAGE, x, y, wt, ht, dark);
+}
+void CtrBottomDraw_Plate(int x, int y, int w, int h, int look, bool pressed)
+{
+    DrawPlate(x, y, w, h, look == 1 ? &sLook.chosen : look == 2 ? &sLook.off : &sLook.plate, 0, pressed);
+}
+
+static void DrawColours(int colour, u16 *fg, u16 *sh)
+{
+    switch (colour)
+    {
+    case CTR_DRAW_WHITE: *fg = TXT_WHITE; *sh = sLook.chosenShadow; break;
+    case CTR_DRAW_RED: *fg = TXT_RED; *sh = TXT_LRED; break;
+    case CTR_DRAW_OFF: *fg = sLook.offText; *sh = sLook.offShadow; break;
+    case CTR_DRAW_BLUE: *fg = TXT_BLUE; *sh = TXT_LBLUE; break;
+    default: *fg = TXT_DARK; *sh = TXT_LIGHT; break;
+    }
+}
+
+void CtrBottomDraw_Text(int font, const char *ascii, int x, int y, int colour)
+{
+    u16 fg, sh;
+
+    DrawColours(colour, &fg, &sh);
+    DrawStr(font == CTR_DRAW_FONT_SMALL ? &sSmall : &sNormal, Ascii(ascii), x, y, fg, sh);
+}
+
+void CtrBottomDraw_TextCentred(int font, const char *ascii, int cx, int y, int colour)
+{
+    u16 fg, sh;
+
+    DrawColours(colour, &fg, &sh);
+    DrawStrCentered(font == CTR_DRAW_FONT_SMALL ? &sSmall : &sNormal, Ascii(ascii), cx, y, fg, sh);
+}
+
+int CtrBottomDraw_TextWidth(int font, const char *ascii)
+{
+    return StrWidth(font == CTR_DRAW_FONT_SMALL ? &sSmall : &sNormal, Ascii(ascii));
+}
+
+bool CtrBottomDraw_MonIcon(uint16_t national, int x, int y)
+{
+    u16 species = NationalPokedexNumToSpecies(national);
+    const u8 *tiles;
+    u8 pal;
+
+    if (species == SPECIES_NONE || species >= NUM_SPECIES) return false;
+    tiles = MonIcon(species, FALSE);
+    pal = gMonIconPaletteIndices[species];
+    if (!tiles || pal >= 3) return false;
+    DrawSprite(tiles, 4, 4, x, y, sRes.monIconPal[pal].c);
+    return true;
+}

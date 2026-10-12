@@ -96,6 +96,12 @@ endif
 ifdef TEST_DEX
 GAMEFLAGS += -DCTR_TEST_DEX=$(TEST_DEX)
 endif
+# TEST_EDIT=frame opens the plane editor from the field at that frame and
+# runs it through a scripted session, dumping its bottom screen to
+# sdmc:/3ds/emerald3ds/edit_<tick>.raw (3ds_stereo_edit.c).
+ifdef TEST_EDIT
+GAMEFLAGS += -DCTR_TEST_EDIT=$(TEST_EDIT)
+endif
 ifdef FRAME_DUMP
 CPPFLAGS += -DCTR_FRAME_DUMP=1
 ifdef DUMP_BATTLE

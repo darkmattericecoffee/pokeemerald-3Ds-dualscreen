@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stereo Plane Editor</title>
+<style>
+  :root{
+    --bg:#15171c; --shell:#2b2f38; --shell2:#1d2027; --screen:#07080a; --ink:#e8e8ea; --dim:#8c93a3;
+    --accent:#f5b545; --accent2:#4fd1c5; --danger:#ff5d73; --sel:#ff3ec8;
+    --S:1.7; /* bottom screen zoom */
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:8px 16px;background:var(--shell2);border-bottom:1px solid #000;flex-wrap:wrap}
+  header h1{font-size:14px;margin:0 12px 0 0;letter-spacing:.04em;color:var(--accent)}
+  header label{color:var(--dim)}
+  select,button,input[type=file]{font:inherit}
+  select{background:#0e1014;color:var(--ink);border:1px solid #444;border-radius:4px;padding:3px 6px}
+  button{background:#343945;color:var(--ink);border:1px solid #4a505d;border-radius:4px;padding:4px 10px;cursor:pointer}
+  button:hover{background:#414757}
+  button.primary{background:var(--accent);color:#000;border-color:#000;font-weight:600}
+  .wrap{display:flex;flex-direction:column;align-items:center;gap:0;padding:14px 16px 40px}
+  .console{background:var(--shell);border-radius:22px;padding:18px 26px 20px;box-shadow:0 10px 40px #000a, inset 0 1px 0 #ffffff12}
+  .topscreen{width:calc(400px*var(--S));height:calc(240px*var(--S));background:var(--screen);border:6px solid #111;border-radius:6px;margin:0 auto;position:relative;overflow:hidden}
+  .topscreen canvas{width:100%;height:100%;display:block;image-rendering:pixelated}
+  .topbar{position:absolute;left:0;right:0;bottom:0;display:flex;gap:8px;align-items:center;padding:4px 8px;background:#000c;font-size:11px;color:var(--dim)}
+  .topbar b{color:var(--ink)}
+  .topbar .sp{flex:1}
+  .hinge{height:22px;display:flex;justify-content:space-between;align-items:center;padding:0 8px;color:#777;font-size:10px}
+  .bottomwrap{width:calc(320px*var(--S));height:calc(240px*var(--S));margin:0 auto;border:6px solid #111;border-radius:6px;overflow:hidden;background:var(--screen)}
+  .bottom{width:320px;height:240px;transform:scale(var(--S));transform-origin:0 0;display:grid;grid-template-columns:48px 1fr 80px;background:#0c0e12;font-size:7px;user-select:none;position:relative}
+  .tools{display:flex;flex-direction:column;gap:1px;padding:2px;background:#101217;border-right:1px solid #222}
+  .tool{height:14px;border:1px solid #3a3f4b;border-radius:3px;background:#1b1f27;color:var(--ink);font-size:7px;display:flex;align-items:center;gap:3px;padding:0 3px;cursor:pointer;white-space:nowrap}
+  .tool .k{margin-left:auto;color:var(--dim);font-size:6px}
+  .tool.on{background:var(--accent);color:#000;border-color:#000}
+  .tool.on .k{color:#333}
+  .tool.toggle.on{background:var(--danger)}
+  .tool.small{height:11px;font-size:6px}
+  .tools .row{display:flex;gap:2px}
+  .tools .row .tool{flex:1;justify-content:center;padding:0}
+  .tools .sec{color:var(--dim);font-size:5.5px;margin-top:2px;letter-spacing:.06em;text-transform:uppercase}
+  .tools input[type=range]{width:100%;height:6px;margin:0}
+  .center{position:relative;display:flex;align-items:center;justify-content:center}
+  .center .stack{position:relative;width:192px;height:192px}
+  .center canvas{position:absolute;left:0;top:0;width:192px;height:192px;image-rendering:pixelated}
+  .center #edit{cursor:crosshair;background:repeating-conic-gradient(#14171d 0 25%,#0f1115 0 50%) 0 0/8px 8px}
+  .center #ov{pointer-events:none;image-rendering:auto}
+  .center .status{position:absolute;left:4px;top:3px;font-size:6px;color:var(--dim)}
+  .center .status b{color:var(--ink)}
+  .center .status i{color:var(--danger);font-style:normal}
+  .center .frames{position:absolute;right:4px;top:3px;display:flex;gap:2px}
+  .center .frames .tool{height:12px;font-size:6px}
+  .center .hint{position:absolute;left:4px;bottom:3px;font-size:6px;color:var(--dim)}
+  .layers{display:flex;flex-direction:column;background:#101217;border-left:1px solid #222;padding:2px;gap:1px;overflow:hidden}
+  .layers .head{font-size:6.5px;color:var(--dim);letter-spacing:.05em;text-transform:uppercase;display:flex;justify-content:space-between}
+  .layers.erase .head{color:var(--danger)}
+  .layers .list{flex:1;display:flex;flex-direction:column;gap:1px;overflow:hidden}
+  .layer{display:flex;align-items:center;gap:2px;height:14px;border:1px solid #2d323d;border-radius:2px;background:#171a21;padding:0 2px;cursor:pointer}
+  .layer canvas{width:12px;height:12px;image-rendering:pixelated;background:#000}
+  .layer .n{font-size:6.5px;line-height:1}
+  .layer .c{font-size:5.5px;color:var(--dim)}
+  .layer.cur{border-color:var(--sel);background:#3b1532}
+  .layer.empty .n{color:var(--dim)}
+  .layers .foot{display:flex;gap:2px}
+  .layers .foot .tool{flex:1;justify-content:center;font-size:6px;height:13px}
+  /* overlays on the bottom screen: pokémon selection (L+R) and the mock pokédex */
+  .overlay{position:absolute;inset:0;background:#0c0e12f4;display:none;flex-direction:column;padding:6px}
+  .overlay.on{display:flex}
+  .overlay .head{font-size:8px;color:var(--accent);letter-spacing:.06em;text-transform:uppercase;display:flex;justify-content:space-between}
+  .overlay .head span{color:var(--dim);font-size:6px}
+  .grid{flex:1;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-top:4px;align-content:start}
+  .mon{border:1px solid #2d323d;border-radius:4px;background:#171a21;padding:3px;display:flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;position:relative}
+  .mon canvas{width:48px;height:48px;image-rendering:pixelated}
+  .mon .n{font-size:6px}
+  .mon .e{position:absolute;right:2px;top:2px;font-size:5px;color:var(--accent2)}
+  .mon.cur{border-color:var(--accent);background:#3a2e12}
+  .dex{background:#5a1313;color:#fff}
+  .dex .head{color:#ffd1d1}
+  .dex .rows{flex:1;display:flex;flex-direction:column;gap:2px;margin-top:4px}
+  .dexrow{display:flex;align-items:center;gap:6px;background:#7a1c1c;border:1px solid #a33;border-radius:3px;padding:2px 4px;font-size:7px;cursor:pointer}
+  .dexrow canvas{width:20px;height:20px;image-rendering:pixelated}
+  .dexrow .sp{flex:1}
+  .dexrow.cur{background:#a32626}
+  .dexrow .edit{background:var(--accent);color:#000;border-radius:3px;padding:1px 4px;font-size:6px}
+  .legend{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:14px;font-size:11px;color:var(--dim)}
+  .legend kbd{background:#0e1014;border:1px solid #444;border-radius:3px;padding:0 5px;color:var(--ink);font:11px ui-monospace,monospace}
+  .side{width:min(1000px,100%);margin-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .panel{background:var(--shell2);border:1px solid #000;border-radius:8px;padding:12px}
+  .panel h2{font-size:12px;margin:0 0 8px;color:var(--accent2);letter-spacing:.05em;text-transform:uppercase}
+  textarea{width:100%;height:220px;background:#0b0c10;color:#cfd3dc;border:1px solid #333;border-radius:4px;font:11px ui-monospace,monospace;padding:6px}
+  .log{height:220px;overflow:auto;font:11px ui-monospace,monospace;color:#b8bdc9;background:#0b0c10;border:1px solid #333;border-radius:4px;padding:6px}
+  .log div{border-bottom:1px solid #1b1e26;padding:2px 0}
+  @media (max-width:760px){ :root{--S:1} .side{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<header>
+  <h1>STEREO PLANE EDITOR <span style="color:var(--dim);font-weight:400">· web prototype</span></h1>
+  <label>Species <select id="species"></select></label>
+  <label>Top view <select id="view">
+    <option value="turn">3D (turntable)</option>
+    <option value="sbs">Left / right eye</option>
+    <option value="anaglyph">Anaglyph (red/cyan)</option>
+  </select></label>
+  <label><input type="checkbox" id="play" checked> animate frames</label>
+  <label><input type="checkbox" id="tint" checked> tint by depth</label>
+  <span style="flex:1"></span>
+  <button id="dexbtn" title="mock of the in-game Pokédex with its quick 'edit 3D' button">Pokédex (mock)</button>
+  <button id="undo">Undo</button><button id="redo">Redo</button>
+  <button id="load">Load JSON…</button><input type="file" id="file" accept=".json" hidden>
+  <button id="save" class="primary">Save to SD (Start)</button>
+</header>
+
+<div class="wrap">
+  <div class="console">
+    <div class="topscreen"><canvas id="top" width="800" height="480"></canvas>
+      <div class="topbar"><b id="t-name">—</b><span id="t-info"></span><span class="sp"></span><span>3D slider</span><input type="range" id="depth" min="0" max="100" value="60" style="width:90px"></div>
+    </div>
+    <div class="hinge"><span>▲ 3D top screen: the plane stack as the game draws it</span><span>▼ touch screen: tools · sprite · layers</span></div>
+    <div class="bottomwrap"><div class="bottom" id="bottom">
+      <div class="tools" id="tools">
+        <div class="sec">Tools</div>
+        <div class="tool" data-tool="brush">✎ Brush<span class="k">A</span></div>
+        <div class="tool toggle" data-tool="eraser">⌫ Eraser<span class="k">B</span></div>
+        <div class="row"><div class="tool small ed on" data-ed="1" title="erased pixels go one plane nearer">▲ up</div><div class="tool small ed" data-ed="-1" title="erased pixels go one plane farther">▼ down</div></div>
+        <div class="tool" data-tool="lasso">◌ Lasso<span class="k">X</span></div>
+        <div class="tool" data-tool="wand">✦ Wand</div>
+        <div class="tool" data-tool="pick">⌖ Pick layer</div>
+        <div class="sec">Outline = darkest <b id="dark-v">2</b></div>
+        <div class="row"><div class="tool small dk" data-dk="1">1</div><div class="tool small dk on" data-dk="2">2</div><div class="tool small dk" data-dk="3">3</div></div>
+        <div class="sec">Brush <span id="bs-v">1</span>px</div>
+        <div class="row"><div class="tool small bs on" data-bs="1">1</div><div class="tool small bs" data-bs="2">2</div><div class="tool small bs" data-bs="3">3</div></div>
+        <div class="sec">Ghost <span id="ghost-v">35</span>%</div>
+        <input type="range" id="ghost" min="0" max="100" value="35">
+        <div class="sec">Other frame</div>
+        <div class="tool small toggle on" id="autoprop">auto-propagate: <b>on</b></div>
+      </div>
+      <div class="center">
+        <div class="stack"><canvas id="edit" width="64" height="64"></canvas><canvas id="ov" width="384" height="384"></canvas></div>
+        <div class="status" id="status"></div>
+        <div class="frames"><div class="tool" id="f0">◀ frame 0</div><div class="tool" id="f1">frame 1 ▶</div></div>
+        <div class="hint" id="hint"></div>
+      </div>
+      <div class="layers" id="layers">
+        <div class="head"><span id="lh">Layers (near → far)</span><span id="lc"></span></div>
+        <div class="list" id="layerlist"></div>
+        <div class="foot"><div class="tool" id="addplane">+ plane (Y)</div><div class="tool" id="mergeplane">merge ↓</div></div>
+      </div>
+      <div class="overlay" id="select">
+        <div class="head"><span>Choose a Pokémon</span><span>L / R or D-pad: move · A: open · B: back · edits saved to SD</span></div>
+        <div class="grid" id="mongrid"></div>
+      </div>
+      <div class="overlay dex" id="dex">
+        <div class="head"><span>Pokédex (mock)</span><span>D-pad: move · X or ✎: edit 3D sprite · B: back</span></div>
+        <div class="rows" id="dexrows"></div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="legend">
+    <span><kbd>↑</kbd><kbd>↓</kbd> layer</span><span><kbd>←</kbd><kbd>→</kbd> frame</span><span><kbd>Q</kbd>+<kbd>E</kbd> (L+R) save &amp; choose Pokémon</span>
+    <span><kbd>A</kbd> brush</span><span><kbd>B</kbd> eraser</span><span><kbd>X</kbd> lasso</span><span><kbd>Y</kbd> add plane</span>
+    <span><kbd>[</kbd><kbd>]</kbd> brush size</span><span><kbd>Backspace</kbd> undo (Select)</span><span><kbd>Enter</kbd> save (Start)</span>
+    <span>mouse = stylus · right-drag = eraser</span>
+  </div>
+
+  <div class="side">
+    <div class="panel"><h2>Edit log (what the SD file would carry)</h2><div class="log" id="log"></div></div>
+    <div class="panel"><h2>SD file <span id="jsonsz" style="color:var(--dim)"></span></h2><textarea id="json" spellcheck="false" placeholder="Press Save (Enter) to serialise the current planes + edit log. The SD card is mocked with the browser's local storage: switching Pokémon saves and reloads it."></textarea>
+      <div style="margin-top:6px;display:flex;gap:6px"><button id="download">Download .json</button><button id="reset">Reset species to pack (forget SD file)</button></div></div>
+  </div>
+</div>
+
+<script src="data.js"></script>
+<script>
+(() => {
+const D = window.SPRITE_DATA, W = 64, H = 64, N = W * H, NONE = 15, MAX_PLANES = 14, FIT_BOTH_FRAMES = 8;
+const $ = s => document.querySelector(s);
+const hex2arr = s => { const a = new Uint8Array(N); for (let i = 0; i < N; i++) a[i] = parseInt(s[i], 16); return a; };
+const NB4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const sdKey = dex => `stereo-edits-${dex}`;
+function spriteCanvas(sp, colors, pick) { // helper: a 64x64 canvas of the pixels that pass pick(i)
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const x = cv.getContext('2d'); const img = x.createImageData(W, H);
+  for (let i = 0; i < N; i++) if (colors[i] && pick(i)) { const n = parseInt(sp.palette[colors[i]].slice(1), 16), o = i * 4; img.data[o] = n >> 16; img.data[o + 1] = (n >> 8) & 255; img.data[o + 2] = n & 255; img.data[o + 3] = 255; }
+  x.putImageData(img, 0, 0); return cv;
+}
+
+// ---------- state ----------
+const st = {
+  sp: null, idx: 0, planes: 10, frame: 0, layer: 5,
+  tool: 'brush', eraser: false, eraseDir: 1, dark: 2, bs: 1, ghost: .35, autoprop: true,
+  colors: [], pl: [], undo: [], redo: [], log: [], t: 0, hover: -1, drawing: false, stroke: null, lasso: null, selection: null,
+};
+function loadSpecies(i, fromSd = true) {
+  const sp = D.species[i]; st.sp = sp; st.idx = i; st.planes = D.planes;
+  st.colors = sp.colors.map(hex2arr); st.pl = sp.planes.map(hex2arr);
+  st.undo = []; st.redo = []; st.log = []; st.t = 0; st.selection = null;
+  computeOutline();
+  let sd = null; try { sd = fromSd && localStorage.getItem(sdKey(sp.dex)); } catch (e) {}
+  if (sd) { applyDoc(JSON.parse(sd)); logLine(`loaded ${sp.name} (#${sp.dex}) from SD: ${st.planes} planes, ${st.log.length} edits`); }
+  else logLine(`loaded ${sp.name} (#${sp.dex}) from pack: ${st.planes} planes, 2 frames`);
+  st.layer = Math.min(st.layer, st.planes - 1);
+  $('#species').selectedIndex = i; renderAll();
+}
+// outline colours: the k darkest palette entries in use (index 0 is transparent and is always a boundary)
+let outlineSet = new Set();
+function computeOutline() {
+  const lum = c => { const n = parseInt(c.slice(1), 16); return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255); };
+  const used = new Set(); for (const f of st.colors) for (const v of f) if (v) used.add(v);
+  outlineSet = new Set([...used].sort((a, b) => lum(st.sp.palette[a]) - lum(st.sp.palette[b])).slice(0, st.dark));
+}
+const isOutline = ci => outlineSet.has(ci);
+
+// ---------- history (every pixel change is [x, y, from, to, frame]) ----------
+function beginStroke(tool) { st.stroke = { tool, layer: st.layer, px: new Map() }; }
+function setPx(f, i, to) {
+  const p = st.pl[f]; if (p[i] === to) return;
+  const k = f * N + i; if (!st.stroke.px.has(k)) st.stroke.px.set(k, p[i]);
+  p[i] = to;
+}
+function endStroke() {
+  const s = st.stroke; if (!s) return;
+  if (st.autoprop && s.px.size && s.tool !== 'propagate') propagateChanged(s);
+  st.stroke = null; if (!s.px.size) return;
+  const pixels = [...s.px].map(([k, from]) => { const f = k / N | 0, i = k % N; return [i % W, i / W | 0, from, st.pl[f][i], f]; });
+  const e = { t: ++st.t, tool: s.tool, layer: s.layer, frame: st.frame, pixels };
+  const other = pixels.filter(p => p[4] !== st.frame).length;
+  st.undo.push(e); st.redo = []; st.log.push(e);
+  logLine(`${e.tool} f${st.frame}${s.layer >= 0 ? ' → P' + s.layer : ''}: ${pixels.length - other} px${other ? ` (+${other} propagated to f${1 - st.frame})` : ''}`); renderAll();
+}
+function apply(e, back) { for (const [x, y, from, to, f] of e.pixels) st.pl[f][y * W + x] = back ? from : to; if (e.dplanes) st.planes += back ? -e.dplanes : e.dplanes; }
+function undo() { const e = st.undo.pop(); if (!e) return; apply(e, true); st.redo.push(e); st.log.push({ t: ++st.t, tool: 'undo', of: e.t }); logLine(`undo #${e.t}`); renderAll(); }
+function redo() { const e = st.redo.pop(); if (!e) return; apply(e, false); st.undo.push(e); st.log.push({ t: ++st.t, tool: 'redo', of: e.t }); logLine(`redo #${e.t}`); renderAll(); }
+function logLine(s) { const l = $('#log'); const d = document.createElement('div'); d.textContent = `${String(st.t).padStart(3, '0')}  ${s}`; l.prepend(d); }
+
+// ---------- propagation to the other frame (the packer's rule: nearest pixel of the same colour) ----------
+function nearestSameColor(srcF, dstF, onlyFrom) {
+  const cs = st.colors[srcF], cd = st.colors[dstF], byColor = new Map(), out = new Map();
+  for (let i = 0; i < N; i++) if (cs[i] && st.pl[srcF][i] !== NONE) { if (!byColor.has(cs[i])) byColor.set(cs[i], []); byColor.get(cs[i]).push(i); }
+  for (let i = 0; i < N; i++) { if (!cd[i]) continue; const cand = byColor.get(cd[i]); if (!cand) continue;
+    const x = i % W, y = i / W | 0; let best = -1, bd = 1e9;
+    for (const j of cand) { const d = (j % W - x) ** 2 + ((j / W | 0) - y) ** 2; if (d < bd) { bd = d; best = j; } }
+    if (best >= 0 && (!onlyFrom || onlyFrom.has(best))) out.set(i, best); }
+  return out;
+}
+function propagateChanged(s) {
+  const f = st.frame, g = 1 - f; const changed = new Set([...s.px.keys()].filter(k => (k / N | 0) === f).map(k => k % N));
+  if (!changed.size) return;
+  for (const [i, j] of nearestSameColor(f, g, changed)) setPx(g, i, st.pl[f][j]);
+}
+function propagateAll() { beginStroke('propagate'); const f = st.frame, g = 1 - f; for (const [i, j] of nearestSameColor(f, g, null)) setPx(g, i, st.pl[f][j]); endStroke(); }
+
+// ---------- tools ----------
+function footprint(i) {
+  const out = []; const x0 = i % W, y0 = i / W | 0, r = st.bs - 1;
+  for (let y = y0 - r; y <= y0 + r; y++) for (let x = x0 - r; x <= x0 + r; x++)
+    if (x >= 0 && y >= 0 && x < W && y < H && (st.bs < 3 || (x - x0) ** 2 + (y - y0) ** 2 <= r * r + 1)) out.push(y * W + x);
+  return out;
+}
+function region(i) { // contiguous pixels of one colour
+  const c = st.colors[st.frame], seen = new Uint8Array(N), q = [i], out = [];
+  if (!c[i]) return out; seen[i] = 1;
+  while (q.length) { const j = q.pop(); out.push(j); const x = j % W, y = j / W | 0;
+    for (const [dx, dy] of NB4) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const k = ny * W + nx; if (!seen[k] && c[k] === c[i]) { seen[k] = 1; q.push(k); } } }
+  return out;
+}
+function withOutline(sel) { // add the outline pixels that touch the selection
+  const c = st.colors[st.frame], has = new Set(sel), extra = [];
+  for (const j of sel) { const x = j % W, y = j / W | 0;
+    for (const [dx, dy] of NB4) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const k = ny * W + nx; if (!has.has(k) && c[k] && isOutline(c[k])) { has.add(k); extra.push(k); } } }
+  return sel.concat(extra);
+}
+function edgeMap() { // pixels where the colour changes, or an outline colour: where the magnet pulls to
+  const c = st.colors[st.frame], e = new Uint8Array(N);
+  for (let i = 0; i < N; i++) { if (!c[i]) continue; if (isOutline(c[i])) { e[i] = 1; continue; } const x = i % W, y = i / W | 0;
+    for (const [dx, dy] of NB4) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H || c[ny * W + nx] !== c[i]) { e[i] = 1; break; } } }
+  return e;
+}
+function snapPath(pts) { // magnetic: each point slides to the nearest edge pixel within 2.5 px
+  const e = edgeMap(), out = [];
+  for (const [px, py] of pts) { let bx = px, by = py, bd = 2.5 * 2.5 + .01;
+    for (let y = Math.max(0, Math.floor(py - 3)); y <= Math.min(H - 1, Math.ceil(py + 3)); y++) for (let x = Math.max(0, Math.floor(px - 3)); x <= Math.min(W - 1, Math.ceil(px + 3)); x++) {
+      if (!e[y * W + x]) continue; const d = (x + .5 - px) ** 2 + (y + .5 - py) ** 2; if (d < bd) { bd = d; bx = x + .5; by = y + .5; } }
+    out.push([bx, by]); }
+  return out;
+}
+function cells() { // connected same-colour regions of non-outline pixels: the sprite's own parts
+  const c = st.colors[st.frame], lab = new Int16Array(N).fill(-1); let n = 0;
+  for (let s0 = 0; s0 < N; s0++) { if (!c[s0] || isOutline(c[s0]) || lab[s0] >= 0) continue; const q = [s0]; lab[s0] = n;
+    while (q.length) { const j = q.pop(); const x = j % W, y = j / W | 0;
+      for (const [dx, dy] of NB4) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const k = ny * W + nx; if (lab[k] < 0 && c[k] === c[s0]) { lab[k] = n; q.push(k); } } }
+    n++; }
+  return { lab, n };
+}
+function finishLasso() {
+  const raw = st.lasso; st.lasso = null; if (!raw || raw.length < 3) { renderEdit(); return; }
+  const pts = snapPath(raw), c = st.colors[st.frame];
+  // inside mask of the (snapped) loop, and a 1px-dilated one for the outline pixels on its border
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const x = cv.getContext('2d');
+  x.beginPath(); pts.forEach(([a, b], i) => i ? x.lineTo(a, b) : x.moveTo(a, b)); x.closePath(); x.fillStyle = '#fff'; x.fill('evenodd');
+  const d = x.getImageData(0, 0, W, H).data, inside = new Uint8Array(N); for (let i = 0; i < N; i++) inside[i] = d[i * 4 + 3] > 127 ? 1 : 0;
+  const near = new Uint8Array(N); for (let i = 0; i < N; i++) if (inside[i]) { const px = i % W, py = i / W | 0; near[i] = 1;
+    for (const [dx, dy] of NB4) { const nx = px + dx, ny = py + dy; if (nx >= 0 && ny >= 0 && nx < W && ny < H) near[ny * W + nx] = 1; } }
+  // a part (colour cell) comes along when at least half of it is inside the loop
+  const { lab, n } = cells(), tot = new Int32Array(n), inn = new Int32Array(n);
+  for (let i = 0; i < N; i++) if (lab[i] >= 0) { tot[lab[i]]++; if (inside[i]) inn[lab[i]]++; }
+  const take = new Uint8Array(n); for (let k = 0; k < n; k++) take[k] = inn[k] * 2 >= tot[k] && inn[k] > 0 ? 1 : 0;
+  const selSet = new Set(); for (let i = 0; i < N; i++) if (lab[i] >= 0 && take[lab[i]]) selSet.add(i);
+  // outline pixels: only those touching a taken part and lying on or inside the loop
+  for (let i = 0; i < N; i++) { if (!c[i] || !isOutline(c[i]) || !near[i]) continue; const px = i % W, py = i / W | 0;
+    if (NB4.some(([dx, dy]) => { const nx = px + dx, ny = py + dy; return nx >= 0 && ny >= 0 && nx < W && ny < H && selSet.has(ny * W + nx); })) selSet.add(i); }
+  // outline pixels wedged between two taken pixels (claw lines, creases) even if just outside the loop
+  for (let i = 0; i < N; i++) { if (!c[i] || !isOutline(c[i]) || selSet.has(i)) continue; const px = i % W, py = i / W | 0;
+    const h = px > 0 && px < W - 1 && selSet.has(i - 1) && selSet.has(i + 1), v = py > 0 && py < H - 1 && selSet.has(i - W) && selSet.has(i + W);
+    if (h || v) selSet.add(i); }
+  st.selection = selSet;
+  beginStroke('lasso'); for (const j of selSet) setPx(st.frame, j, st.layer); endStroke();
+}
+function useTool(i, first) {
+  const c = st.colors[st.frame], p = st.pl[st.frame], f = st.frame;
+  if (st.tool === 'pick') { if (first && c[i] && p[i] !== NONE) { st.layer = p[i]; renderAll(); } return; }
+  if (st.eraser) { if (!st.stroke) { beginStroke('eraser ' + (st.eraseDir > 0 ? 'up' : 'down')); st.stroke.layer = -1; }
+    for (const j of footprint(i)) if (c[j] && p[j] !== NONE) setPx(f, j, Math.max(0, Math.min(st.planes - 1, p[j] + st.eraseDir))); return; }
+  if (st.tool === 'brush') { if (!st.stroke) beginStroke('brush'); for (const j of footprint(i)) if (c[j]) setPx(f, j, st.layer); }
+  else if (st.tool === 'wand') { if (first) { beginStroke('wand'); for (const j of withOutline(region(i))) setPx(f, j, st.layer); endStroke(); } }
+}
+function addPlane() {
+  if (st.planes >= MAX_PLANES) { logLine(`cannot add: ${MAX_PLANES} planes is the file's maximum`); return; }
+  const at = st.layer + 1, pixels = [];
+  for (let f = 0; f < 2; f++) for (let i = 0; i < N; i++) { const v = st.pl[f][i]; if (v !== NONE && v >= at) { pixels.push([i % W, i / W | 0, v, v + 1, f]); st.pl[f][i] = v + 1; } }
+  st.planes++; st.layer = at;
+  const e = { t: ++st.t, tool: 'add-plane', at, pixels, dplanes: 1 }; st.undo.push(e); st.redo = []; st.log.push({ ...e, pixels: [] });
+  logLine(`add plane P${at} (now ${st.planes}${st.planes > FIT_BOTH_FRAMES ? ' - more than ' + FIT_BOTH_FRAMES + ': the viewer keeps frame 0 only' : ''})`); renderAll();
+}
+function mergePlane() {
+  if (st.planes <= 2) return;
+  const L = st.layer, into = L > 0 ? L - 1 : 1, pixels = [];
+  for (let f = 0; f < 2; f++) for (let i = 0; i < N; i++) { const v = st.pl[f][i]; if (v === NONE) continue;
+    const nv = v === L ? into : v > L ? v - 1 : v; if (nv !== v) { pixels.push([i % W, i / W | 0, v, nv, f]); st.pl[f][i] = nv; } }
+  st.planes--; st.layer = Math.min(into, st.planes - 1);
+  const e = { t: ++st.t, tool: 'merge-plane', layer: L, into, pixels, dplanes: -1 }; st.undo.push(e); st.redo = []; st.log.push({ ...e, pixels: [] });
+  logLine(`merge P${L} into P${into} (now ${st.planes})`); renderAll();
+}
+
+// ---------- rendering: bottom (edit) ----------
+const editC = $('#edit'), ectx = editC.getContext('2d'), ov = $('#ov'), octx = ov.getContext('2d');
+const tintFor = (pl) => { const t = pl / Math.max(1, st.planes - 1); return [Math.round(60 + 195 * t), Math.round(120 + 60 * (1 - Math.abs(t - .5) * 2)), Math.round(255 - 195 * t)]; };
+function renderEdit() {
+  const img = ectx.createImageData(W, H), d = img.data, c = st.colors[st.frame], p = st.pl[st.frame];
+  const cur = st.layer, tint = $('#tint').checked, g = st.ghost;
+  for (let i = 0; i < N; i++) {
+    if (!c[i]) continue; const o = i * 4; const n = parseInt(st.sp.palette[c[i]].slice(1), 16);
+    let r = n >> 16, gg = (n >> 8) & 255, b = n & 255, a = 255;
+    if (p[i] === NONE) { r = 255; gg = 40; b = 90; a = ((i % W + (i / W | 0)) & 1) ? 255 : 120; }
+    else if (p[i] !== cur) { a = Math.round(255 * g); if (tint) { const t = tintFor(p[i]); r = (r + t[0]) >> 1; gg = (gg + t[1]) >> 1; b = (b + t[2]) >> 1; } }
+    d[o] = r; d[o + 1] = gg; d[o + 2] = b; d[o + 3] = a;
+  }
+  if (st.hover >= 0 && st.tool !== 'lasso') { const ids = (st.tool === 'wand') ? [st.hover] : footprint(st.hover);
+    for (const j of ids) { const o = j * 4; d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; d[o + 3] = Math.max(d[o + 3], 150); } }
+  ectx.putImageData(img, 0, 0);
+  // overlay: lasso path (raw in grey, snapped preview in cyan) and the last selection
+  octx.clearRect(0, 0, 384, 384); const k = 384 / W;
+  if (st.lasso && st.lasso.length > 1) {
+    const draw = (pts, col, wdt) => { octx.beginPath(); pts.forEach(([a, b], i) => i ? octx.lineTo(a * k, b * k) : octx.moveTo(a * k, b * k)); octx.strokeStyle = col; octx.lineWidth = wdt; octx.stroke(); };
+    draw(st.lasso, '#ffffff66', 2); draw(snapPath(st.lasso), '#4fd1c5', 2.5);
+  } else if (st.selection) { octx.fillStyle = '#4fd1c555'; for (const j of st.selection) octx.fillRect((j % W) * k, (j / W | 0) * k, k, k); }
+  const un = c.reduce((n, v, i) => n + (v && p[i] === NONE ? 1 : 0), 0);
+  $('#status').innerHTML = `<b>${st.sp.name}</b> #${st.sp.dex} · f${st.frame} · <b>P${cur}</b> ${cur === st.planes - 1 ? 'nearest' : cur === 0 ? 'farthest' : ''}${un ? ` · <i>${un} unassigned</i>` : ''}`;
+  $('#hint').textContent = st.eraser ? `ERASER: pixels go one plane ${st.eraseDir > 0 ? 'UP (nearer)' : 'DOWN (farther)'}` :
+    st.tool === 'lasso' ? `lasso: loop around a part; colour cells at least half inside come along with their outline → P${cur}` :
+    st.tool === 'wand' ? `wand: tap one colour region (+ its outline) → P${cur}` : st.tool === 'pick' ? 'tap a pixel to select its layer' : `brush ${st.bs}px → P${cur}`;
+  $('#f0').classList.toggle('on', st.frame === 0); $('#f1').classList.toggle('on', st.frame === 1);
+}
+function renderLayers() {
+  st.layer = Math.max(0, Math.min(st.planes - 1, st.layer));
+  const list = $('#layerlist'); list.innerHTML = ''; const c = st.colors[st.frame], p = st.pl[st.frame];
+  $('#layers').classList.toggle('erase', st.eraser);
+  $('#lh').textContent = st.eraser ? `Eraser sends ${st.eraseDir > 0 ? '▲ up' : '▼ down'}` : 'Layers (near → far)';
+  $('#lc').textContent = `${st.planes}/${MAX_PLANES}`;
+  for (let L = st.planes - 1; L >= 0; L--) {
+    const row = document.createElement('div'); row.className = 'layer'; let cnt = 0;
+    for (let i = 0; i < N; i++) if (c[i] && p[i] === L) cnt++;
+    if (!cnt) row.classList.add('empty');
+    if (L === st.layer) row.classList.add('cur');
+    row.appendChild(spriteCanvas(st.sp, c, i => p[i] === L));
+    const t = document.createElement('div'); t.innerHTML = `<div class="n">P${L}${L === st.planes - 1 ? ' near' : L === 0 ? ' far' : ''}</div><div class="c">${cnt} px</div>`; row.appendChild(t);
+    row.onclick = () => { st.layer = L; renderAll(); };
+    list.appendChild(row);
+  }
+}
+// ---------- rendering: top (3D) ----------
+const topC = $('#top'), tctx = topC.getContext('2d');
+let planeCache = {}, cacheGen = -1;
+function planeSprite(f, L) {
+  const gen = st.t + ':' + st.sp.dex + ':' + st.planes; if (cacheGen !== gen) { planeCache = {}; cacheGen = gen; }
+  const key = f + ':' + L; if (planeCache[key]) return planeCache[key];
+  const p = st.pl[f]; return planeCache[key] = spriteCanvas(st.sp, st.colors[f], i => p[i] === L);
+}
+let animF = 0, tick = 0;
+function drawStack(ctx, cx, cy, scale, f, shift) {
+  const screenPlane = (st.planes - 1) * 0.65;
+  for (let L = 0; L < st.planes; L++) ctx.drawImage(planeSprite(f, L), cx - W * scale / 2 + (L - screenPlane) * shift * scale, cy - H * scale / 2, W * scale, H * scale);
+}
+function renderTop() {
+  if (!st.sp) return;
+  const ctx = tctx; ctx.imageSmoothingEnabled = false;
+  const view = $('#view').value, dep = $('#depth').value / 100 * 1.6; const f = $('#play').checked ? animF : st.frame;
+  const bg = ctx.createRadialGradient(400, 300, 20, 400, 300, 420); bg.addColorStop(0, '#1b2030'); bg.addColorStop(1, '#07080a'); ctx.fillStyle = bg; ctx.fillRect(0, 0, 800, 480);
+  if (view === 'turn') drawStack(ctx, 400, 230, 5, f, Math.sin(tick / 40) * dep * 1.4);
+  else if (view === 'sbs') { drawStack(ctx, 215, 230, 4.5, f, -dep * .5); drawStack(ctx, 585, 230, 4.5, f, dep * .5); ctx.fillStyle = '#8c93a3'; ctx.font = '18px sans-serif'; ctx.fillText('L', 30, 40); ctx.fillText('R', 760, 40); }
+  else { ctx.globalCompositeOperation = 'lighter'; const t = document.createElement('canvas'); t.width = 800; t.height = 480; const x = t.getContext('2d'); x.imageSmoothingEnabled = false;
+    for (const [sgn, mask] of [[-1, [1, 0, 0]], [1, [0, 1, 1]]]) { x.clearRect(0, 0, 800, 480); drawStack(x, 400, 230, 5, f, sgn * dep * .5);
+      const im = x.getImageData(0, 0, 800, 480), d = im.data; for (let i = 0; i < d.length; i += 4) { d[i] *= mask[0]; d[i + 1] *= mask[1]; d[i + 2] *= mask[2]; } x.putImageData(im, 0, 0); ctx.drawImage(t, 0, 0); }
+    ctx.globalCompositeOperation = 'source-over'; }
+  $('#t-name').textContent = st.sp.name.toUpperCase(); $('#t-info').textContent = ` · ${st.planes} planes · frame ${f} · editing P${st.layer}`;
+}
+function renderAll() { renderEdit(); renderLayers(); renderTop(); for (const el of document.querySelectorAll('.tool[data-tool]')) el.classList.toggle('on', el.dataset.tool === st.tool || (el.dataset.tool === 'eraser' && st.eraser)); }
+(function loop() { tick++; if (tick % 30 === 0) animF ^= 1; renderTop(); requestAnimationFrame(loop); })();
+
+// ---------- pokémon selection screen (L+R) and the mock pokédex ----------
+let overlay = null, selCur = 0; // overlay: null | 'select' | 'dex'
+const hasSd = dex => { try { return !!localStorage.getItem(sdKey(dex)); } catch (e) { return false; } };
+function openOverlay(which) { save(true); overlay = which; selCur = st.idx; $('#select').classList.toggle('on', which === 'select'); $('#dex').classList.toggle('on', which === 'dex'); renderOverlay(); }
+function closeOverlay(pick) { overlay = null; $('#select').classList.remove('on'); $('#dex').classList.remove('on'); if (pick) loadSpecies(selCur); }
+function renderOverlay() {
+  if (overlay === 'select') {
+    const g = $('#mongrid'); g.innerHTML = '';
+    D.species.forEach((sp, i) => { const m = document.createElement('div'); m.className = 'mon' + (i === selCur ? ' cur' : '');
+      m.appendChild(spriteCanvas(sp, hex2arr(sp.colors[0]), () => true));
+      m.insertAdjacentHTML('beforeend', `<div class="n">#${String(sp.dex).padStart(3, '0')} ${sp.name}</div>${hasSd(sp.dex) ? '<div class="e">● SD</div>' : ''}`);
+      m.onclick = () => { selCur = i; closeOverlay(true); }; g.appendChild(m); });
+  } else if (overlay === 'dex') {
+    const g = $('#dexrows'); g.innerHTML = '';
+    D.species.forEach((sp, i) => { const r = document.createElement('div'); r.className = 'dexrow' + (i === selCur ? ' cur' : '');
+      r.appendChild(spriteCanvas(sp, hex2arr(sp.colors[0]), () => true));
+      r.insertAdjacentHTML('beforeend', `<span class="sp">No${String(sp.dex).padStart(3, '0')} ${sp.name.toUpperCase()}${hasSd(sp.dex) ? ' <span style="color:#ffd1d1;font-size:5px">● edited</span>' : ''}</span><span class="edit">✎ edit 3D (X)</span>`);
+      r.onclick = () => { selCur = i; closeOverlay(true); logLine(`opened from the Pokédex: ${sp.name}`); }; g.appendChild(r); });
+  }
+}
+
+// ---------- input ----------
+const pos = ev => { const r = editC.getBoundingClientRect(); return [(ev.clientX - r.left) / r.width * W, (ev.clientY - r.top) / r.height * H]; };
+const idx = ([x, y]) => { x = Math.floor(x); y = Math.floor(y); return (x < 0 || y < 0 || x >= W || y >= H) ? -1 : y * W + x; };
+editC.addEventListener('contextmenu', e => e.preventDefault());
+editC.addEventListener('pointerdown', ev => { editC.setPointerCapture(ev.pointerId); const p = pos(ev), i = idx(p); if (i < 0) return;
+  st.drawing = true; st.rightBtn = ev.button === 2; if (st.rightBtn) st.eraser = !st.eraser; st.selection = null;
+  if (st.tool === 'lasso' && !st.eraser) st.lasso = [p]; else useTool(i, true); renderEdit(); });
+editC.addEventListener('pointermove', ev => { const p = pos(ev), i = idx(p); st.hover = i; if (st.drawing) { if (st.lasso) st.lasso.push(p); else if (i >= 0 && st.stroke) useTool(i, false); } renderEdit(); });
+const up = () => { if (!st.drawing) return; st.drawing = false; if (st.lasso) finishLasso(); else endStroke(); if (st.rightBtn) { st.eraser = !st.eraser; st.rightBtn = false; } renderAll(); };
+editC.addEventListener('pointerup', up); editC.addEventListener('pointercancel', up); editC.addEventListener('pointerleave', () => { st.hover = -1; renderEdit(); });
+document.querySelectorAll('.tool[data-tool]').forEach(el => el.onclick = () => { const t = el.dataset.tool; if (t === 'eraser') st.eraser = !st.eraser; else { st.tool = t; st.eraser = false; } renderAll(); });
+document.querySelectorAll('.ed').forEach(el => el.onclick = () => { st.eraseDir = +el.dataset.ed; st.eraser = true; document.querySelectorAll('.ed').forEach(e => e.classList.toggle('on', e === el)); renderAll(); });
+document.querySelectorAll('.dk').forEach(el => el.onclick = () => { st.dark = +el.dataset.dk; $('#dark-v').textContent = st.dark; document.querySelectorAll('.dk').forEach(e => e.classList.toggle('on', e === el)); computeOutline(); renderEdit(); });
+document.querySelectorAll('.bs').forEach(el => el.onclick = () => setBs(+el.dataset.bs));
+function setBs(n) { st.bs = Math.max(1, Math.min(3, n)); $('#bs-v').textContent = st.bs; document.querySelectorAll('.bs').forEach(e => e.classList.toggle('on', +e.dataset.bs === st.bs)); renderEdit(); }
+$('#ghost').oninput = e => { st.ghost = e.target.value / 100; $('#ghost-v').textContent = e.target.value; renderEdit(); };
+$('#autoprop').onclick = () => { st.autoprop = !st.autoprop; $('#autoprop').classList.toggle('on', st.autoprop); $('#autoprop b').textContent = st.autoprop ? 'on' : 'off'; if (st.autoprop) propagateAll(); };
+$('#tint').onchange = renderEdit; $('#f0').onclick = () => { st.frame = 0; renderAll(); }; $('#f1').onclick = () => { st.frame = 1; renderAll(); };
+$('#addplane').onclick = addPlane; $('#mergeplane').onclick = mergePlane;
+$('#undo').onclick = undo; $('#redo').onclick = redo; $('#dexbtn').onclick = () => openOverlay('dex');
+$('#reset').onclick = () => { try { localStorage.removeItem(sdKey(st.sp.dex)); } catch (e) {} loadSpecies(st.idx, false); };
+$('#view').onchange = e => { renderTop(); e.target.blur(); };
+$('#species').onchange = e => { save(true); loadSpecies(e.target.selectedIndex); e.target.blur(); };
+const held = new Set();
+document.addEventListener('keyup', ev => held.delete(ev.key.toLowerCase()));
+document.addEventListener('keydown', ev => {
+  if (ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT') return;
+  const k = ev.key.toLowerCase(); held.add(k); let used = true;
+  if (overlay) {
+    const n = D.species.length, cols = overlay === 'select' ? 4 : 1;
+    if (k === 'arrowright' || k === 'e') selCur = (selCur + 1) % n; else if (k === 'arrowleft' || k === 'q') selCur = (selCur + n - 1) % n;
+    else if (k === 'arrowdown') selCur = Math.min(n - 1, selCur + cols); else if (k === 'arrowup') selCur = Math.max(0, selCur - cols);
+    else if (k === 'a' || k === 'enter' || (k === 'x' && overlay === 'dex')) { if (overlay === 'dex') logLine(`opened from the Pokédex: ${D.species[selCur].name}`); closeOverlay(true); }
+    else if (k === 'b' || k === 'escape') closeOverlay(false); else used = false;
+    if (used) { ev.preventDefault(); if (overlay) renderOverlay(); } return;
+  }
+  if ((k === 'q' && held.has('e')) || (k === 'e' && held.has('q'))) { openOverlay('select'); ev.preventDefault(); return; }
+  if (k === 'arrowup') st.layer = Math.min(st.planes - 1, st.layer + 1); else if (k === 'arrowdown') st.layer = Math.max(0, st.layer - 1);
+  else if (k === 'arrowleft') st.frame = 0; else if (k === 'arrowright') st.frame = 1;
+  else if (k === 'a') { st.tool = 'brush'; st.eraser = false; } else if (k === 'b') st.eraser = !st.eraser; else if (k === 'x') { st.tool = 'lasso'; st.eraser = false; } else if (k === 'y') addPlane();
+  else if (k === '[') setBs(st.bs - 1); else if (k === ']') setBs(st.bs + 1);
+  else if (k === 'backspace') undo(); else if (k === 'enter') save(); else if ((ev.metaKey || ev.ctrlKey) && k === 'z') (ev.shiftKey ? redo : undo)();
+  else used = false;
+  if (used) { ev.preventDefault(); renderAll(); }
+});
+
+// ---------- save / load (the SD file) ----------
+function runs(p) { const rows = []; for (let y = 0; y < H; y++) { const r = []; let x = 0; while (x < W) { const v = p[y * W + x]; if (v === NONE) { x++; continue; } let e = x; while (e < W && p[y * W + e] === v) e++; r.push([x, e, v]); x = e; } rows.push(r); } return rows; }
+function makeDoc() {
+  return { version: 1, kind: 'stereo-plane-edits', dex: st.sp.dex, name: st.sp.name, size: [W, H], planes: st.planes, frames: 2,
+    source: { sprite: `graphics/pokemon/${st.sp.name}/anim_front.png`, pack: 'complete-mons.bin' },
+    frames_planes: [0, 1].map(f => ({ rows: runs(st.pl[f]) })), edits: st.log, saved: new Date().toISOString(), notes: '' };
+}
+function applyDoc(doc) {
+  st.planes = doc.planes;
+  for (let f = 0; f < 2; f++) { st.pl[f].fill(NONE); for (let y = 0; y < H; y++) for (const [s, e, v] of doc.frames_planes[f].rows[y]) for (let x = s; x < e; x++) st.pl[f][y * W + x] = v; }
+  st.log = doc.edits || []; st.t = st.log.reduce((m, e) => Math.max(m, e.t || 0), 0);
+}
+function save(quiet) {
+  if (!st.log.length && quiet) return;
+  const doc = makeDoc(), s = JSON.stringify(doc);
+  try { localStorage.setItem(sdKey(st.sp.dex), s); } catch (e) {}
+  $('#json').value = JSON.stringify(doc, (k, v) => (k === 'pixels' && v.length > 40) ? v.slice(0, 40).concat([`…${v.length - 40} more`]) : v, 1).replace(/\n\s*(\d|\[|\]|"…)/g, (m, c) => c);
+  $('#jsonsz').textContent = `(${(s.length / 1024).toFixed(1)} kB → sdmc:/3ds/emerald3ds/sprites/${String(st.sp.dex).padStart(3, '0')}.json)`;
+  st.lastSave = s; logLine(`(saved to SD, ${(s.length / 1024).toFixed(1)} kB)`);
+}
+$('#save').onclick = () => save();
+$('#download').onclick = () => { if (!st.lastSave) save(); const b = new Blob([st.lastSave], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `${String(st.sp.dex).padStart(3, '0')}_${st.sp.name}.json`; a.click(); };
+$('#load').onclick = () => $('#file').click();
+$('#file').onchange = ev => { const fr = new FileReader(); fr.onload = () => { try { const doc = JSON.parse(fr.result);
+  const i = D.species.findIndex(s => s.dex === doc.dex); if (i < 0) return logLine(`load: #${doc.dex} not in this prototype's data`);
+  loadSpecies(i, false); applyDoc(doc); logLine(`loaded ${doc.name} edits from file (${st.log.length} entries)`); renderAll();
+} catch (e) { logLine('load failed: ' + e.message); } }; fr.readAsText(ev.target.files[0]); ev.target.value = ''; };
+
+// ---------- boot ----------
+for (const s of D.species) { const o = document.createElement('option'); o.textContent = `#${String(s.dex).padStart(3, '0')} ${s.name}`; $('#species').appendChild(o); }
+loadSpecies(0);
+})();
+</script>
+</body>
+</html>

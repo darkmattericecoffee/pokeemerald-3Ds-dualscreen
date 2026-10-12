@@ -66,6 +66,9 @@ static u8 sMask;
 /* Frames START has been held on its own. */
 static u16 sStartHeld;
 static u8 sDexHold;
+/* The editor asked for (OPTIONS, or X on the Pokédex's page): opened once
+ * the gallery shows its Pokémon. */
+static bool8 sOpenEditor, sOpenFromGallery;
 
 /* LZ77 data of a game symbol (an asset stub, resolved from the game data)
  * into a buffer of `capacity` bytes; the size comes from the stream's own
@@ -177,7 +180,7 @@ static void AsciiStr(const u8 *s, char *out, unsigned size)
 
 static void AsciiName(u16 species, char *out, unsigned size) { AsciiStr(gSpeciesNames[species], out, size); }
 
-/* The name of what an id shows:
+/* The name of what an id shows (for the editor's chooser, 3ds_stereo_edit.c):
  * the species (a back says so), a trainer's name when every trainer with
  * that picture shares it (the rival, a leader) else their class, a player. */
 void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size)
@@ -343,7 +346,23 @@ void CtrStereoMonGame_Frame(void)
         ++sStartHeld;
     else
         sStartHeld = 0;
-    if (((held & OPEN_KEYS) == OPEN_KEYS && (down & CTR_KEY_START)) || sStartHeld == START_HOLD_FRAMES)
+    /* X on the Pokédex's page: that Pokémon straight into the editor. */
+    if (!sGallery && (down & CTR_KEY_X) && CtrPokedex_InfoDexNum() != 0 && CtrStereoMon_Has(CtrPokedex_InfoDexNum()))
+    {
+        int index = CtrStereoMon_GalleryIndexOf(CtrPokedex_InfoDexNum());
+
+        if (index >= 0) sIndex = (unsigned)index;
+        CtrPokedex_Close(TRUE);
+        sGallery = TRUE;
+        sOpenEditor = TRUE;
+        sMask = 2;
+    }
+    else if (sGallery && CtrStereoEdit_Active())
+    {
+        /* The editor has the keys; it leaves the gallery itself. */
+        CtrStereoEdit_Keys(down, held);
+    }
+    else if (((held & OPEN_KEYS) == OPEN_KEYS && (down & CTR_KEY_START)) || sStartHeld == START_HOLD_FRAMES)
     {
         sGallery = !sGallery;
         sMask = 2;
@@ -360,6 +379,11 @@ void CtrStereoMonGame_Frame(void)
         sGallery = FALSE;
         sMask = 2;
     }
+    else if (sGallery && (down & CTR_KEY_Y))
+    {
+        sOpenEditor = TRUE;
+        sOpenFromGallery = TRUE;
+    }
     if (sGallery)
     {
         unsigned count = CtrStereoMon_GalleryCount();
@@ -368,13 +392,18 @@ void CtrStereoMonGame_Frame(void)
             sGallery = FALSE;
         else
         {
-            if (down & CTR_KEY_RIGHT) sIndex = (sIndex + 1) % count;
-            if (down & CTR_KEY_LEFT) sIndex = (sIndex + count - 1) % count;
-            CtrStereoMon_Press(down & (CTR_KEY_UP | CTR_KEY_DOWN | CTR_KEY_L | CTR_KEY_R | CTR_KEY_A | CTR_KEY_X));
+            if (!CtrStereoEdit_Active())
+            {
+                if (down & CTR_KEY_RIGHT) sIndex = (sIndex + 1) % count;
+                if (down & CTR_KEY_LEFT) sIndex = (sIndex + count - 1) % count;
+                CtrStereoMon_Press(down & (CTR_KEY_UP | CTR_KEY_DOWN | CTR_KEY_L | CTR_KEY_R | CTR_KEY_A | CTR_KEY_X));
+            }
             national = CtrStereoMon_GalleryIdAt(sIndex);
             gallery = TRUE;
         }
     }
+    else
+        sOpenEditor = FALSE;
     if (!gallery)
     {
         u16 dex = CtrPokedex_InfoDexNum();
@@ -405,6 +434,35 @@ void CtrStereoMonGame_Frame(void)
         else
             Show(national, gallery);
     }
+    if (sOpenEditor && gallery && CtrStereoMon_Active())
+    {
+        sOpenEditor = FALSE;
+        CtrStereoEdit_Open(sOpenFromGallery);
+        sOpenFromGallery = FALSE;
+    }
+}
+
+void CtrStereoMonGame_OpenEditor(void)
+{
+    if (!CtrStereoMon_Load() || CtrStereoMon_Count() == 0) return;
+    sGallery = TRUE;
+    sOpenEditor = TRUE;
+    sMask = 2;
+}
+
+unsigned CtrStereoMonGame_GalleryIndex(void) { return sIndex; }
+
+void CtrStereoMonGame_SelectIndex(unsigned index)
+{
+    unsigned count = CtrStereoMon_GalleryCount();
+
+    if (count) sIndex = index % count;
+}
+
+void CtrStereoMonGame_CloseGallery(void)
+{
+    sGallery = FALSE;
+    sMask = 2;
 }
 
 bool CtrStereoMonGame_TakesKeys(void)

@@ -19,6 +19,7 @@ enum {
 typedef struct {
     uint16_t buttons;
     int16_t circleX, circleY;
+    int16_t cstickX, cstickY; /* New 3DS; zero elsewhere */
     bool touchActive;
     uint16_t touchX, touchY;
 } CtrInputSample;
@@ -32,6 +33,7 @@ typedef struct {
     uint16_t touchX, touchY; /* bottom pixels: 0..319, 0..239 */
     float touchNormX, touchNormY; /* 0..1, zero when not touching */
     int16_t circleX, circleY;
+    int16_t cstickX, cstickY;
 } CtrInput;
 
 /* Pure conversion shared by HID and host regression tests. */

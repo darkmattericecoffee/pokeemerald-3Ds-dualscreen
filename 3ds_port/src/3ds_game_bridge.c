@@ -4,7 +4,7 @@
 #include "3ds_emu_regs.h"
 #include "3ds_bottom.h"
 #include "3ds_stereo_mon.h"
-#if defined(CTR_TEST_BATTLE) || defined(CTR_TEST_DEX)
+#if defined(CTR_TEST_BATTLE) || defined(CTR_TEST_DEX) || defined(CTR_TEST_EDIT)
 #include "main.h"
 #include "overworld.h"
 #endif
@@ -55,7 +55,7 @@ u16 Platform_GetKeyInput(void)
     /* The stereoscopic viewer's gallery has them all while it is open. */
     if (CtrStereoMonGame_TakesKeys())
         held = 0;
-#if defined(CTR_TEST_BATTLE) || defined(CTR_TEST_DEX)
+#if defined(CTR_TEST_BATTLE) || defined(CTR_TEST_DEX) || defined(CTR_TEST_EDIT)
     /* Emulator aid (3ds_game_full.c): A tapped through the intro, the title
      * and the menu until the field is up, for a keyboard-less run (and on
      * through whatever the aid opens afterwards). */

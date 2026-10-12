@@ -29,6 +29,8 @@ void CtrInput_Update(CtrInput *state, const CtrInputSample *sample)
         if (state->physicalDown & (1u << i)) ++state->presses[i];
     state->circleX = sample->circleX;
     state->circleY = sample->circleY;
+    state->cstickX = sample->cstickX;
+    state->cstickY = sample->cstickY;
     state->circleDirection = CircleDirection(sample->circleX, sample->circleY, state->circleDirection);
     state->held = buttons & CTR_KEY_GAME;
     /* Explicit D-pad input takes precedence over the stick. This avoids

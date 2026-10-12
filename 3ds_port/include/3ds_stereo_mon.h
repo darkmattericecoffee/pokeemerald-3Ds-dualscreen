@@ -118,6 +118,9 @@ bool CtrStereoMon_PlanesFor(uint16_t national, uint8_t *out, uint32_t size);
 const CtrStereoMonHeader *CtrStereoMon_BacksHeader(void);
 bool CtrStereoMon_HasBack(uint16_t id);
 bool CtrStereoMon_BackPlanesFor(uint16_t id, uint8_t *out, uint32_t size, unsigned *frames);
+/* The SD card's edited planes of an id (CtrStereoMon_SaveEdit), when there
+ * are any with the file's own number of planes: the battle shows them. */
+bool CtrStereoMon_EditPlanesFor(uint16_t id, uint8_t *out, uint32_t size, unsigned *frames);
 /* The gallery: every picture of both files, the fronts first (by national
  * number), then the backs, the trainers and the players. */
 unsigned CtrStereoMon_GalleryCount(void);
@@ -161,6 +164,54 @@ void CtrStereoMon_Draw(void *leftTarget, void *rightTarget, float slider);
 void CtrStereoMon_BackdropBegin(void);
 void CtrStereoMon_BackdropRow(unsigned y, const uint16_t *row);
 void CtrStereoMon_Idle(void);
+
+/* ── Native: the plane editor's side of the viewer (3ds_stereo_edit.c) ── */
+
+/*
+ * A Pokémon's planes can be edited on the device (3ds_stereo_edit.c, the
+ * bottom screen): the viewer shows the planes it holds for the Pokémon on
+ * show, and the editor changes them in place. Edited planes are kept on the
+ * SD card, one file per Pokémon (CTR_STEREO_EDIT_DIR/NNN.bin: a 16-byte
+ * header "EM3DSED1", u16 national, u8 planes, u8 frames, u16 width, u16
+ * height, u32 reserved, then frames x 2048 bytes of nibbles as in the planes
+ * file), and shown instead of the pack's whenever one exists; the PC-side
+ * tools/sprite_editor/import_sd_edits.py folds them back into the pack.
+ */
+#define CTR_STEREO_EDIT_DIR "stereo"
+#define CTR_STEREO_EDIT_MAGIC "EM3DSED1"
+#define CTR_STEREO_EDIT_MAX_PLANES 14
+/* The editor works on this many planes: a file with more is folded into
+ * them, one with fewer spread over them, when it is opened. */
+#define CTR_STEREO_EDIT_PLANES 4
+/* The planes of the Pokémon on show (frames x 2048 bytes, writable), with
+ * its number of planes and frames; NULL when nothing is shown. */
+uint8_t *CtrStereoMon_EditPlanes(unsigned *planes, unsigned *frames);
+/* Its picture: one frame of 64x64 RGBA5551 pixels (0 = transparent). */
+const uint16_t *CtrStereoMon_Picture(unsigned frame);
+uint16_t CtrStereoMon_Shown(void);
+/* Its number of planes after an add or a merge (2..CTR_STEREO_EDIT_MAX_PLANES). */
+void CtrStereoMon_SetPlaneCount(unsigned planes);
+/* The planes changed: composed again over the next frames. */
+void CtrStereoMon_Recompose(void);
+/* The editor is open on the Pokémon: no turn, every plane drawn on its own,
+ * the plane being edited named on the screen. */
+void CtrStereoMon_SetEditing(bool editing, unsigned plane);
+/* What the top screen shows while editing: the frame being edited (or the
+ * animation), and the plane being edited outlined in `mark` (RGB565). */
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark);
+/* The 3D depth setting (percent, 0..300), shared with the gallery and the Pokédex. */
+int CtrStereoMon_Depth(void);
+void CtrStereoMon_SetDepth(int percent);
+/* The planes on show to the SD card, or that file removed and the pack's
+ * planes read back. */
+bool CtrStereoMon_SaveEdit(void);
+bool CtrStereoMon_ResetEdit(void);
+/* Which Pokémon have edit files: scanned once (Scan) and then answered from
+ * memory, for the chooser's marks. */
+void CtrStereoMon_EditScan(void);
+bool CtrStereoMon_HasEdit(uint16_t id);
+/* Appends a line to the Pokémon's edit log (CTR_STEREO_EDIT_DIR/NNN.log). */
+void CtrStereoMon_LogEdit(const char *line);
 
 /* ── Native: the battle (3ds_stereo_battle.c) ─────────────────────────── */
 
@@ -229,5 +280,23 @@ uint16_t CtrStereoMonGame_WildSpecies(uint16_t species);
 void CtrStereoMonGame_Frame(void);
 /* Whether the gallery takes the player's keys from the game this frame. */
 bool CtrStereoMonGame_TakesKeys(void);
+/* Opens the gallery with the plane editor (OPTIONS' 3D SPRITE EDITOR). */
+void CtrStereoMonGame_OpenEditor(void);
+/* For the editor: the gallery's Pokémon by index, and leaving the gallery. */
+unsigned CtrStereoMonGame_GalleryIndex(void);
+void CtrStereoMonGame_SelectIndex(unsigned index);
+void CtrStereoMonGame_CloseGallery(void);
+
+/* ── Game side: the plane editor (3ds_stereo_edit.c) ──────────────────── */
+
+bool CtrStereoEdit_Active(void);
+/* Opens on the Pokémon the gallery shows (once the viewer has it); from
+ * the gallery itself, B goes back to it, else B leaves both. */
+void CtrStereoEdit_Open(bool fromGallery);
+/* The editor's keys this frame (CTR_KEY_* down and held). */
+void CtrStereoEdit_Keys(unsigned down, unsigned held);
+/* The bottom screen's frame while the editor is open: its touches and its
+ * drawing. False when the editor is not open (the bottom UI goes on). */
+bool CtrStereoEdit_BottomFrame(void);
 
 #endif

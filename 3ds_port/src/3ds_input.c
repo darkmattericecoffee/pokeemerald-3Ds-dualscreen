@@ -33,6 +33,9 @@ void CtrInput_Scan(void)
     hidCircleRead(&circle);
     sample.circleX = circle.dx;
     sample.circleY = circle.dy;
+    hidCstickRead(&circle);
+    sample.cstickX = circle.dx;
+    sample.cstickY = circle.dy;
     sample.touchActive = (raw & KEY_TOUCH) != 0;
     if (sample.touchActive)
     {

@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include "3ds_platform.h"
 #include "3ds_video.h"
 #include "3ds_input.h"
@@ -103,9 +105,26 @@ static PlanesFile sFront = {.path = CTR_STEREO_MON_FILE}, sBacks = {.path = CTR_
 #define sIndexBytes sFront.indexBytes
 #define sHeader sFront.header
 #define sLoaded sFront.loaded
-/* One Pokémon's planes, read on show, and the header they go with. */
+/* One Pokémon's planes, read on show (the pack's, or the SD card's edited
+ * ones), and the header they go with: the file's, its planes overridden by
+ * an edited file's or the editor's. */
 static uint8_t sPlanes[CTR_STEREO_MON_MAX_FRAMES * DIM * DIM / 2];
 static CtrStereoMonHeader sShown;
+static bool sEdited;
+/* The editor (3ds_stereo_edit.c): open on the Pokémon, and the plane it edits. */
+static bool sEditing;
+static unsigned sEditPlane;
+/* What the editor shows on this screen: its frame (or the animation), and
+ * the plane it edits outlined: the pixels just outside that plane, as runs
+ * along each row, worked out again whenever the planes or the frame change. */
+static unsigned sEditFrame;
+static bool sEditAnimate, sEditOutline;
+static uint32_t sEditMark;
+typedef struct { uint8_t x, y, len; } OutlineRun;
+static OutlineRun sRuns[2048];
+static unsigned sRunCount, sRunsVersion = 1, sPlanesVersion;
+static uint16_t sRunsId;
+static unsigned sRunsFrame, sRunsPlane;
 /* Where DrawPlanes put each plane for the eye being drawn. */
 static float sPlaneX[CTR_STEREO_MON_MAX_PLANES], sPlaneY, sPlaneScale;
 
@@ -131,6 +150,8 @@ static int sDepth = -1;
 static int sGroups = -1;
 static bool sAnimate = true;
 static uint32_t sTick;
+
+static bool LoadEdit(uint16_t national);
 
 static bool LoadFile(PlanesFile *pf)
 {
@@ -312,6 +333,7 @@ bool CtrStereoMon_ShowId(uint16_t id, const uint16_t *picture, unsigned frames, 
     sId = id;
     sShown = pf->header;
     sShown.frames = (uint8_t)entryFrames;
+    sEdited = LoadEdit(id);
     snprintf(sName, sizeof(sName), "%s", name ? name : "");
     if (sDepth < 0)
     {
@@ -345,6 +367,7 @@ static void SetGroups(int groups)
 /* The planes drawn with: the setting, capped for the hologram. */
 static unsigned Groups(void)
 {
+    if (sEditing) return sShown.planes;
     if (sGroups > (int)sShown.planes) return sShown.planes;
     return !sGallery && sGroups > DEX_GROUPS_MAX ? DEX_GROUPS_MAX : (unsigned)sGroups;
 }
@@ -362,6 +385,339 @@ void CtrStereoMon_Press(unsigned keys)
     if (keys & CTR_KEY_L) SetGroups(sGroups - 1);
     if (keys & CTR_KEY_R) SetGroups(sGroups + 1);
     if (keys & CTR_KEY_X) sAnimate = !sAnimate;
+}
+
+/* ── The SD card's edited planes (3ds_stereo_edit.c) ────────────────── */
+
+#define EDIT_HEADER_BYTES 16
+#define EDIT_FRAME_BYTES (DIM * DIM / 2)
+
+#define EDIT_DIR "sdmc:/3ds/emerald3ds/" CTR_STEREO_EDIT_DIR
+/* Which Pokémon have edit files (CtrStereoMon_EditScan). */
+static uint8_t sEditMarks[(CTR_STEREO_MON_MAX_COUNT + 7) / 8];
+static bool sEditScanned;
+
+/* The Pokémon's file, opened without the data layer's logging: most
+ * Pokémon have none. */
+/* An id's edit file: NNN for a front, bNNN a back, tNNN a trainer, pNNN a player. */
+static void EditPath(uint16_t id, const char *ext, char *path, unsigned size)
+{
+    static const char prefix[4] = {0, 't', 'b', 'p'};
+    unsigned kind = id >> 14;
+
+    if (kind == 0) snprintf(path, size, EDIT_DIR "/%03u.%s", id, ext);
+    else snprintf(path, size, EDIT_DIR "/%c%03u.%s", prefix[kind], id & 0x3FFF, ext);
+}
+
+static FILE *OpenEdit(uint16_t id, const char *ext, const char *mode)
+{
+    char path[64];
+
+    EditPath(id, ext, path, sizeof(path));
+    return fopen(path, mode);
+}
+
+/* The edit marks: a bit per front (by national number) and per backs entry (by index). */
+static uint8_t sBackMarks[(CTR_STEREO_MON_MAX_COUNT + 7) / 8];
+
+static uint8_t *MarkOf(uint16_t id, unsigned *bit)
+{
+    if ((id & 0xC000) == 0)
+    {
+        if (id >= CTR_STEREO_MON_MAX_COUNT) return NULL;
+        *bit = id;
+        return sEditMarks;
+    }
+    else
+    {
+        int index;
+
+        FileOf(id, &index);
+        if (index < 0) return NULL;
+        *bit = (unsigned)index;
+        return sBackMarks;
+    }
+}
+
+static void SetMark(uint16_t id, bool on)
+{
+    unsigned bit;
+    uint8_t *marks = MarkOf(id, &bit);
+
+    if (marks == NULL) return;
+    if (on) marks[bit >> 3] |= (uint8_t)(1 << (bit & 7));
+    else marks[bit >> 3] &= (uint8_t)~(1 << (bit & 7));
+}
+
+/* An id's edit file read: its planes into `out`, its counts; false without one. */
+static bool ReadEdit(uint16_t id, uint8_t *out, uint32_t size, unsigned *planes, unsigned *frames)
+{
+    uint8_t header[EDIT_HEADER_BYTES];
+    FILE *f = OpenEdit(id, "bin", "rb");
+    bool ok = false;
+
+    if (f == NULL) return false;
+    if (fread(header, 1, sizeof(header), f) == sizeof(header) && memcmp(header, CTR_STEREO_EDIT_MAGIC, 8) == 0
+        && (header[8] | (header[9] << 8)) == id && header[12] == DIM && header[13] == 0 && header[14] == DIM
+        && header[15] == 0)
+    {
+        unsigned p = header[10], n = header[11];
+
+        if (p >= GROUPS_MIN && p <= CTR_STEREO_EDIT_MAX_PLANES && n >= 1 && n <= CTR_STEREO_MON_MAX_FRAMES
+            && n * EDIT_FRAME_BYTES <= size && fread(out, 1, n * EDIT_FRAME_BYTES, f) == n * EDIT_FRAME_BYTES)
+        {
+            *planes = p;
+            *frames = n;
+            ok = true;
+        }
+    }
+    fclose(f);
+    return ok;
+}
+
+bool CtrStereoMon_EditPlanesFor(uint16_t id, uint8_t *out, uint32_t size, unsigned *frames)
+{
+    int index;
+    PlanesFile *pf = FileOf(id, &index);
+    unsigned planes;
+
+    if (index < 0 || !CtrStereoMon_HasEdit(id) || !ReadEdit(id, out, size, &planes, frames)) return false;
+    return planes == pf->header.planes;
+}
+
+/* The Pokémon's edited planes from the SD card into sPlanes and sShown;
+ * false (and the pack's planes left alone) without a well-formed file. */
+static bool LoadEdit(uint16_t id)
+{
+    unsigned planes, frames;
+    FILE *f = OpenEdit(id, "bin", "rb");
+
+    if (f == NULL) return false;
+    fclose(f);
+    if (!ReadEdit(id, sPlanes, sizeof(sPlanes), &planes, &frames))
+    {
+        int index;
+        PlanesFile *pf = FileOf(id, &index);
+        unsigned entryFrames = 0;
+
+        CtrLog_Write(CTR_LOG_ERROR, "stereo: id %04x's edit file is malformed; the pack's planes are shown", id);
+        /* Whatever the partial read overwrote comes back from the pack. */
+        if (index >= 0 && ReadPlanesInto(pf, (unsigned)index, sPlanes, sizeof(sPlanes), &entryFrames))
+        {
+            sShown = pf->header;
+            sShown.frames = (uint8_t)entryFrames;
+        }
+        return false;
+    }
+    sShown.planes = (uint8_t)planes;
+    sShown.frames = (uint8_t)frames;
+    CtrLog_Write(CTR_LOG_VIDEO, "stereo: id %04x edited planes from the SD card (%u planes, %u frames)", id, planes, frames);
+    return true;
+}
+
+uint8_t *CtrStereoMon_EditPlanes(unsigned *planes, unsigned *frames)
+{
+    if (!sActive) return NULL;
+    if (planes) *planes = sShown.planes;
+    if (frames) *frames = sShown.frames < sFrames ? sShown.frames : sFrames;
+    return sPlanes;
+}
+
+const uint16_t *CtrStereoMon_Picture(unsigned frame)
+{
+    if (!sActive || frame >= sFrames) return NULL;
+    return sPicture[frame];
+}
+
+uint16_t CtrStereoMon_Shown(void) { return sActive ? sId : 0; }
+
+void CtrStereoMon_SetPlaneCount(unsigned planes)
+{
+    if (planes < GROUPS_MIN) planes = GROUPS_MIN;
+    if (planes > CTR_STEREO_EDIT_MAX_PLANES) planes = CTR_STEREO_EDIT_MAX_PLANES;
+    sShown.planes = (uint8_t)planes;
+    sTexReady = false;
+    ++sPlanesVersion;
+}
+
+void CtrStereoMon_Recompose(void)
+{
+    sTexReady = false;
+    ++sPlanesVersion;
+}
+
+void CtrStereoMon_SetEditing(bool editing, unsigned plane)
+{
+    if (editing != sEditing) sTexReady = false;
+    sEditing = editing;
+    sEditPlane = plane;
+}
+
+int CtrStereoMon_Depth(void) { return sDepth < 0 ? 100 : sDepth; }
+
+void CtrStereoMon_SetDepth(int percent)
+{
+    if (percent < 0) percent = 0;
+    if (percent > DEPTH_MAX) percent = DEPTH_MAX;
+    sDepth = percent;
+    CtrSettings_SetInt(DEPTH_KEY, sDepth);
+}
+
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark)
+{
+    sEditFrame = frame;
+    sEditAnimate = animate;
+    sEditOutline = outline;
+    sEditMark = C2D_Color32(((mark >> 11) & 31) * 255 / 31, ((mark >> 5) & 63) * 255 / 63, (mark & 31) * 255 / 31, 230);
+}
+
+/* Whether picture pixel (x, y) of the frame is on the plane. */
+static bool OnPlane(unsigned frame, int x, int y, unsigned plane)
+{
+    unsigned i, k;
+
+    if (x < 0 || y < 0 || x >= DIM || y >= DIM) return false;
+    i = (unsigned)(y * DIM + x);
+    k = frame * DIM * DIM + i;
+    return sPicture[frame][i] != 0 && ((sPlanes[k >> 1] >> ((k & 1) * 4)) & 15) == plane;
+}
+
+/* The outline's runs for the frame and the plane, unless they are known. */
+static void OutlineRuns(unsigned frame, unsigned plane)
+{
+    if (sRunsVersion == sPlanesVersion && sRunsId == sId && sRunsFrame == frame && sRunsPlane == plane)
+        return;
+    sRunsVersion = sPlanesVersion;
+    sRunsId = sId;
+    sRunsFrame = frame;
+    sRunsPlane = plane;
+    sRunCount = 0;
+    for (int y = 0; y < DIM; ++y)
+        for (int x = 0; x < DIM; ++x)
+        {
+            bool edge = !OnPlane(frame, x, y, plane)
+                     && (OnPlane(frame, x - 1, y, plane) || OnPlane(frame, x + 1, y, plane)
+                         || OnPlane(frame, x, y - 1, plane) || OnPlane(frame, x, y + 1, plane));
+
+            if (!edge) continue;
+            if (sRunCount && sRuns[sRunCount - 1].y == y && sRuns[sRunCount - 1].x + sRuns[sRunCount - 1].len == x)
+                ++sRuns[sRunCount - 1].len;
+            else if (sRunCount < sizeof(sRuns) / sizeof(sRuns[0]))
+                sRuns[sRunCount++] = (OutlineRun){(uint8_t)x, (uint8_t)y, 1};
+        }
+}
+
+/* The outline at the plane's own depth, over the whole stack. */
+static void DrawOutline(void)
+{
+    for (unsigned r = 0; r < sRunCount; ++r)
+        C2D_DrawRectSolid(sPlaneX[sRunsPlane] + sRuns[r].x * sPlaneScale, sPlaneY + sRuns[r].y * sPlaneScale, 0,
+                          sRuns[r].len * sPlaneScale, sPlaneScale, sEditMark);
+}
+
+static void EnsureEditDir(void)
+{
+    mkdir(EDIT_DIR, 0777);
+}
+
+bool CtrStereoMon_SaveEdit(void)
+{
+    uint8_t header[EDIT_HEADER_BYTES] = {0};
+    FILE *f;
+    unsigned frames = sShown.frames < sFrames ? sShown.frames : sFrames;
+    bool ok;
+
+    if (!sActive) return false;
+    EnsureEditDir();
+    f = OpenEdit(sId, "bin", "wb");
+    if (f == NULL)
+    {
+        CtrLog_Write(CTR_LOG_ERROR, "stereo: cannot write #%u's edit file", sId);
+        return false;
+    }
+    memcpy(header, CTR_STEREO_EDIT_MAGIC, 8);
+    header[8] = (uint8_t)sId;
+    header[9] = (uint8_t)(sId >> 8);
+    header[10] = sShown.planes;
+    header[11] = (uint8_t)frames;
+    header[12] = DIM;
+    header[14] = DIM;
+    ok = fwrite(header, 1, sizeof(header), f) == sizeof(header)
+      && fwrite(sPlanes, 1, frames * EDIT_FRAME_BYTES, f) == frames * EDIT_FRAME_BYTES;
+    fclose(f);
+    if (ok)
+    {
+        sEdited = true;
+        SetMark(sId, true);
+    }
+    CtrLog_Write(ok ? CTR_LOG_FS : CTR_LOG_ERROR, "stereo: id %04x edit %s", sId, ok ? "saved" : "NOT saved");
+    return ok;
+}
+
+bool CtrStereoMon_ResetEdit(void)
+{
+    char path[64];
+    int index;
+    PlanesFile *pf = FileOf(sId, &index);
+    unsigned entryFrames = 0;
+
+    if (!sActive) return false;
+    EditPath(sId, "bin", path, sizeof(path));
+    remove(path);
+    EditPath(sId, "log", path, sizeof(path));
+    remove(path);
+    if (index < 0 || !ReadPlanesInto(pf, (unsigned)index, sPlanes, sizeof(sPlanes), &entryFrames)) return false;
+    sShown = pf->header;
+    sShown.frames = (uint8_t)entryFrames;
+    sEdited = false;
+    SetMark(sId, false);
+    sTexReady = false;
+    return true;
+}
+
+void CtrStereoMon_EditScan(void)
+{
+    DIR *d = opendir(EDIT_DIR);
+    struct dirent *e;
+
+    memset(sEditMarks, 0, sizeof(sEditMarks));
+    memset(sBackMarks, 0, sizeof(sBackMarks));
+    sEditScanned = true;
+    if (d == NULL) return;
+    while ((e = readdir(d)) != NULL)
+    {
+        unsigned n = 0, k = 0, kind = 0;
+
+        if (e->d_name[0] == 'b') kind = CTR_STEREO_ID_BACK, k = 1;
+        else if (e->d_name[0] == 't') kind = CTR_STEREO_ID_TRAINER, k = 1;
+        else if (e->d_name[0] == 'p') kind = CTR_STEREO_ID_PLAYER, k = 1;
+        for (; e->d_name[k] >= '0' && e->d_name[k] <= '9'; ++k) n = n * 10 + (unsigned)(e->d_name[k] - '0');
+        if (k > (kind ? 1u : 0u) && strcmp(e->d_name + k, ".bin") == 0 && n < 0x4000 && (kind || n > 0))
+            SetMark((uint16_t)(kind | n), true);
+    }
+    closedir(d);
+}
+
+bool CtrStereoMon_HasEdit(uint16_t id)
+{
+    unsigned bit;
+    const uint8_t *marks;
+
+    if (!sEditScanned) CtrStereoMon_EditScan();
+    marks = MarkOf(id, &bit);
+    return marks != NULL && ((marks[bit >> 3] >> (bit & 7)) & 1);
+}
+
+void CtrStereoMon_LogEdit(const char *line)
+{
+    FILE *f;
+
+    if (!sActive || line == NULL) return;
+    EnsureEditDir();
+    f = OpenEdit(sId, "log", "a");
+    if (f == NULL) return;
+    fprintf(f, "%s\n", line);
+    fclose(f);
 }
 
 /* ── The texture ─────────────────────────────────────────────────────── */
@@ -487,6 +843,19 @@ static void DrawTextSized(float x, float y, const char *text, uint32_t colour, i
 static void DrawText(float x, float y, const char *text, uint32_t colour)
 {
     DrawTextSized(x, y, text, colour, GLYPH_PIXEL);
+}
+
+/* Lines in a column beside the picture (which spans 104..296 at 3x): at
+ * the glyph size, or smaller when a line would run into it. */
+static void DrawColumn(bool right, float y, const char *const *lines, unsigned count, uint32_t colour)
+{
+    const float width = CENTRE_X - DIM / 2 * SCALE - 16;
+    int px = GLYPH_PIXEL;
+
+    for (unsigned i = 0; i < count; ++i)
+        if (strlen(lines[i]) * 4 * GLYPH_PIXEL > width) px = 1;
+    for (unsigned i = 0; i < count; ++i, y += 6 * px)
+        DrawTextSized(right ? CTR_GAME_WIDTH - 8 - (float)strlen(lines[i]) * 4 * px : 8, y, lines[i], colour, px);
 }
 
 /* ── Drawing ─────────────────────────────────────────────────────────── */
@@ -640,6 +1009,7 @@ static void DrawDex(float sign, float slider, unsigned frame)
     C2D_DrawRectSolid(x0, y0 + h - 16, 0, w, 16, C2D_Color32(20, 30, 20, 170));
     snprintf(line, sizeof(line), "NO.%03u %s", sId, sName);
     DrawText(x0 + 6, y0 + h - 12, line, C2D_Color32(230, 245, 220, 255));
+    DrawText(x0 + w - 6 - GLYPH_ADVANCE * 9, y0 + h - 12, "X EDIT 3D", C2D_Color32(180, 200, 170, 255));
 }
 
 static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned frame)
@@ -666,14 +1036,48 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
                       C2D_Color32(40, 46, 70, 0), C2D_Color32(40, 46, 70, 0),
                       C2D_Color32(40, 46, 70, 160), C2D_Color32(40, 46, 70, 160));
     DrawPlanes(sign, slider, frame, NULL, SCALE);
+    if (sEditing && sEditOutline && sEditPlane < groups && sTexReady && sComposed == sToCompose)
+    {
+        OutlineRuns(frame, sEditPlane);
+        DrawOutline();
+    }
     if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "NO.%03u %s", sId, sName);
     else snprintf(line, sizeof(line), "%s", sName);
     DrawText(8, 6, line, C2D_Color32(235, 235, 240, 255));
     snprintf(line, sizeof(line), "%u/%u", (unsigned)(CtrStereoMon_GalleryIndexOf(sId) + 1), CtrStereoMon_GalleryCount());
     DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), 6, line, C2D_Color32(160, 165, 180, 255));
-    snprintf(line, sizeof(line), "<> MON   ^v DEPTH %u%%   L/R PLANES %u", (unsigned)sDepth, groups);
-    DrawText(8, CTR_GAME_HEIGHT - 10 - 10 * GLYPH_PIXEL, line, C2D_Color32(160, 165, 180, 255));
-    DrawText(8, CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL, "X ANIM   B BACK", C2D_Color32(160, 165, 180, 255));
+    if (sEditing)
+    {
+        /* The keys down the left, what is being edited down the right (the
+         * picture is between them). Planes are numbered for people front
+         * to back: 1 the nearest. */
+        static const char *const keys[] = {"L  PLANE", "L+TAP PICK", "R  FRAME", "C  MON", "PAD PAN",
+                                           "^v ZOOM", "<> UNDO", "X OUTLINE", "Y ANIM", "START SAVE", "B  BACK"};
+        unsigned number = sEditPlane < groups ? groups - sEditPlane : 0;
+        char planeText[16], frameText[16], depthText[16];
+        const char *status[4];
+        unsigned n = 0;
+
+        snprintf(planeText, sizeof(planeText), "PLANE %u%s", number, number == 1 ? " FRONT" : number == groups ? " BACK" : "");
+        status[n++] = planeText;
+        if (sFrames > 1)
+        {
+            snprintf(frameText, sizeof(frameText), sEditAnimate ? "ANIMATING" : "FRAME %u/%u", sEditFrame + 1, sFrames);
+            status[n++] = frameText;
+        }
+        snprintf(depthText, sizeof(depthText), "DEPTH %u%%", (unsigned)sDepth);
+        status[n++] = depthText;
+        if (sEdited) status[n++] = "EDITED";
+        DrawColumn(false, 24, keys, sizeof(keys) / sizeof(keys[0]), C2D_Color32(160, 165, 180, 255));
+        DrawColumn(true, 24, status, n, C2D_Color32(245, 181, 69, 255));
+    }
+    else
+    {
+        snprintf(line, sizeof(line), "<> MON   ^v DEPTH %u%%   L/R PLANES %u%s", (unsigned)sDepth, groups,
+                 sEdited ? "   EDITED" : "");
+        DrawText(8, CTR_GAME_HEIGHT - 10 - 10 * GLYPH_PIXEL, line, C2D_Color32(160, 165, 180, 255));
+        DrawText(8, CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL, "X ANIM   Y EDIT   B BACK", C2D_Color32(160, 165, 180, 255));
+    }
 #ifdef CTR_STEREO_DEBUG
     snprintf(line, sizeof(line), "T%u C%u/%u F%u G%u X%u", sTexReady, sComposed, sToCompose, sFrames, groups, sTexCols);
     DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL, line,
@@ -690,6 +1094,10 @@ void CtrStereoMon_Draw(void *leftTarget, void *rightTarget, float slider)
     if ((!sTexReady || sComposed < sToCompose) && TextureReady()) ComposeSome();
     ++sTick;
     frame = sAnimate && sFrames > 1 && sTick % ANIM_PERIOD < ANIM_HOLD ? 1 : 0;
+    /* Editing: the frame being edited, still, unless the editor animates. */
+    if (sEditing && !sEditAnimate) frame = sEditFrame < sFrames ? sEditFrame : 0;
+    else if (sEditing && sFrames > 2) frame = (sTick / 8) % sFrames;
+    else if (sEditing) frame = sFrames > 1 && sTick % ANIM_PERIOD < ANIM_HOLD ? 1 : 0;
     if (slider < 0.0f) slider = 0.0f;
     if (slider > 1.0f) slider = 1.0f;
     /* The left eye sees what is nearer than the screen shifted right. */

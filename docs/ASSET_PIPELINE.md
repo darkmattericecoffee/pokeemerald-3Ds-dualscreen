@@ -75,7 +75,8 @@ front drafts. `review-sheet.png` shows both poses of the 45 automatic drafts;
 This is a review priority heuristic, not an anatomy quality score. The pass
 merged 1,118 small components (2,816 pixels) and preserved all frame layouts,
 transparency and annotated outputs. Existing Castform front-form and alternate
-back-form runtime exclusions still apply. Original source packs are not overwritten. The build regenerates the cleaned packs;
+back-form runtime exclusions still apply. Original source packs and SD-card
+editor saves are not overwritten. The build regenerates the cleaned packs;
 a new game build is still required to embed them in the executable.
 
 The viewer and battle renderer keep the original 14.4-unit overall depth span
@@ -84,7 +85,8 @@ plane count. Fewer occupied groups spread over the available range; a single
 surface uses the plane nearest the 0.62 pivot. Cluster centres are audit data;
 the current file format still renders uniformly spaced planes. Independent
 per-plane spacing is not implemented. Existing depth controls scale spacing
-uniformly.
+uniformly. The editor can still add planes, and saved SD card edits override
+the pack; reset only when intentionally discarding them to reload the pack.
 
 Run `python3 3ds_port/tests/stereo_collapse_test.py` and
 `python3 3ds_port/tests/stereo_depth_groups_test.py` for conversion checks.

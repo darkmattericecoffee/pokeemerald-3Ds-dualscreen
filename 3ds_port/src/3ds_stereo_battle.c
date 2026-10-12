@@ -145,7 +145,10 @@ static void PlanesFor(Planes *p, uint16_t id, unsigned capacityFrames)
     p->ok = false;
     p->frames = 0;
     if (id == 0 || p->planes == NULL) return;
-    if (id & 0xC000)
+    /* The SD card's edited planes first (the plane editor's), then the pack's. */
+    if (CtrStereoMon_EditPlanesFor(id, p->planes, capacityFrames * FRAME_BYTES, &p->frames))
+        p->ok = true;
+    else if (id & 0xC000)
         p->ok = CtrStereoMon_BackPlanesFor(id, p->planes, capacityFrames * FRAME_BYTES, &p->frames);
     else
     {
