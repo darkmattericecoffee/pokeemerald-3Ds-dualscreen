@@ -15,8 +15,10 @@
   header{display:flex;gap:10px;align-items:center;padding:8px 16px;background:var(--shell2);border-bottom:1px solid #000;flex-wrap:wrap}
   header h1{font-size:14px;margin:0 12px 0 0;letter-spacing:.04em;color:var(--accent)}
   header label{color:var(--dim)}
-  select,button,input[type=file]{font:inherit}
-  select{background:#0e1014;color:var(--ink);border:1px solid #444;border-radius:4px;padding:3px 6px}
+  select,button,input[type=file],input[type=text]{font:inherit}
+  select,input[type=text]{background:#0e1014;color:var(--ink);border:1px solid #444;border-radius:4px;padding:3px 6px}
+  input[type=text]{width:110px}
+  select:disabled{color:var(--dim)}
   button{background:#343945;color:var(--ink);border:1px solid #4a505d;border-radius:4px;padding:4px 10px;cursor:pointer}
   button:hover{background:#414757}
   button.primary{background:var(--accent);color:#000;border-color:#000;font-weight:600}
@@ -108,6 +110,9 @@
   <span style="flex:1"></span>
   <button id="dexbtn" title="mock of the in-game Pokédex with its quick 'edit 3D' button">Pokédex (mock)</button>
   <button id="undo">Undo</button><button id="redo">Redo</button>
+  <label title="your name in the versions you save (kept in this browser)">Author <input type="text" id="author" maxlength="16" placeholder="your name" spellcheck="false"></label>
+  <label title="the versions in this Pokémon's SD file; the import uses the newest finalized one">Version <select id="ver"></select></label>
+  <label title="mark your version as the one to use"><input type="checkbox" id="final"> finalized</label>
   <button id="load">Load JSON…</button><input type="file" id="file" accept=".json" hidden>
   <button id="save" class="primary">Save to SD (Start)</button>
 </header>
@@ -167,7 +172,7 @@
 
   <div class="side">
     <div class="panel"><h2>Edit log (what the SD file would carry)</h2><div class="log" id="log"></div></div>
-    <div class="panel"><h2>SD file <span id="jsonsz" style="color:var(--dim)"></span></h2><textarea id="json" spellcheck="false" placeholder="Press Save (Enter) to serialise the current planes + edit log. The SD card is mocked with the browser's local storage: switching Pokémon saves and reloads it."></textarea>
+    <div class="panel"><h2>SD file <span id="jsonsz" style="color:var(--dim)"></span></h2><textarea id="json" spellcheck="false" placeholder="Press Save (Enter) to serialise the current planes + edit log as your version of the SD file. The SD card is mocked with the browser's local storage: switching Pokémon or version saves and reloads it."></textarea>
       <div style="margin-top:6px;display:flex;gap:6px"><button id="download">Download .json</button><button id="reset">Reset species to pack (forget SD file)</button></div></div>
   </div>
 </div>
@@ -179,7 +184,7 @@ const D = window.SPRITE_DATA, W = 64, H = 64, N = W * H, NONE = 15, MAX_PLANES =
 const $ = s => document.querySelector(s);
 const hex2arr = s => { const a = new Uint8Array(N); for (let i = 0; i < N; i++) a[i] = parseInt(s[i], 16); return a; };
 const NB4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-const sdKey = dex => `stereo-edits-${dex}`;
+const sdKey = dex => `stereo-edits-${dex}`, AUTHOR_KEY = 'stereo-editor-author', DOC_KIND = 'stereo-plane-edits';
 function spriteCanvas(sp, colors, pick) { // helper: a 64x64 canvas of the pixels that pass pick(i)
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const x = cv.getContext('2d'); const img = x.createImageData(W, H);
   for (let i = 0; i < N; i++) if (colors[i] && pick(i)) { const n = parseInt(sp.palette[colors[i]].slice(1), 16), o = i * 4; img.data[o] = n >> 16; img.data[o + 1] = (n >> 8) & 255; img.data[o + 2] = n & 255; img.data[o + 3] = 255; }
@@ -191,17 +196,20 @@ const st = {
   sp: null, idx: 0, planes: 10, frame: 0, layer: 5,
   tool: 'brush', eraser: false, eraseDir: 1, dark: 2, bs: 1, ghost: .35, autoprop: true,
   colors: [], pl: [], undo: [], redo: [], log: [], t: 0, hover: -1, drawing: false, stroke: null, lasso: null, selection: null,
+  doc: null, ver: -1, dirty: false, gen: 0, lastSave: null, // the SD file (version-2 document), the version shown, unsaved changes
 };
 function loadSpecies(i, fromSd = true) {
   const sp = D.species[i]; st.sp = sp; st.idx = i; st.planes = D.planes;
   st.colors = sp.colors.map(hex2arr); st.pl = sp.planes.map(hex2arr);
-  st.undo = []; st.redo = []; st.log = []; st.t = 0; st.selection = null;
+  st.undo = []; st.redo = []; st.log = []; st.t = 0; st.selection = null; st.doc = null; st.ver = -1; st.dirty = false; st.lastSave = null; st.gen++;
   computeOutline();
   let sd = null; try { sd = fromSd && localStorage.getItem(sdKey(sp.dex)); } catch (e) {}
-  if (sd) { applyDoc(JSON.parse(sd)); logLine(`loaded ${sp.name} (#${sp.dex}) from SD: ${st.planes} planes, ${st.log.length} edits`); }
-  else logLine(`loaded ${sp.name} (#${sp.dex}) from pack: ${st.planes} planes, 2 frames`);
+  if (sd) { try { st.doc = toV2(JSON.parse(sd)); st.ver = st.doc.current; applyVersion(st.doc.versions[st.ver]);
+      logLine(`loaded ${sp.name} (#${sp.dex}) from SD: ${verLabel(st.doc.versions[st.ver])} of ${st.doc.versions.length}, ${st.planes} planes, ${st.log.length} edits`);
+    } catch (e) { st.doc = null; st.ver = -1; st.pl = sp.planes.map(hex2arr); st.planes = D.planes; logLine(`SD file of #${sp.dex} unreadable (${e.message}), using the pack`); } }
+  if (!st.doc) logLine(`loaded ${sp.name} (#${sp.dex}) from pack: ${st.planes} planes, 2 frames`);
   st.layer = Math.min(st.layer, st.planes - 1);
-  $('#species').selectedIndex = i; renderAll();
+  $('#species').selectedIndex = i; renderVersions(); renderAll();
 }
 // outline colours: the k darkest palette entries in use (index 0 is transparent and is always a boundary)
 let outlineSet = new Set();
@@ -226,12 +234,12 @@ function endStroke() {
   const pixels = [...s.px].map(([k, from]) => { const f = k / N | 0, i = k % N; return [i % W, i / W | 0, from, st.pl[f][i], f]; });
   const e = { t: ++st.t, tool: s.tool, layer: s.layer, frame: st.frame, pixels };
   const other = pixels.filter(p => p[4] !== st.frame).length;
-  st.undo.push(e); st.redo = []; st.log.push(e);
+  st.undo.push(e); st.redo = []; st.log.push(e); st.dirty = true;
   logLine(`${e.tool} f${st.frame}${s.layer >= 0 ? ' → P' + s.layer : ''}: ${pixels.length - other} px${other ? ` (+${other} propagated to f${1 - st.frame})` : ''}`); renderAll();
 }
 function apply(e, back) { for (const [x, y, from, to, f] of e.pixels) st.pl[f][y * W + x] = back ? from : to; if (e.dplanes) st.planes += back ? -e.dplanes : e.dplanes; }
-function undo() { const e = st.undo.pop(); if (!e) return; apply(e, true); st.redo.push(e); st.log.push({ t: ++st.t, tool: 'undo', of: e.t }); logLine(`undo #${e.t}`); renderAll(); }
-function redo() { const e = st.redo.pop(); if (!e) return; apply(e, false); st.undo.push(e); st.log.push({ t: ++st.t, tool: 'redo', of: e.t }); logLine(`redo #${e.t}`); renderAll(); }
+function undo() { const e = st.undo.pop(); if (!e) return; apply(e, true); st.redo.push(e); st.dirty = true; st.log.push({ t: ++st.t, tool: 'undo', of: e.t }); logLine(`undo #${e.t}`); renderAll(); }
+function redo() { const e = st.redo.pop(); if (!e) return; apply(e, false); st.undo.push(e); st.dirty = true; st.log.push({ t: ++st.t, tool: 'redo', of: e.t }); logLine(`redo #${e.t}`); renderAll(); }
 function logLine(s) { const l = $('#log'); const d = document.createElement('div'); d.textContent = `${String(st.t).padStart(3, '0')}  ${s}`; l.prepend(d); }
 
 // ---------- propagation to the other frame (the packer's rule: nearest pixel of the same colour) ----------
@@ -333,7 +341,7 @@ function addPlane() {
   const at = st.layer + 1, pixels = [];
   for (let f = 0; f < 2; f++) for (let i = 0; i < N; i++) { const v = st.pl[f][i]; if (v !== NONE && v >= at) { pixels.push([i % W, i / W | 0, v, v + 1, f]); st.pl[f][i] = v + 1; } }
   st.planes++; st.layer = at;
-  const e = { t: ++st.t, tool: 'add-plane', at, pixels, dplanes: 1 }; st.undo.push(e); st.redo = []; st.log.push({ ...e, pixels: [] });
+  const e = { t: ++st.t, tool: 'add-plane', at, pixels, dplanes: 1 }; st.undo.push(e); st.redo = []; st.dirty = true; st.log.push({ ...e, pixels: [] });
   logLine(`add plane P${at} (now ${st.planes}${st.planes > FIT_BOTH_FRAMES ? ' - more than ' + FIT_BOTH_FRAMES + ': the viewer keeps frame 0 only' : ''})`); renderAll();
 }
 function mergePlane() {
@@ -342,7 +350,7 @@ function mergePlane() {
   for (let f = 0; f < 2; f++) for (let i = 0; i < N; i++) { const v = st.pl[f][i]; if (v === NONE) continue;
     const nv = v === L ? into : v > L ? v - 1 : v; if (nv !== v) { pixels.push([i % W, i / W | 0, v, nv, f]); st.pl[f][i] = nv; } }
   st.planes--; st.layer = Math.min(into, st.planes - 1);
-  const e = { t: ++st.t, tool: 'merge-plane', layer: L, into, pixels, dplanes: -1 }; st.undo.push(e); st.redo = []; st.log.push({ ...e, pixels: [] });
+  const e = { t: ++st.t, tool: 'merge-plane', layer: L, into, pixels, dplanes: -1 }; st.undo.push(e); st.redo = []; st.dirty = true; st.log.push({ ...e, pixels: [] });
   logLine(`merge P${L} into P${into} (now ${st.planes})`); renderAll();
 }
 
@@ -396,7 +404,7 @@ function renderLayers() {
 const topC = $('#top'), tctx = topC.getContext('2d');
 let planeCache = {}, cacheGen = -1;
 function planeSprite(f, L) {
-  const gen = st.t + ':' + st.sp.dex + ':' + st.planes; if (cacheGen !== gen) { planeCache = {}; cacheGen = gen; }
+  const gen = st.t + ':' + st.sp.dex + ':' + st.planes + ':' + st.gen; if (cacheGen !== gen) { planeCache = {}; cacheGen = gen; }
   const key = f + ':' + L; if (planeCache[key]) return planeCache[key];
   const p = st.pl[f]; return planeCache[key] = spriteCanvas(st.sp, st.colors[f], i => p[i] === L);
 }
@@ -462,7 +470,7 @@ $('#autoprop').onclick = () => { st.autoprop = !st.autoprop; $('#autoprop').clas
 $('#tint').onchange = renderEdit; $('#f0').onclick = () => { st.frame = 0; renderAll(); }; $('#f1').onclick = () => { st.frame = 1; renderAll(); };
 $('#addplane').onclick = addPlane; $('#mergeplane').onclick = mergePlane;
 $('#undo').onclick = undo; $('#redo').onclick = redo; $('#dexbtn').onclick = () => openOverlay('dex');
-$('#reset').onclick = () => { try { localStorage.removeItem(sdKey(st.sp.dex)); } catch (e) {} loadSpecies(st.idx, false); };
+$('#reset').onclick = () => { try { localStorage.removeItem(sdKey(st.sp.dex)); } catch (e) {} loadSpecies(st.idx, false); $('#json').value = ''; $('#jsonsz').textContent = ''; };
 $('#view').onchange = e => { renderTop(); e.target.blur(); };
 $('#species').onchange = e => { save(true); loadSpecies(e.target.selectedIndex); e.target.blur(); };
 const held = new Set();
@@ -488,35 +496,92 @@ document.addEventListener('keydown', ev => {
   if (used) { ev.preventDefault(); renderAll(); }
 });
 
-// ---------- save / load (the SD file) ----------
+// ---------- save / load (the SD file: a version-2 document, one version per save of an author) ----------
 function runs(p) { const rows = []; for (let y = 0; y < H; y++) { const r = []; let x = 0; while (x < W) { const v = p[y * W + x]; if (v === NONE) { x++; continue; } let e = x; while (e < W && p[y * W + e] === v) e++; r.push([x, e, v]); x = e; } rows.push(r); } return rows; }
-function makeDoc() {
-  return { version: 1, kind: 'stereo-plane-edits', dex: st.sp.dex, name: st.sp.name, size: [W, H], planes: st.planes, frames: 2,
-    source: { sprite: `graphics/pokemon/${st.sp.name}/anim_front.png`, pack: 'complete-mons.bin' },
-    frames_planes: [0, 1].map(f => ({ rows: runs(st.pl[f]) })), edits: st.log, saved: new Date().toISOString(), notes: '' };
+const authorName = () => $('#author').value.trim();
+const vtime = v => Date.parse(v.saved || v.imported || '') || 0;
+const sameVersion = (a, b) => (a.author || '') === (b.author || '') && a.planes === b.planes && a.frames === b.frames && JSON.stringify(a.frames_planes) === JSON.stringify(b.frames_planes);
+function verLabel(v) { return `r${v.revision || 0} ${v.author || '(unknown)'} ${v.saved ? v.saved.slice(0, 16).replace('T', ' ') : '?'}${v.finalized ? ' [final]' : ''}`; }
+function newDoc() {
+  return { version: 2, kind: DOC_KIND, id: st.sp.dex, dex: st.sp.dex, name: st.sp.name, size: [W, H],
+    source: { picture: 'front', sprite: `graphics/pokemon/${st.sp.name}/anim_front.png`, pack: 'complete-mons.bin' }, versions: [], current: 0 };
 }
-function applyDoc(doc) {
-  st.planes = doc.planes;
-  for (let f = 0; f < 2; f++) { st.pl[f].fill(NONE); for (let y = 0; y < H; y++) for (const [s, e, v] of doc.frames_planes[f].rows[y]) for (let x = s; x < e; x++) st.pl[f][y * W + x] = v; }
-  st.log = doc.edits || []; st.t = st.log.reduce((m, e) => Math.max(m, e.t || 0), 0);
+function toV2(doc) { // a version-1 document becomes one version by author ""
+  if (!doc || doc.kind !== DOC_KIND) throw new Error('not a stereo-plane-edits document');
+  if (doc.version === 1) return { version: 2, kind: DOC_KIND, id: doc.dex, dex: doc.dex, name: doc.name, size: doc.size || [W, H],
+    source: { ...(doc.source || {}), picture: 'front' }, current: 0,
+    versions: [{ author: '', revision: 0, saved: doc.saved || null, finalized: false, planes: doc.planes, frames: doc.frames || doc.frames_planes.length,
+      frames_planes: doc.frames_planes, edits: doc.edits || [], notes: doc.notes || '', imported: doc.saved || new Date().toISOString() }] };
+  if (doc.version !== 2) throw new Error(`document version ${doc.version} unknown`);
+  if (!Array.isArray(doc.versions) || !doc.versions.length) throw new Error('document has no versions');
+  if (!(doc.current >= 0 && doc.current < doc.versions.length)) settle(doc);
+  return doc;
 }
-function save(quiet) {
-  if (!st.log.length && quiet) return;
-  const doc = makeDoc(), s = JSON.stringify(doc);
+function settle(doc) { // versions oldest first; current = the newest finalized one, else the newest
+  doc.versions.sort((a, b) => vtime(a) - vtime(b) || (a.revision || 0) - (b.revision || 0));
+  let c = -1; doc.versions.forEach((v, i) => { if (v.finalized) c = i; });
+  doc.current = c >= 0 ? c : doc.versions.length - 1; return doc;
+}
+function mergeInto(base, doc) { // doc's versions added to base (identical planes + author kept once, at the newer revision)
+  let added = 0;
+  for (const v of doc.versions) { const old = base.versions.find(o => sameVersion(o, v));
+    if (!old) { base.versions.push(v); added++; }
+    else if ((v.revision || 0) > (old.revision || 0) || (v.finalized && !old.finalized)) { old.revision = v.revision; old.saved = v.saved; old.finalized = v.finalized; if (v.edits && v.edits.length) old.edits = v.edits; } }
+  settle(base); return added;
+}
+function applyVersion(v) {
+  if (!v || !v.frames_planes || !v.frames_planes.length) throw new Error('version without planes');
+  st.planes = Math.max(2, Math.min(MAX_PLANES, v.planes));
+  for (let f = 0; f < 2; f++) { const fp = v.frames_planes[Math.min(f, v.frames_planes.length - 1)]; st.pl[f].fill(NONE); // a one-frame version shows its frame on both
+    for (let y = 0; y < H; y++) for (const [s, e, p] of (fp.rows[y] || [])) for (let x = s; x < e; x++) st.pl[f][y * W + x] = Math.min(p, st.planes - 1); }
+  st.log = (v.edits || []).slice(); st.t = st.log.reduce((m, e) => Math.max(m, (e && e.t) || 0), 0);
+  st.undo = []; st.redo = []; st.selection = null; st.dirty = false; st.gen++;
+  st.layer = Math.min(st.layer, st.planes - 1);
+}
+function renderVersions() {
+  const sel = $('#ver'), vs = st.doc ? st.doc.versions : []; sel.innerHTML = '';
+  if (!vs.length) { const o = document.createElement('option'); o.textContent = 'pack (no SD file)'; sel.appendChild(o); sel.disabled = true; }
+  else { sel.disabled = false; vs.forEach((v, i) => { const o = document.createElement('option'); o.value = i; o.textContent = verLabel(v) + (i === st.doc.current ? '  ← current' : ''); sel.appendChild(o); }); sel.value = String(st.ver); }
+  const cur = vs[st.ver]; $('#final').checked = !!(cur && cur.finalized && (cur.author || '') === authorName()); // another's final version is not yours
+}
+function persist() { // the document to the (mocked) SD card and the panel
+  const doc = st.doc, s = JSON.stringify(doc);
   try { localStorage.setItem(sdKey(st.sp.dex), s); } catch (e) {}
   $('#json').value = JSON.stringify(doc, (k, v) => (k === 'pixels' && v.length > 40) ? v.slice(0, 40).concat([`…${v.length - 40} more`]) : v, 1).replace(/\n\s*(\d|\[|\]|"…)/g, (m, c) => c);
-  $('#jsonsz').textContent = `(${(s.length / 1024).toFixed(1)} kB → sdmc:/3ds/emerald3ds/sprites/${String(st.sp.dex).padStart(3, '0')}.json)`;
-  st.lastSave = s; logLine(`(saved to SD, ${(s.length / 1024).toFixed(1)} kB)`);
+  $('#jsonsz').textContent = `(${(s.length / 1024).toFixed(1)} kB, ${doc.versions.length} version${doc.versions.length === 1 ? '' : 's'} → sdmc:/3ds/emerald3ds/sprites/${String(st.sp.dex).padStart(3, '0')}.json)`;
+  st.lastSave = s; return s;
+}
+function save(quiet) { // Save: updates the shown version when it is the author's, else adds one for the author
+  if (quiet && !st.dirty) return;
+  const author = authorName(), now = new Date().toISOString(), doc = st.doc || (st.doc = newDoc()), cur = doc.versions[st.ver];
+  const v = { author, revision: 1, saved: now, finalized: $('#final').checked, planes: st.planes, frames: 2,
+    frames_planes: [0, 1].map(f => ({ rows: runs(st.pl[f]) })), edits: st.log.slice(), notes: '', imported: now };
+  let target, what;
+  if (cur && (cur.author || '') === author) { Object.assign(cur, v, { revision: (cur.revision || 0) + 1, notes: cur.notes || '', imported: cur.imported || now }); target = cur; what = 'updated'; }
+  else { v.revision = 1 + Math.max(0, ...doc.versions.filter(o => (o.author || '') === author).map(o => o.revision || 0)); doc.versions.push(v); target = v; what = 'added'; }
+  settle(doc); st.ver = doc.versions.indexOf(target); st.dirty = false;
+  const s = persist(); renderVersions();
+  logLine(`(saved to SD${quiet ? ' on the way out' : ''}: ${verLabel(target)} ${what}, ${doc.versions.length} in all, ${(s.length / 1024).toFixed(1)} kB${author ? '' : ' - no author set'})`);
 }
 $('#save').onclick = () => save();
-$('#download').onclick = () => { if (!st.lastSave) save(); const b = new Blob([st.lastSave], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `${String(st.sp.dex).padStart(3, '0')}_${st.sp.name}.json`; a.click(); };
+$('#author').oninput = () => { try { localStorage.setItem(AUTHOR_KEY, authorName()); } catch (e) {} if (!st.dirty) renderVersions(); };
+$('#final').onchange = e => { st.dirty = true; logLine(`${e.target.checked ? 'finalized' : 'not finalized'} (on the next save)`); e.target.blur(); };
+$('#ver').onchange = e => { const want = st.doc && st.doc.versions[+e.target.value]; e.target.blur(); if (!want) return;
+  save(true); st.ver = st.doc.versions.indexOf(want); applyVersion(want); renderVersions();
+  logLine(`version ${verLabel(want)}: ${st.planes} planes, ${st.log.length} edits`); renderAll(); };
+$('#download').onclick = () => { if (!st.doc) save(); const b = new Blob([st.lastSave || JSON.stringify(st.doc)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `${String(st.sp.dex).padStart(3, '0')}_${st.sp.name}.json`; a.click(); };
 $('#load').onclick = () => $('#file').click();
-$('#file').onchange = ev => { const fr = new FileReader(); fr.onload = () => { try { const doc = JSON.parse(fr.result);
-  const i = D.species.findIndex(s => s.dex === doc.dex); if (i < 0) return logLine(`load: #${doc.dex} not in this prototype's data`);
-  loadSpecies(i, false); applyDoc(doc); logLine(`loaded ${doc.name} edits from file (${st.log.length} entries)`); renderAll();
+$('#file').onchange = ev => { const fr = new FileReader(); fr.onload = () => { try { const doc = toV2(JSON.parse(fr.result));
+  if (doc.id & 0xC000) return logLine(`load: ${doc.name || doc.id} is a back / trainer / player picture; this prototype edits fronts`);
+  const dex = doc.dex ?? doc.id, i = D.species.findIndex(s => s.dex === dex); if (i < 0) return logLine(`load: #${dex} not in this prototype's data`);
+  save(true); loadSpecies(i); // the SD file there, if any, takes the file's versions
+  const added = st.doc ? mergeInto(st.doc, doc) : (st.doc = settle(doc)).versions.length;
+  st.ver = st.doc.current; applyVersion(st.doc.versions[st.ver]); persist(); renderVersions();
+  logLine(`loaded ${doc.name} from file: ${added} new version${added === 1 ? '' : 's'}, showing ${verLabel(st.doc.versions[st.ver])} (${st.log.length} edits)`); renderAll();
 } catch (e) { logLine('load failed: ' + e.message); } }; fr.readAsText(ev.target.files[0]); ev.target.value = ''; };
 
 // ---------- boot ----------
+try { $('#author').value = localStorage.getItem(AUTHOR_KEY) || ''; } catch (e) {}
 for (const s of D.species) { const o = document.createElement('option'); o.textContent = `#${String(s.dex).padStart(3, '0')} ${s.name}`; $('#species').appendChild(o); }
 loadSpecies(0);
 })();

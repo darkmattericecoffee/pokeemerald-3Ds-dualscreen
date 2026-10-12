@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <time.h>
 #include "3ds_platform.h"
 #include "3ds_video.h"
 #include "3ds_input.h"
@@ -78,6 +79,7 @@
 #define ANIM_PERIOD 150
 #define ANIM_HOLD 14
 #define DEPTH_KEY "stereo_depth"
+#define EDIT_DEPTH_KEY "edit_depth"
 #define DEPTH_STEP 25
 #define DEPTH_MAX 300
 /* How many planes the file's are merged into (PLANES_KEY): fewer are
@@ -88,6 +90,10 @@
 /* Four planes 4.8 sprite pixels apart shift up to about three sprite pixels
  * between the front and the back at 100%: the far cards go on that far. */
 #define SKIRT 4
+/* A back's depth against a front's (DepthOf; 3ds_stereo_battle.c too). */
+#define BACK_DEPTH 0.6f
+/* The editor's animation: each frame as long as the others. */
+#define EDIT_ANIM_STEP 30
 
 /* A planes file: its header and index, resident. The viewer's own (the
  * Pokémon's fronts) and the battle's other pictures (the backs file). */
@@ -120,6 +126,16 @@ static unsigned sEditPlane;
 static unsigned sEditFrame;
 static bool sEditAnimate, sEditOutline;
 static uint32_t sEditMark;
+/* The editor's other views: every pixel in its plane's colour (composed
+ * from sTinted instead of the picture), and the battle's. */
+static bool sEditLayers, sEditBattle;
+static uint16_t sTinted[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
+/* The editor's own depth (CtrStereoMon_Depth), -1 until read. */
+static int sEditDepth = -1;
+/* The shown picture's edit file's trailer (CtrStereoMon_EditMeta). */
+static CtrStereoEditMeta sMeta;
+/* The picture's opaque pixels' extent over all its frames: its feet. */
+static int sBoxLeft, sBoxRight, sBoxBottom;
 typedef struct { uint8_t x, y, len; } OutlineRun;
 static OutlineRun sRuns[2048];
 static unsigned sRunCount, sRunsVersion = 1, sPlanesVersion;
@@ -330,6 +346,19 @@ bool CtrStereoMon_ShowId(uint16_t id, const uint16_t *picture, unsigned frames, 
     if (frames > CTR_STEREO_MON_MAX_FRAMES) frames = CTR_STEREO_MON_MAX_FRAMES;
     memcpy(sPicture, picture, frames * sizeof(sPicture[0]));
     sFrames = frames;
+    sBoxLeft = DIM;
+    sBoxRight = sBoxBottom = -1;
+    for (unsigned f = 0; f < frames; ++f)
+        for (int i = 0; i < DIM * DIM; ++i)
+            if (sPicture[f][i] != 0)
+            {
+                int x = i % DIM, y = i / DIM;
+
+                if (x < sBoxLeft) sBoxLeft = x;
+                if (x > sBoxRight) sBoxRight = x;
+                if (y > sBoxBottom) sBoxBottom = y;
+            }
+    if (sBoxRight < 0) sBoxLeft = 0, sBoxRight = sBoxBottom = DIM - 1;
     sId = id;
     sShown = pf->header;
     sShown.frames = (uint8_t)entryFrames;
@@ -391,6 +420,12 @@ void CtrStereoMon_Press(unsigned keys)
 
 #define EDIT_HEADER_BYTES 16
 #define EDIT_FRAME_BYTES (DIM * DIM / 2)
+/* The trailer after the frames (3ds_stereo_mon.h): who, when, how far. */
+#define META_MAGIC "EM3DSMD1"
+#define META_BYTES 32
+#define META_FINAL 1
+/* 1970-01-01 to 2000-01-01, in seconds: the trailer's epoch. */
+#define META_EPOCH 946684800u
 
 #define EDIT_DIR "sdmc:/3ds/emerald3ds/" CTR_STEREO_EDIT_DIR
 /* Which Pokémon have edit files (CtrStereoMon_EditScan). */
@@ -417,16 +452,18 @@ static FILE *OpenEdit(uint16_t id, const char *ext, const char *mode)
     return fopen(path, mode);
 }
 
-/* The edit marks: a bit per front (by national number) and per backs entry (by index). */
+/* The edit marks: a bit per front (by national number) and per backs
+ * entry (by index); the same again for the finished ones. */
 static uint8_t sBackMarks[(CTR_STEREO_MON_MAX_COUNT + 7) / 8];
+static uint8_t sFinalMarks[2][(CTR_STEREO_MON_MAX_COUNT + 7) / 8];
 
-static uint8_t *MarkOf(uint16_t id, unsigned *bit)
+static uint8_t *MarkOf(uint16_t id, unsigned *bit, bool final)
 {
     if ((id & 0xC000) == 0)
     {
         if (id >= CTR_STEREO_MON_MAX_COUNT) return NULL;
         *bit = id;
-        return sEditMarks;
+        return final ? sFinalMarks[0] : sEditMarks;
     }
     else
     {
@@ -435,18 +472,88 @@ static uint8_t *MarkOf(uint16_t id, unsigned *bit)
         FileOf(id, &index);
         if (index < 0) return NULL;
         *bit = (unsigned)index;
-        return sBackMarks;
+        return final ? sFinalMarks[1] : sBackMarks;
     }
 }
 
-static void SetMark(uint16_t id, bool on)
+static void SetMarkOf(uint16_t id, bool final, bool on)
 {
     unsigned bit;
-    uint8_t *marks = MarkOf(id, &bit);
+    uint8_t *marks = MarkOf(id, &bit, final);
 
     if (marks == NULL) return;
     if (on) marks[bit >> 3] |= (uint8_t)(1 << (bit & 7));
     else marks[bit >> 3] &= (uint8_t)~(1 << (bit & 7));
+}
+
+static void SetMark(uint16_t id, bool on) { SetMarkOf(id, false, on); }
+
+/* An edit file's trailer, after its `frames` frames, into `meta`; false
+ * (and `meta` empty) for a file without one. */
+static bool ReadMeta(FILE *f, unsigned frames, CtrStereoEditMeta *meta)
+{
+    uint8_t t[META_BYTES];
+
+    memset(meta, 0, sizeof(*meta));
+    if (fseek(f, EDIT_HEADER_BYTES + (long)frames * EDIT_FRAME_BYTES, SEEK_SET) != 0
+        || fread(t, 1, sizeof(t), f) != sizeof(t) || memcmp(t, META_MAGIC, 8) != 0)
+        return false;
+    meta->finalized = (t[8] & META_FINAL) != 0;
+    meta->revision = (uint16_t)(t[10] | (t[11] << 8));
+    meta->saved = (uint32_t)t[12] | ((uint32_t)t[13] << 8) | ((uint32_t)t[14] << 16) | ((uint32_t)t[15] << 24);
+    memcpy(meta->author, t + 16, CTR_STEREO_EDIT_AUTHOR);
+    meta->author[CTR_STEREO_EDIT_AUTHOR] = 0;
+    return true;
+}
+
+/* ── The author ─────────────────────────────────────────────────────── */
+
+static char sAuthor[CTR_STEREO_EDIT_AUTHOR + 1];
+static bool sAuthorRead;
+
+/* Capitals, digits, spaces and a few signs, at most 16. */
+static void CleanName(const char *in, char *out)
+{
+    unsigned n = 0;
+
+    for (; *in && n < CTR_STEREO_EDIT_AUTHOR; ++in)
+    {
+        char c = *in;
+
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '.' || c == '-' || c == '_')
+            out[n++] = c;
+    }
+    while (n && out[n - 1] == ' ') --n;
+    out[n] = 0;
+}
+
+const char *CtrStereoMon_Author(void)
+{
+    FILE *f;
+
+    if (sAuthorRead) return sAuthor;
+    sAuthorRead = true;
+    f = fopen(EDIT_DIR "/author.txt", "r");
+    if (f)
+    {
+        char line[64] = {0};
+
+        if (fgets(line, sizeof(line), f)) CleanName(line, sAuthor);
+        fclose(f);
+    }
+    if (sAuthor[0] == 0 && R_SUCCEEDED(cfguInit()))
+    {
+        /* The console's user name: UTF-16, ten characters at most. */
+        uint16_t wide[14] = {0};
+        char narrow[16] = {0};
+
+        if (R_SUCCEEDED(CFGU_GetConfigInfoBlk2(0x1C, 0x000A0000, wide)))
+            for (unsigned i = 0; i < 10 && wide[i]; ++i) narrow[i] = wide[i] < 128 ? (char)wide[i] : '?';
+        cfguExit();
+        CleanName(narrow, sAuthor);
+    }
+    return sAuthor;
 }
 
 /* An id's edit file read: its planes into `out`, its counts; false without one. */
@@ -492,6 +599,7 @@ static bool LoadEdit(uint16_t id)
     unsigned planes, frames;
     FILE *f = OpenEdit(id, "bin", "rb");
 
+    memset(&sMeta, 0, sizeof(sMeta));
     if (f == NULL) return false;
     fclose(f);
     if (!ReadEdit(id, sPlanes, sizeof(sPlanes), &planes, &frames))
@@ -511,7 +619,14 @@ static bool LoadEdit(uint16_t id)
     }
     sShown.planes = (uint8_t)planes;
     sShown.frames = (uint8_t)frames;
-    CtrLog_Write(CTR_LOG_VIDEO, "stereo: id %04x edited planes from the SD card (%u planes, %u frames)", id, planes, frames);
+    f = OpenEdit(id, "bin", "rb");
+    if (f)
+    {
+        ReadMeta(f, frames, &sMeta);
+        fclose(f);
+    }
+    CtrLog_Write(CTR_LOG_VIDEO, "stereo: id %04x edited planes from the SD card (%u planes, %u frames, r%u by %s%s)", id,
+                 planes, frames, sMeta.revision, sMeta.author[0] ? sMeta.author : "?", sMeta.finalized ? ", final" : "");
     return true;
 }
 
@@ -553,22 +668,62 @@ void CtrStereoMon_SetEditing(bool editing, unsigned plane)
     sEditPlane = plane;
 }
 
-int CtrStereoMon_Depth(void) { return sDepth < 0 ? 100 : sDepth; }
+int CtrStereoMon_Depth(void)
+{
+    if (sEditDepth < 0)
+    {
+        sEditDepth = CtrSettings_GetInt(EDIT_DEPTH_KEY, CTR_STEREO_EDIT_DEPTH_MAX);
+        if (sEditDepth < 0 || sEditDepth > CTR_STEREO_EDIT_DEPTH_MAX) sEditDepth = CTR_STEREO_EDIT_DEPTH_MAX;
+    }
+    return sEditDepth;
+}
 
 void CtrStereoMon_SetDepth(int percent)
 {
     if (percent < 0) percent = 0;
-    if (percent > DEPTH_MAX) percent = DEPTH_MAX;
-    sDepth = percent;
-    CtrSettings_SetInt(DEPTH_KEY, sDepth);
+    if (percent > CTR_STEREO_EDIT_DEPTH_MAX) percent = CTR_STEREO_EDIT_DEPTH_MAX;
+    sEditDepth = percent;
+    CtrSettings_SetInt(EDIT_DEPTH_KEY, sEditDepth);
 }
 
-void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark)
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, bool layers, bool battle)
 {
     sEditFrame = frame;
     sEditAnimate = animate;
     sEditOutline = outline;
     sEditMark = C2D_Color32(((mark >> 11) & 31) * 255 / 31, ((mark >> 5) & 63) * 255 / 63, (mark & 31) * 255 / 31, 230);
+    if (layers != sEditLayers) sTexReady = false;
+    sEditLayers = layers;
+    sEditBattle = battle;
+}
+
+const CtrStereoEditMeta *CtrStereoMon_EditMeta(void) { return &sMeta; }
+
+void CtrStereoMon_SetFinalized(bool finalized) { sMeta.finalized = finalized; }
+
+bool CtrStereoMon_IsFinal(uint16_t id)
+{
+    unsigned bit;
+    const uint8_t *marks;
+
+    if (!sEditScanned) CtrStereoMon_EditScan();
+    marks = MarkOf(id, &bit, true);
+    return marks != NULL && ((marks[bit >> 3] >> (bit & 7)) & 1);
+}
+
+void CtrStereoMon_SetAuthor(const char *name)
+{
+    FILE *f;
+
+    CleanName(name ? name : "", sAuthor);
+    sAuthorRead = true;
+    mkdir(EDIT_DIR, 0777);
+    f = fopen(EDIT_DIR "/author.txt", "w");
+    if (f)
+    {
+        fprintf(f, "%s\n", sAuthor);
+        fclose(f);
+    }
 }
 
 /* Whether picture pixel (x, y) of the frame is on the plane. */
@@ -642,15 +797,37 @@ bool CtrStereoMon_SaveEdit(void)
     header[11] = (uint8_t)frames;
     header[12] = DIM;
     header[14] = DIM;
-    ok = fwrite(header, 1, sizeof(header), f) == sizeof(header)
-      && fwrite(sPlanes, 1, frames * EDIT_FRAME_BYTES, f) == frames * EDIT_FRAME_BYTES;
+    {
+        uint8_t t[META_BYTES] = {0};
+        time_t now = time(NULL);
+        uint32_t saved = (uint32_t)now > META_EPOCH ? (uint32_t)now - META_EPOCH : 0;
+        uint16_t revision = (uint16_t)(sMeta.revision + 1);
+
+        memcpy(t, META_MAGIC, 8);
+        t[8] = sMeta.finalized ? META_FINAL : 0;
+        t[10] = (uint8_t)revision;
+        t[11] = (uint8_t)(revision >> 8);
+        for (unsigned b = 0; b < 4; ++b) t[12 + b] = (uint8_t)(saved >> (8 * b));
+        memcpy(t + 16, CtrStereoMon_Author(), strlen(CtrStereoMon_Author()));
+        ok = fwrite(header, 1, sizeof(header), f) == sizeof(header)
+          && fwrite(sPlanes, 1, frames * EDIT_FRAME_BYTES, f) == frames * EDIT_FRAME_BYTES
+          && fwrite(t, 1, sizeof(t), f) == sizeof(t);
+        if (ok)
+        {
+            sMeta.revision = revision;
+            sMeta.saved = saved;
+            snprintf(sMeta.author, sizeof(sMeta.author), "%s", CtrStereoMon_Author());
+        }
+    }
     fclose(f);
     if (ok)
     {
         sEdited = true;
         SetMark(sId, true);
+        SetMarkOf(sId, true, sMeta.finalized);
     }
-    CtrLog_Write(ok ? CTR_LOG_FS : CTR_LOG_ERROR, "stereo: id %04x edit %s", sId, ok ? "saved" : "NOT saved");
+    CtrLog_Write(ok ? CTR_LOG_FS : CTR_LOG_ERROR, "stereo: id %04x edit %s (r%u by %s%s)", sId, ok ? "saved" : "NOT saved",
+                 sMeta.revision, sMeta.author, sMeta.finalized ? ", final" : "");
     return ok;
 }
 
@@ -671,6 +848,8 @@ bool CtrStereoMon_ResetEdit(void)
     sShown.frames = (uint8_t)entryFrames;
     sEdited = false;
     SetMark(sId, false);
+    SetMarkOf(sId, true, false);
+    memset(&sMeta, 0, sizeof(sMeta));
     sTexReady = false;
     return true;
 }
@@ -682,6 +861,7 @@ void CtrStereoMon_EditScan(void)
 
     memset(sEditMarks, 0, sizeof(sEditMarks));
     memset(sBackMarks, 0, sizeof(sBackMarks));
+    memset(sFinalMarks, 0, sizeof(sFinalMarks));
     sEditScanned = true;
     if (d == NULL) return;
     while ((e = readdir(d)) != NULL)
@@ -693,7 +873,20 @@ void CtrStereoMon_EditScan(void)
         else if (e->d_name[0] == 'p') kind = CTR_STEREO_ID_PLAYER, k = 1;
         for (; e->d_name[k] >= '0' && e->d_name[k] <= '9'; ++k) n = n * 10 + (unsigned)(e->d_name[k] - '0');
         if (k > (kind ? 1u : 0u) && strcmp(e->d_name + k, ".bin") == 0 && n < 0x4000 && (kind || n > 0))
-            SetMark((uint16_t)(kind | n), true);
+        {
+            uint16_t id = (uint16_t)(kind | n);
+            uint8_t header[EDIT_HEADER_BYTES];
+            CtrStereoEditMeta meta;
+            FILE *f;
+
+            SetMark(id, true);
+            /* Its trailer, for the finished mark. */
+            f = OpenEdit(id, "bin", "rb");
+            if (f == NULL) continue;
+            if (fread(header, 1, sizeof(header), f) == sizeof(header) && ReadMeta(f, header[11], &meta) && meta.finalized)
+                SetMarkOf(id, true, true);
+            fclose(f);
+        }
     }
     closedir(d);
 }
@@ -704,7 +897,7 @@ bool CtrStereoMon_HasEdit(uint16_t id)
     const uint8_t *marks;
 
     if (!sEditScanned) CtrStereoMon_EditScan();
-    marks = MarkOf(id, &bit);
+    marks = MarkOf(id, &bit, false);
     return marks != NULL && ((marks[bit >> 3] >> (bit & 7)) & 1);
 }
 
@@ -770,12 +963,47 @@ static bool TextureReady(void)
 
 /* The next tiles into the texture; a Pokémon is drawn only once all its
  * tiles are there. */
+/* The editor's VIEW LAYERS: every pixel in its plane's colour, its own
+ * light and shade kept a little (RGBA5551, as the picture). */
+static void TintLayers(void)
+{
+    static const uint16_t colours[CTR_STEREO_EDIT_PLANES] = CTR_STEREO_EDIT_COLOURS;
+
+    for (unsigned f = 0; f < sFrames && f < sTexFrames; ++f)
+        for (unsigned i = 0; i < DIM * DIM; ++i)
+        {
+            uint16_t p = sPicture[f][i];
+            unsigned pf = f < sShown.frames ? f : sShown.frames - 1u;
+            unsigned k = pf * DIM * DIM + i, v = (sPlanes[k >> 1] >> ((k & 1) * 4)) & 15, r, g, b, light, cr, cg, cb;
+
+            if (p == 0 || v >= CTR_STEREO_EDIT_PLANES || v >= sShown.planes)
+            {
+                sTinted[f][i] = p;
+                continue;
+            }
+            r = (p >> 11) & 31;
+            g = (p >> 6) & 31;
+            b = (p >> 1) & 31;
+            light = (2 * r + 5 * g + b) / 8; /* 0..31 */
+            cr = (colours[v] >> 11) & 31;
+            cg = ((colours[v] >> 5) & 63) >> 1;
+            cb = colours[v] & 31;
+            /* Three quarters the plane's colour at the pixel's light, a quarter its own. */
+            r = (cr * (12 + light) / 43 * 3 + r) / 4;
+            g = (cg * (12 + light) / 43 * 3 + g) / 4;
+            b = (cb * (12 + light) / 43 * 3 + b) / 4;
+            sTinted[f][i] = (uint16_t)((r << 11) | (g << 6) | (b << 1) | 1);
+        }
+}
+
 static void ComposeSome(void)
 {
     unsigned groups = Groups();
+    const bool tinted = sEditing && sEditLayers;
 
+    if (tinted && sComposed == 0) TintLayers();
     for (unsigned n = 0; n < TILES_PER_FRAME && sComposed < sToCompose; ++n, ++sComposed)
-        CtrStereoMon_ComposeTile(sPicture[sComposed / groups], sPlanes, &sShown, sComposed / groups, groups,
+        CtrStereoMon_ComposeTile(tinted ? sTinted[sComposed / groups] : sPicture[sComposed / groups], sPlanes, &sShown, sComposed / groups, groups,
                                  sComposed % groups, sTex.data, TEX_MAX_W,
                                  (sComposed % sTexCols) * DIM, (sComposed / sTexCols) * DIM, SKIRT);
     C3D_TexFlush(&sTex);
@@ -805,6 +1033,8 @@ static const char *const sGlyphs[] = {
     /* . - : < > ^ v % / */
     "000000000000010", "000000111000000", "000010000010000", "001010100010001", "100010001010100",
     "010101000000000", "000000000101010", "101001010100101", "001001010100100",
+    /* + */
+    "000010111010000",
 };
 
 static int GlyphOf(char c)
@@ -823,6 +1053,7 @@ static int GlyphOf(char c)
     case 'v': return 42;
     case '%': return 43;
     case '/': return 44;
+    case '+': return 45;
     default: return -1;
     }
 }
@@ -845,47 +1076,47 @@ static void DrawText(float x, float y, const char *text, uint32_t colour)
     DrawTextSized(x, y, text, colour, GLYPH_PIXEL);
 }
 
-/* Lines in a column beside the picture (which spans 104..296 at 3x): at
- * the glyph size, or smaller when a line would run into it. */
-static void DrawColumn(bool right, float y, const char *const *lines, unsigned count, uint32_t colour)
-{
-    const float width = CENTRE_X - DIM / 2 * SCALE - 16;
-    int px = GLYPH_PIXEL;
-
-    for (unsigned i = 0; i < count; ++i)
-        if (strlen(lines[i]) * 4 * GLYPH_PIXEL > width) px = 1;
-    for (unsigned i = 0; i < count; ++i, y += 6 * px)
-        DrawTextSized(right ? CTR_GAME_WIDTH - 8 - (float)strlen(lines[i]) * 4 * px : 8, y, lines[i], colour, px);
-}
-
 /* ── Drawing ─────────────────────────────────────────────────────────── */
+
+/* A back's stack is shallower: seen from behind and drawn large at the
+ * bottom of the battle, it tore apart at a front's depth. */
+static float DepthOf(uint16_t id)
+{
+    return (id & 0xC000) == CTR_STEREO_ID_BACK || (id & 0xC000) == CTR_STEREO_ID_PLAYER ? BACK_DEPTH : 1.0f;
+}
 
 /* The stack of planes for one eye at `scale` screen pixels per sprite
  * pixel, `tint` over every plane or NULL. */
-static void DrawPlanes(float sign, float slider, unsigned frame, const C2D_ImageTint *tint, float scale)
+/* The stack with its top-left corner at (left, top), each plane moved
+ * `shift` screen pixels (with the eye's sign) per sprite pixel of depth. */
+static void DrawStack(float left, float top, float scale, float shift, unsigned frame, const C2D_ImageTint *tint)
 {
     const unsigned groups = Groups();
     const float pivot = PIVOT_FRACTION * (groups - 1);
     /* Thicker slices stand further apart: the stack keeps its depth. */
     const float spacing = DEPTH_SPAN / (float)(groups - 1);
-    const int percent = !sGallery && sDepth > DEX_DEPTH_MAX ? DEX_DEPTH_MAX : sDepth;
-    const float depth = slider * percent / 100.0f * PARALLAX;
-
 
     if (!(sTexReady && sToCompose && sComposed == sToCompose)) return;
     for (unsigned plane = 0; plane < groups; ++plane)
     {
         /* The plane's depth, towards the viewer, in sprite pixels. */
         float z = (plane - pivot) * spacing;
-        float x = CENTRE_X - DIM / 2 * scale + sign * depth * z;
-        float y = CENTRE_Y - DIM / 2 * scale;
+        float x = left + shift * z;
         C2D_Image image = {&sTex, &sTiles[(frame < sTexFrames ? frame : 0) * groups + plane]};
 
         sPlaneX[plane] = x;
-        sPlaneY = y;
+        sPlaneY = top;
         sPlaneScale = scale;
-        C2D_DrawImageAt(image, x, y, 0, tint, scale, scale);
+        C2D_DrawImageAt(image, x, top, 0, tint, scale, scale);
     }
+}
+
+static void DrawPlanes(float sign, float slider, unsigned frame, const C2D_ImageTint *tint, float scale)
+{
+    const int percent = sEditing ? CtrStereoMon_Depth() : !sGallery && sDepth > DEX_DEPTH_MAX ? DEX_DEPTH_MAX : sDepth;
+    const float depth = slider * percent / 100.0f * PARALLAX * DepthOf(sId);
+
+    DrawStack(CENTRE_X - DIM / 2 * scale, CENTRE_Y - DIM / 2 * scale, scale, sign * depth, frame, tint);
 }
 
 
@@ -1012,6 +1243,282 @@ static void DrawDex(float sign, float slider, unsigned frame)
     DrawText(x0 + w - 6 - GLYPH_ADVANCE * 9, y0 + h - 12, "X EDIT 3D", C2D_Color32(180, 200, 170, 255));
 }
 
+/* ── The editor's top screen ────────────────────────────────────────── */
+
+/* A disc (an ellipse `ry` tall) of stacked bars: the ellipse primitive
+ * draws a box in the emulator. */
+static void DrawOval(float cx, float cy, float rx, float ry, uint32_t colour)
+{
+    for (int r = -(int)ry; r <= (int)ry; ++r)
+    {
+        float half = rx * sqrtf(1.0f - (float)(r * r) / (ry * ry));
+
+        if (half > 0.0f) C2D_DrawRectSolid(cx - half, cy + r, 0, 2 * half, 1, colour);
+    }
+}
+
+/* The 3DS's own controls as little pictures beside the help: what is to be
+ * pressed looks like the thing itself. */
+enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_PAD, BTN_CSTICK, BTN_DPAD_UD, BTN_DPAD_LR, BTN_START, BTN_SELECT, BTN_TOUCH };
+#define BTN_SIZE 18
+
+static void DrawButton(int kind, float x, float y, uint32_t ink, uint32_t face)
+{
+    const float cx = x + BTN_SIZE / 2.0f, cy = y + BTN_SIZE / 2.0f;
+
+    switch (kind)
+    {
+    case BTN_A: case BTN_B: case BTN_X: case BTN_Y:
+    {
+        /* A round face button with its letter. */
+        char letter[2] = {"ABXY"[kind - BTN_A], 0};
+
+        DrawOval(cx, cy, 8.5f, 8.5f, ink);
+        DrawOval(cx, cy, 7.0f, 7.0f, face);
+        DrawTextSized(cx - 3, cy - 5, letter, ink, 2);
+        break;
+    }
+    case BTN_L: case BTN_R:
+    {
+        /* A shoulder button: wide, its outer top corner rounded. */
+        bool left = kind == BTN_L;
+
+        C2D_DrawRectSolid(x, y + 3, 0, BTN_SIZE, 13, ink);
+        C2D_DrawRectSolid(left ? x + 3 : x, y + 1, 0, BTN_SIZE - 3, 2, ink);
+        C2D_DrawRectSolid(x + 1.5f, y + 4.5f, 0, BTN_SIZE - 3, 10, face);
+        DrawTextSized(cx - 3, y + 5, left ? "L" : "R", ink, 2);
+        break;
+    }
+    case BTN_PAD:
+        /* The Circle Pad: a ring, its cap. */
+        DrawOval(cx, cy, 8.5f, 8.5f, ink);
+        DrawOval(cx, cy, 7.0f, 7.0f, face);
+        DrawOval(cx, cy, 4.5f, 4.5f, ink);
+        break;
+    case BTN_CSTICK:
+        DrawOval(cx, cy, 5.5f, 5.5f, ink);
+        DrawOval(cx, cy, 4.0f, 4.0f, face);
+        DrawTextSized(cx - 1.5f, cy - 2.5f, "C", ink, 1);
+        break;
+    case BTN_DPAD_UD: case BTN_DPAD_LR:
+    {
+        /* The cross, the arms that are meant lit. */
+        const uint32_t lit = C2D_Color32(255, 214, 64, 255);
+        bool ud = kind == BTN_DPAD_UD;
+
+        C2D_DrawRectSolid(cx - 3, y, 0, 6, BTN_SIZE, ink);
+        C2D_DrawRectSolid(x, cy - 3, 0, BTN_SIZE, 6, ink);
+        C2D_DrawRectSolid(cx - 1.5f, y + 1.5f, 0, 3, BTN_SIZE - 3, face);
+        C2D_DrawRectSolid(x + 1.5f, cy - 1.5f, 0, BTN_SIZE - 3, 3, face);
+        if (ud)
+        {
+            C2D_DrawRectSolid(cx - 1.5f, y + 1.5f, 0, 3, 5, lit);
+            C2D_DrawRectSolid(cx - 1.5f, y + BTN_SIZE - 6.5f, 0, 3, 5, lit);
+        }
+        else
+        {
+            C2D_DrawRectSolid(x + 1.5f, cy - 1.5f, 0, 5, 3, lit);
+            C2D_DrawRectSolid(x + BTN_SIZE - 6.5f, cy - 1.5f, 0, 5, 3, lit);
+        }
+        break;
+    }
+    case BTN_START: case BTN_SELECT:
+        /* A pill with its name. */
+        C2D_DrawRectSolid(x - 6, cy - 4, 0, BTN_SIZE + 12, 9, ink);
+        C2D_DrawRectSolid(x - 5, cy - 3, 0, BTN_SIZE + 10, 7, face);
+        DrawTextSized(cx - (kind == BTN_START ? 10 : 12), cy - 2, kind == BTN_START ? "START" : "SELECT", ink, 1);
+        break;
+    default:
+        /* The stylus on the touch screen. */
+        C2D_DrawRectSolid(x + 1, y + 4, 0, BTN_SIZE - 2, 12, ink);
+        C2D_DrawRectSolid(x + 2.5f, y + 5.5f, 0, BTN_SIZE - 5, 9, face);
+        C2D_DrawRectSolid(cx + 1, y, 0, 2, 9, ink);
+        break;
+    }
+}
+
+/* A line of help: the control, then its words (one or two lines) beside
+ * it, the left-hand controls down the left, the right-hand ones down the
+ * right with the control at the screen's edge. */
+typedef struct { int button, button2; const char *line1, *line2; } Help;
+#define HELP_ROW 24
+
+static void DrawHelp(bool right, float y, const Help *help, unsigned count)
+{
+    const uint32_t ink = C2D_Color32(225, 230, 240, 255), face = C2D_Color32(44, 46, 54, 255);
+    const uint32_t words = C2D_Color32(200, 205, 215, 255);
+
+    for (unsigned i = 0; i < count; ++i, y += HELP_ROW)
+    {
+        const Help *h = &help[i];
+        float bx = right ? CTR_GAME_WIDTH - 6 - BTN_SIZE : 6, tx;
+        int n1 = (int)strlen(h->line1), n2 = h->line2 ? (int)strlen(h->line2) : 0, wide = n1 > n2 ? n1 : n2;
+        float ty = h->line2 ? y : y + 4;
+
+        DrawButton(h->button, bx, y, ink, face);
+        if (h->button2 >= 0)
+        {
+            /* A control together with another: "+" and the second. */
+            float bx2 = right ? bx - BTN_SIZE - 10 : bx + BTN_SIZE + 10;
+
+            DrawTextSized(right ? bx - 8 : bx + BTN_SIZE + 2, y + 5, "+", ink, 1);
+            DrawButton(h->button2, bx2, y, ink, face);
+            bx = bx2;
+        }
+        tx = right ? bx - 6 - wide * GLYPH_ADVANCE : bx + BTN_SIZE + 6;
+        /* START and SELECT are wider than the others. */
+        if (h->button == BTN_START || h->button == BTN_SELECT) tx += right ? -6 : 6;
+        DrawTextSized(right ? tx + (wide - n1) * GLYPH_ADVANCE : tx, ty, h->line1, words, GLYPH_PIXEL);
+        if (h->line2) DrawTextSized(right ? tx + (wide - n2) * GLYPH_ADVANCE : tx, ty + 12, h->line2, words, GLYPH_PIXEL);
+    }
+}
+
+/* The battle's view of the picture: the GBA screen at the battle's 1.5x,
+ * the picture where the battle stands it (a front at the opponent's mound,
+ * a back at the player's place over the text box), the planes at the
+ * battle's own depth (3ds_stereo_battle.c, 3ds_video.c) and the stack and
+ * the scenery behind the screen as the battle puts them. */
+#define BTL_ZOOM 1.5f
+#define BTL_X0 ((CTR_GAME_WIDTH - 240 * BTL_ZOOM) / 2)
+#define BTL_PARALLAX 0.17f
+#define BTL_BACK_DEPTH 4.0f
+#define BTL_SPRITE_DEPTH 2.0f
+#define BTL_SPRITE_FAR 44
+#define BTL_SPRITE_NEAR 80
+
+static void DrawBattle(float sign, float slider, unsigned frame)
+{
+    static const int depths[] = {25, 50, 75, 100, 125, 150, 200};
+    const bool back = (sId & 0xC000) == CTR_STEREO_ID_BACK || (sId & 0xC000) == CTR_STEREO_ID_PLAYER;
+    const float eye = sign * slider, z = BTL_ZOOM, x0 = BTL_X0;
+    const float scenery = -eye * BTL_BACK_DEPTH;
+    int index = CtrSettings_GetInt("voxel_depth", 3), percent, left, top, centre;
+    float near, shift;
+    char line[48];
+
+    percent = depths[index >= 0 && index < (int)(sizeof(depths) / sizeof(depths[0])) ? index : 3];
+    /* The scenery: a sky, the field, the two mounds. */
+    C2D_DrawRectangle(x0 + scenery, 0, 0, 240 * z, 70 * z, C2D_Color32(150, 200, 240, 255),
+                      C2D_Color32(150, 200, 240, 255), C2D_Color32(210, 236, 248, 255), C2D_Color32(210, 236, 248, 255));
+    C2D_DrawRectSolid(x0 + scenery, 70 * z, 0, 240 * z, 42 * z, C2D_Color32(120, 192, 96, 255));
+    DrawOval(x0 + scenery + 176 * z, 74 * z, 60 * z, 11 * z, C2D_Color32(96, 160, 72, 255));
+    DrawOval(x0 + scenery + 176 * z, 72 * z, 56 * z, 9 * z, C2D_Color32(176, 216, 120, 255));
+    DrawOval(x0 + scenery + 72 * z, 110 * z, 70 * z, 12 * z, C2D_Color32(96, 160, 72, 255));
+    DrawOval(x0 + scenery + 72 * z, 108 * z, 66 * z, 10 * z, C2D_Color32(176, 216, 120, 255));
+    /* The picture where the battle has it: a back centred on (72, 80), a
+     * front and a trainer standing on the opponent's mound at (176, 72). */
+    left = back ? 72 - DIM / 2 : 176 - DIM / 2;
+    top = back ? 80 - DIM / 2 : 72 - sBoxBottom;
+    centre = top + DIM / 2;
+    near = (centre - BTL_SPRITE_FAR) / (float)(BTL_SPRITE_NEAR - BTL_SPRITE_FAR);
+    near = near < 0 ? 0 : near > 1 ? 1 : near;
+    shift = -eye * BTL_SPRITE_DEPTH * (1 - near);
+    DrawStack(x0 + left * z + shift, top * z, z, eye * BTL_PARALLAX * percent / 100.0f * DepthOf(sId), frame, NULL);
+    /* The text box at the screen's depth, over the player's side. */
+    C2D_DrawRectSolid(x0, 112 * z, 0, 240 * z, 48 * z, C2D_Color32(40, 80, 96, 255));
+    C2D_DrawRectSolid(x0 + 4, 112 * z + 4, 0, 240 * z - 8, 48 * z - 8, C2D_Color32(248, 248, 248, 255));
+    snprintf(line, sizeof(line), "BATTLE PREVIEW  3D DEPTH %d%%", percent);
+    DrawText(x0 + 14, 112 * z + 14, line, C2D_Color32(64, 64, 72, 255));
+    DrawText(x0 + 14, 112 * z + 34, back ? "AS THE PLAYER SEES IT" : "AS A FOE STANDS", C2D_Color32(64, 64, 72, 255));
+    /* The bars beside the GBA screen. */
+    C2D_DrawRectSolid(0, 0, 0, x0, CTR_GAME_HEIGHT, C2D_Color32(10, 12, 18, 255));
+    C2D_DrawRectSolid(CTR_GAME_WIDTH - x0, 0, 0, x0, CTR_GAME_HEIGHT, C2D_Color32(10, 12, 18, 255));
+}
+
+/*
+ * The editor's top screen: the picture over a grid at the screen's depth
+ * with a shadow under its feet, its name and frame at the top left, what is
+ * being edited at the top right, and the help in two columns as the hands
+ * hold the console: the left-hand controls down the left, the right-hand
+ * ones down the right. Planes are numbered for people front to back: 1 the
+ * nearest.
+ */
+static void DrawEditEye(float sign, float slider, unsigned frame)
+{
+    static const uint16_t colours[CTR_STEREO_EDIT_PLANES] = CTR_STEREO_EDIT_COLOURS;
+    static const Help left[] = {
+        {BTN_L, -1, "PLANE", NULL},
+        {BTN_L, BTN_TOUCH, "PICK", NULL},
+        {BTN_PAD, -1, "PAN", NULL},
+        {BTN_DPAD_UD, -1, "ZOOM", NULL},
+        {BTN_DPAD_LR, -1, "UNDO", "REDO"},
+    };
+    static const Help right[] = {
+        {BTN_Y, -1, "ANIMATE", NULL},
+        {BTN_X, -1, "VIEW", "LAYERS"},
+        {BTN_R, -1, "FRAME", NULL},
+        {BTN_CSTICK, -1, "MON", NULL},
+        {BTN_START, -1, "SAVE", NULL},
+        {BTN_B, -1, "BACK", NULL},
+    };
+    const unsigned groups = Groups();
+    const uint32_t cyan = C2D_Color32(80, 230, 240, 255), white = C2D_Color32(240, 242, 248, 255);
+    unsigned number = sEditPlane < groups ? groups - sEditPlane : 0;
+    char line[48];
+    float y;
+
+    if (sEditBattle)
+    {
+        DrawBattle(sign, slider, frame);
+        if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "NO.%03u %s", sId, sName);
+        else snprintf(line, sizeof(line), "%s", sName);
+        DrawText(BTL_X0 + 6, 6, line, C2D_Color32(40, 44, 60, 255));
+        return;
+    }
+    /* The grid at the screen's depth, a shadow under the feet. */
+    C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, C2D_Color32(62, 64, 70, 255));
+    for (int gx = 8; gx < CTR_GAME_WIDTH; gx += 24) C2D_DrawRectSolid(gx, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(86, 88, 96, 255));
+    for (int gy = 10; gy < CTR_GAME_HEIGHT; gy += 24) C2D_DrawRectSolid(0, gy, 0, CTR_GAME_WIDTH, 1, C2D_Color32(86, 88, 96, 255));
+    DrawOval(CENTRE_X + ((sBoxLeft + sBoxRight + 1) / 2.0f - DIM / 2) * SCALE,
+             CENTRE_Y - DIM / 2 * SCALE + (sBoxBottom + 1) * SCALE - 2,
+             (sBoxRight - sBoxLeft + 1) * SCALE * 0.45f, 7, C2D_Color32(235, 238, 245, 230));
+    DrawPlanes(sign, slider, frame, NULL, SCALE);
+    if (sEditOutline && sEditPlane < groups && sTexReady && sComposed == sToCompose)
+    {
+        OutlineRuns(frame, sEditPlane);
+        DrawOutline();
+    }
+    /* The name and the frame. */
+    if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "/%03u-%s", sId, sName);
+    else snprintf(line, sizeof(line), "/%s", sName);
+    DrawText(8, 6, line, white);
+    if (sFrames > 1)
+    {
+        if (sEditAnimate) snprintf(line, sizeof(line), "ANIMATING %u/%u", frame + 1, sFrames);
+        else snprintf(line, sizeof(line), "FRAME %u OF %u", sEditFrame + 1, sFrames);
+        DrawText(8, 20, line, cyan);
+    }
+    /* What is being edited: the plane in its colour, the depth, who, how far. */
+    y = 6;
+    snprintf(line, sizeof(line), "PLANE %u%s", number, number == 1 ? " FRONT" : number == groups ? " BACK" : "");
+    if (number)
+    {
+        uint16_t c = colours[sEditPlane < CTR_STEREO_EDIT_PLANES ? sEditPlane : 0];
+
+        DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), y, line,
+                 C2D_Color32(((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31, 255));
+    }
+    y += 14;
+    snprintf(line, sizeof(line), "3D %d%%%s", CtrStereoMon_Depth(), sEditLayers ? "  LAYERS" : "");
+    DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), y, line, C2D_Color32(160, 165, 180, 255));
+    y += 14;
+    if (sMeta.revision)
+    {
+        snprintf(line, sizeof(line), "R%u %s", sMeta.revision, sMeta.author[0] ? sMeta.author : "?");
+        DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), y, line, C2D_Color32(160, 165, 180, 255));
+        y += 14;
+    }
+    if (sMeta.finalized || sEdited)
+    {
+        const char *text = sMeta.finalized ? "FINAL" : "EDITED";
+
+        DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(text), y, text,
+                 sMeta.finalized ? C2D_Color32(120, 240, 120, 255) : C2D_Color32(245, 181, 69, 255));
+    }
+    DrawHelp(false, 104, left, sizeof(left) / sizeof(left[0]));
+    DrawHelp(true, 86, right, sizeof(right) / sizeof(right[0]));
+}
+
 static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned frame)
 {
     const unsigned groups = Groups();
@@ -1022,9 +1529,10 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
     C2D_ViewReset();
     C3D_AlphaTest(true, GPU_GREATER, 0);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ZERO);
-    if (!sGallery)
+    if (!sGallery || sEditing)
     {
-        DrawDex(sign, slider, frame);
+        if (sEditing) DrawEditEye(sign, slider, frame);
+        else DrawDex(sign, slider, frame);
         C2D_Flush();
         return;
     }
@@ -1036,48 +1544,15 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
                       C2D_Color32(40, 46, 70, 0), C2D_Color32(40, 46, 70, 0),
                       C2D_Color32(40, 46, 70, 160), C2D_Color32(40, 46, 70, 160));
     DrawPlanes(sign, slider, frame, NULL, SCALE);
-    if (sEditing && sEditOutline && sEditPlane < groups && sTexReady && sComposed == sToCompose)
-    {
-        OutlineRuns(frame, sEditPlane);
-        DrawOutline();
-    }
     if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "NO.%03u %s", sId, sName);
     else snprintf(line, sizeof(line), "%s", sName);
     DrawText(8, 6, line, C2D_Color32(235, 235, 240, 255));
     snprintf(line, sizeof(line), "%u/%u", (unsigned)(CtrStereoMon_GalleryIndexOf(sId) + 1), CtrStereoMon_GalleryCount());
     DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), 6, line, C2D_Color32(160, 165, 180, 255));
-    if (sEditing)
-    {
-        /* The keys down the left, what is being edited down the right (the
-         * picture is between them). Planes are numbered for people front
-         * to back: 1 the nearest. */
-        static const char *const keys[] = {"L  PLANE", "L+TAP PICK", "R  FRAME", "C  MON", "PAD PAN",
-                                           "^v ZOOM", "<> UNDO", "X OUTLINE", "Y ANIM", "START SAVE", "B  BACK"};
-        unsigned number = sEditPlane < groups ? groups - sEditPlane : 0;
-        char planeText[16], frameText[16], depthText[16];
-        const char *status[4];
-        unsigned n = 0;
-
-        snprintf(planeText, sizeof(planeText), "PLANE %u%s", number, number == 1 ? " FRONT" : number == groups ? " BACK" : "");
-        status[n++] = planeText;
-        if (sFrames > 1)
-        {
-            snprintf(frameText, sizeof(frameText), sEditAnimate ? "ANIMATING" : "FRAME %u/%u", sEditFrame + 1, sFrames);
-            status[n++] = frameText;
-        }
-        snprintf(depthText, sizeof(depthText), "DEPTH %u%%", (unsigned)sDepth);
-        status[n++] = depthText;
-        if (sEdited) status[n++] = "EDITED";
-        DrawColumn(false, 24, keys, sizeof(keys) / sizeof(keys[0]), C2D_Color32(160, 165, 180, 255));
-        DrawColumn(true, 24, status, n, C2D_Color32(245, 181, 69, 255));
-    }
-    else
-    {
-        snprintf(line, sizeof(line), "<> MON   ^v DEPTH %u%%   L/R PLANES %u%s", (unsigned)sDepth, groups,
-                 sEdited ? "   EDITED" : "");
-        DrawText(8, CTR_GAME_HEIGHT - 10 - 10 * GLYPH_PIXEL, line, C2D_Color32(160, 165, 180, 255));
-        DrawText(8, CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL, "X ANIM   Y EDIT   B BACK", C2D_Color32(160, 165, 180, 255));
-    }
+    snprintf(line, sizeof(line), "<> MON   ^v DEPTH %u%%   L/R PLANES %u%s", (unsigned)sDepth, groups,
+             sEdited ? "   EDITED" : "");
+    DrawText(8, CTR_GAME_HEIGHT - 10 - 10 * GLYPH_PIXEL, line, C2D_Color32(160, 165, 180, 255));
+    DrawText(8, CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL, "X ANIM   Y EDIT   B BACK", C2D_Color32(160, 165, 180, 255));
 #ifdef CTR_STEREO_DEBUG
     snprintf(line, sizeof(line), "T%u C%u/%u F%u G%u X%u", sTexReady, sComposed, sToCompose, sFrames, groups, sTexCols);
     DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL, line,
@@ -1096,8 +1571,7 @@ void CtrStereoMon_Draw(void *leftTarget, void *rightTarget, float slider)
     frame = sAnimate && sFrames > 1 && sTick % ANIM_PERIOD < ANIM_HOLD ? 1 : 0;
     /* Editing: the frame being edited, still, unless the editor animates. */
     if (sEditing && !sEditAnimate) frame = sEditFrame < sFrames ? sEditFrame : 0;
-    else if (sEditing && sFrames > 2) frame = (sTick / 8) % sFrames;
-    else if (sEditing) frame = sFrames > 1 && sTick % ANIM_PERIOD < ANIM_HOLD ? 1 : 0;
+    else if (sEditing) frame = (sTick / EDIT_ANIM_STEP) % sFrames;
     if (slider < 0.0f) slider = 0.0f;
     if (slider > 1.0f) slider = 1.0f;
     /* The left eye sees what is nearer than the screen shifted right. */

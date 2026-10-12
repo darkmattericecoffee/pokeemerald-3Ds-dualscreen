@@ -5,14 +5,19 @@
  * The top screen keeps showing the Pokémon in its own colours as its stack
  * of planes (the viewer, 3ds_stereo_mon.c, composing the planes again after
  * every change), the plane being edited outlined there in the colour
- * opposite the Pokémon's own, so it shows against any Pokémon. The bottom
- * screen is the editor: the picture with every pixel tinted by its plane's
- * colour (a quick mask: four hues, the nearest plane the most saturated and
- * the farthest the palest, the tint's strength a button), the four planes
- * down the right nearest first, two slim sliders (zoom, brush size) and the
- * tools down the left. A tool paints planes, never pixels: the picture is
- * the game's, a plane number is all a pixel has, so painting a pixel into
- * one plane takes it out of the other and there is no eraser.
+ * opposite the Pokémon's own, so it shows against any Pokémon; X tints it
+ * there by plane too (VIEW LAYERS), and the battle button shows it as a
+ * battle would. The bottom screen is the editor: the picture over the whole
+ * screen with every pixel tinted by its plane's colour (four clashing hues,
+ * the plane being edited bright, the others muted, the tint's strength a
+ * button), the four planes down the right nearest first with the grid's
+ * and the tint's buttons under them; over the picture, at its top, what
+ * concerns the picture (the chooser, the front/back switch, the frame, the
+ * battle's view, FINAL), and at its left the two sliders (zoom, brush
+ * size) with each tool under the slider it goes with. A tool paints
+ * planes, never pixels: the picture is the game's, a plane number is all a
+ * pixel has, so painting a pixel into one plane takes it out of the other
+ * and there is no eraser.
  *
  *  BRUSH   the pixels under the stylus join the plane being edited.
  *  FILL    a tap: the colour cell under the stylus joins the plane (same
@@ -21,20 +26,22 @@
  *  PAN     a drag moves the picture; so does the Circle Pad.
  *
  * A short press of L goes to the next plane; L held and a tap picks the
- * plane under the stylus. R (and the frame button over the picture) turns
- * to the next frame; the C-stick (and the DEX button, the chooser) goes to
- * another picture: every Pokémon's front and back, the trainers' fronts
- * and the players' backs (both planes files), the button over the picture's
- * left corner swapping a Pokémon's front and back. A tap on a plane in the
- * list picks it; one held still is grabbed and dropped elsewhere in the
- * stack. Every picture has the same four planes here
- * (CTR_STEREO_EDIT_PLANES): a file with more is folded into them, one with
- * fewer spread over them, when it is opened.
+ * plane under the stylus. R (and the frame button) turns to the next frame;
+ * the C-stick goes to the next picture, the DEX button (and SELECT) to the
+ * chooser: every Pokémon's front and back, the trainers' fronts and the
+ * players' backs (both planes files), searched by name, the edited ones on
+ * a list of their own or first. The F/B switch swaps a Pokémon's front and
+ * back. A tap on a plane in the list picks it; one held still is grabbed
+ * and dropped elsewhere in the stack. Every picture has the same four
+ * planes here (CTR_STEREO_EDIT_PLANES): a file with more is folded into
+ * them, one with fewer spread over them, when it is opened.
  *
  * Every change on one frame is carried to the others by the packer's rule
  * (the nearest pixel of the same colour) unless that is turned off in MORE.
  * Edits are kept on the SD card per Pokémon (CtrStereoMon_SaveEdit): on
- * START, on leaving, and on switching Pokémon (SELECT: the chooser).
+ * START, on leaving, and on switching Pokémon; each save is signed with the
+ * author's name (MORE: AUTHOR) and numbered, and FINAL marks a picture
+ * whose planes are done.
  */
 #include <math.h>
 #include <stdio.h>
@@ -42,6 +49,7 @@
 
 #include "3ds_bottom.h"
 #include "3ds_bottom_draw.h"
+#include "3ds_edit_icons.h"
 #include "3ds_input.h"
 #include "3ds_log.h"
 #include "3ds_platform.h"
@@ -59,48 +67,56 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define FRAME_BYTES (N / 2)
 #define MAX_FRAMES CTR_STEREO_MON_MAX_FRAMES
 
-/* The layout: the sliders and the tools at the left, the picture in the
- * middle (zoomed and panned), the planes and four buttons at the right. */
-#define LEFT_W 40
-#define CAN_X LEFT_W
+/* The layout: the picture over the screen but for the planes' column. */
+#define CAN_X 0
 #define RIGHT_X 264
 #define CAN_W (RIGHT_X - CAN_X)
-/* The DEX button (the chooser) at the top, the two sliders side by side
- * under it, their tracks from SL_TOP to SL_BOTTOM, the tools under them. */
-#define DEX_Y 2
-#define DEX_H 18
-#define SL_TOP 32
-#define SL_BOTTOM 118
-#define SL_ZOOM_X 12
-#define SL_SIZE_X 28
-#define KNOB_R 6
-#define TOOL_X 4
-#define TOOL_W 32
-#define TOOL_H 30
-#define TOOL_Y0 134
-#define TOOL_STEP 34
+/* Over the picture's top: the chooser, the front/back switch, the frame,
+ * the battle's view; FINAL at the right. */
+#define BAR_Y 3
+#define BAR_H 24
+#define DEX_X 4
+#define DEX_W 28
+#define FB_X 34
+#define FB_W 18
+#define FRAME_X (FB_X + 2 * FB_W + 4)
+#define FRAME_W 38
+#define BATTLE_X (FRAME_X + FRAME_W + 4)
+#define BATTLE_W 28
+#define FINAL_W 60
+#define FINAL_X (RIGHT_X - 4 - FINAL_W)
+/* Over its left: the sliders, their tracks from SL_TOP to SL_BOTTOM, and
+ * under each the tool that goes with it (PAN under the zoom, BRUSH under
+ * the size), FILL and UNDO under those. */
+#define SL_TOP 44
+#define SL_BOTTOM 142
+#define SL_ZOOM_X 14
+#define SL_SIZE_X 40
+#define SL_REACH 12
+#define KNOB_R 9
+#define TOOL_W 24
+#define TOOL_H 24
+#define TOOL_Y0 156
+#define TOOL_STEP 28
 /* The planes: a framed thumbnail each, nearest at the top. */
-#define ROW_X (RIGHT_X + 3)
-#define ROW_Y0 1
-#define ROW_STEP 50
+#define ROW_X (RIGHT_X + 4)
+#define ROW_Y0 2
+#define ROW_STEP 48
 #define ROW_FRAME 3
-#define ROW_SIDE 50
+#define ROW_SIDE 46
 #define THUMB (ROW_SIDE - 2 * ROW_FRAME)
 #define ROWS_END (ROW_Y0 + PLANES * ROW_STEP)
-/* The buttons under them, two by two. */
-#define BTN_Y0 (ROWS_END + 3)
-#define BTN_W 25
-#define BTN_H 17
-#define BTN_STEP_X 27
-#define BTN_STEP_Y 19
+/* The buttons under them, three by two: the grid's three looks, then the
+ * tint, the outline and MORE. */
+#define BTN_Y0 (ROWS_END + 4)
+#define BTN_W 16
+#define BTN_H 18
+#define BTN_STEP_X 17
+#define BTN_STEP_Y 20
 /* Frames a row is held still before it is grabbed for moving. */
 #define GRAB_FRAMES 24
 
 #define UNDO_DEPTH 12
-/* The buttons over the picture's top corners: the front/back swap, the frame. */
-#define CORNER_Y 4
-#define CORNER_W 50
-#define CORNER_H 17
 #define LASSO_POINTS 512
 #define TOAST_FRAMES 90
 /* How far the propagation looks for a pixel of the same colour. */
@@ -109,14 +125,40 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define TAP_SLOP 6
 
 enum { T_BRUSH, T_FILL, T_PAN, T_COUNT };
-enum { B_OUTLINE, B_OPACITY, B_GRID, B_MORE, B_COUNT };
+/* The left's buttons: the tools, and UNDO beside FILL. */
+enum { L_PAN, L_BRUSH, L_FILL, L_UNDO, L_COUNT };
+enum { B_GRID_OFF, B_GRID_WHITE, B_GRID_BLACK, B_OPACITY, B_OUTLINE, B_MORE, B_COUNT };
+/* The pressed button's number: the left's, the right's, the bar's. */
+enum { P_NONE = -1, P_LEFT = 0, P_RIGHT = 16, P_DEX = 32, P_FRONT, P_BACK, P_FRAME, P_BATTLE, P_FINAL };
 enum { SLIDER_NONE = -1, SLIDER_ZOOM, SLIDER_SIZE };
-/* The chooser: a page of icons and names. */
+enum { GRID_OFF, GRID_WHITE, GRID_BLACK };
+/* The chooser: its bar (the search, ALL/EDITED, the order, the pages),
+ * then a page of icons and names. */
 #define CH_COLS 3
 #define CH_ROWS 6
-#define CH_ROW_H 34
-#define CH_Y0 22
+#define CH_ROW_H 33
+#define CH_Y0 24
 #define CH_PER_PAGE (CH_COLS * CH_ROWS)
+#define CH_SEARCH_X 2
+#define CH_SEARCH_W 112
+#define CH_SHOW_X 118
+#define CH_SHOW_W 58
+#define CH_SORT_X 180
+#define CH_SORT_W 70
+#define CH_PREV_X 254
+#define CH_NEXT_X 287
+#define CH_PAGE_W 31
+/* Every picture of both files at most. */
+#define LIST_MAX (2 * CTR_STEREO_MON_MAX_COUNT)
+/* The keyboard: letters and digits, then DEL, SPACE, CLEAR and OK. */
+#define KB_COLS 9
+#define KB_ROWS 4
+#define KB_X 7
+#define KB_Y 40
+#define KB_KEY_W 34
+#define KB_KEY_H 30
+#define KB_ROW2_Y (KB_Y + KB_ROWS * KB_KEY_H + 6)
+#define QUERY_MAX 12
 
 /* The zoom's steps (screen pixels a picture pixel), the brush's sizes, and
  * the tint's strengths (twentieths of the plane's colour over the pixel). */
@@ -126,27 +168,19 @@ static const uint8_t sZooms[] = {3, 4, 5, 6, 8, 10};
 static const uint8_t sOpacities[] = {15, 10, 6, 3};
 static const char *const sOpacityNames[] = {"75", "50", "30", "15"};
 #define OPACITIES ((int)(sizeof(sOpacities) / sizeof(sOpacities[0])))
-/* The planes' colours, far to near: four hues, the saturation rising to the
- * front (peach, pink, sky blue, green). The same for every Pokémon. */
-static const uint16_t sPlaneColours[PLANES] = {0xFE73, 0xFB5F, 0x3CDF, 0x07E8};
+/* The planes' colours, far to near (3ds_stereo_mon.h): the same for every
+ * Pokémon, and the top screen's VIEW LAYERS uses them too. */
+static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
-enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET };
-enum { O_DEPTH, O_PROPAGATE, O_PROPAGATE_NOW, O_RESET, O_CLOSE, O_COUNT };
+enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_KEYBOARD };
+enum { O_DEPTH, O_PROPAGATE, O_PROPAGATE_NOW, O_AUTHOR, O_RESET, O_CLOSE, O_COUNT };
+/* What the keyboard is typing. */
+enum { KB_SEARCH, KB_AUTHOR };
 /* Frames L is held before a press is a hold (a pick), not a step. */
 #define L_HOLD_FRAMES 18
 /* The C-stick: past this it has moved, back under it it is ready again. */
 #define CSTICK_ON 60
 #define CSTICK_OFF 30
-
-/* The tools' icons: 16x16, one bit a pixel. */
-static const uint16_t sIcons[T_COUNT][16] = {
-    /* brush: a tilted handle, its head at the lower left */
-    {0x0006, 0x000F, 0x001E, 0x003C, 0x0078, 0x00F0, 0x01E0, 0x03C0, 0x0780, 0x0F00, 0x1E00, 0x3C00, 0x7C00, 0x7E00, 0x3E00, 0x0C00},
-    /* fill: a tilted bucket, paint running out of its lip */
-    {0x0000, 0x0180, 0x0240, 0x0420, 0x0810, 0x1008, 0x2004, 0x4002, 0x4006, 0x200C, 0x1018, 0x0830, 0x0460, 0x02C6, 0x0186, 0x0006},
-    /* pan: an open hand */
-    {0x0000, 0x0240, 0x05A0, 0x05A8, 0x05B4, 0x05B4, 0x05B4, 0x3404, 0x4C04, 0x4404, 0x2004, 0x1008, 0x0808, 0x0410, 0x07F0, 0x0000},
-};
 
 typedef struct
 {
@@ -162,8 +196,8 @@ static struct
     unsigned planes, frames;
     const uint16_t *pic[MAX_FRAMES];
     unsigned frame, layer;
-    uint8_t tool, size, zoom, opacity;
-    bool propagate, outlineOn, grid, animate, fromGallery;
+    uint8_t tool, size, zoom, opacity, grid;
+    bool propagate, outlineOn, layersView, battleView, animate, fromGallery;
     bool dirtyDraw, dirtyFile;
     /* Where picture pixel (0, 0) lies, in screen pixels from the canvas's
      * top left; the Circle Pad's movement below a pixel. */
@@ -197,9 +231,15 @@ static struct
     unsigned outlineCount;
     /* The colour opposite the Pokémon's own: the plane's outline. */
     uint16_t mark;
-    /* The chooser. */
+    /* The chooser: its list (gallery indices, filtered and ordered), the
+     * cursor in it, only the edited ones, the edited ones first, the search. */
     unsigned chooseCursor;
     bool iconsMissing;
+    bool onlyEdited, editedFirst;
+    char query[QUERY_MAX + 1];
+    /* The keyboard: what for, the text, the screen it came from. */
+    uint8_t kbFor, kbReturn;
+    char kbText[CTR_STEREO_EDIT_AUTHOR + 1];
     /* The pressed button, for the frame of the tap. */
     int pressed;
     char toast[40];
@@ -216,6 +256,12 @@ static uint16_t sCanvas[W * H] __attribute__((aligned(32)));
 static int16_t sLabel[N];
 static int16_t sQueue[N];
 static uint8_t sMask[N / 8];
+/* The chooser's list, and every picture's name as the search compares it
+ * (capitals and digits only), made once. */
+static uint16_t sList[LIST_MAX];
+static unsigned sListCount;
+static char sSearchNames[LIST_MAX][12];
+static bool sSearchNamesMade;
 
 /* ── Planes and pixels ──────────────────────────────────────────────── */
 
@@ -593,16 +639,19 @@ static void PictureBox(int *x0, int *y0, int *side)
     *side = s;
 }
 
-/* The Pokémon as large as the canvas takes it, in the middle. */
+/* The Pokémon as large as the canvas takes it, in the middle of what the
+ * sliders and the bar leave free. */
+#define FREE_X (SL_SIZE_X + SL_REACH + 2)
+#define FREE_Y (BAR_Y + BAR_H + 2)
 static void ResetView(void)
 {
-    int bx, by, side;
+    int bx, by, side, room = (CAN_W - FREE_X) < (H - FREE_Y) ? (CAN_W - FREE_X) : (H - FREE_Y);
 
     PictureBox(&bx, &by, &side);
     sE.zoom = 0;
-    while (sE.zoom + 1 < ZOOMS && side * sZooms[sE.zoom + 1] <= CAN_W - 8) ++sE.zoom;
-    sE.originX = (CAN_W - side * Zoom()) / 2 - bx * Zoom();
-    sE.originY = (H - side * Zoom()) / 2 - by * Zoom();
+    while (sE.zoom + 1 < ZOOMS && side * sZooms[sE.zoom + 1] <= room - 4) ++sE.zoom;
+    sE.originX = FREE_X - CAN_X + (CAN_W - FREE_X - side * Zoom()) / 2 - bx * Zoom();
+    sE.originY = FREE_Y + (H - FREE_Y - side * Zoom()) / 2 - by * Zoom();
     ClampView();
 }
 
@@ -870,7 +919,9 @@ void CtrStereoEdit_Open(bool fromGallery)
     sE.slider = SLIDER_NONE;
     sE.propagate = CtrSettings_GetInt("edit_propagate", 1) != 0;
     sE.outlineOn = CtrSettings_GetInt("edit_outline", 1) != 0;
-    sE.grid = CtrSettings_GetInt("edit_grid", 0) != 0;
+    sE.grid = (uint8_t)CtrSettings_GetInt("edit_grid", GRID_OFF);
+    if (sE.grid > GRID_BLACK) sE.grid = GRID_OFF;
+    sE.layersView = CtrSettings_GetInt("edit_layers", 0) != 0;
     sE.opacity = (uint8_t)CtrSettings_GetInt("edit_opacity", 1);
     if (sE.opacity >= OPACITIES) sE.opacity = 1;
     sE.fromGallery = fromGallery;
@@ -901,6 +952,141 @@ static void Choose(unsigned index)
     sE.dirtyDraw = true;
 }
 
+/* ── The chooser's list ─────────────────────────────────────────────── */
+
+/* Every picture's name as the search compares it: capitals and digits. */
+static void MakeSearchNames(void)
+{
+    unsigned count = CtrStereoMon_GalleryCount();
+    char name[CTR_STEREO_MON_NAME];
+
+    if (sSearchNamesMade) return;
+    sSearchNamesMade = true;
+    for (unsigned i = 0; i < count && i < LIST_MAX; ++i)
+    {
+        unsigned n = 0;
+
+        CtrStereoMonGame_Name(CtrStereoMon_GalleryIdAt(i), name, sizeof(name));
+        for (const char *c = name; *c && n + 1 < sizeof(sSearchNames[i]); ++c)
+            if ((*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9')) sSearchNames[i][n++] = *c;
+        sSearchNames[i][n] = 0;
+    }
+}
+
+/* Whether gallery entry `index` answers the search: its name holds the
+ * letters typed, or its number the digits. */
+static bool Matches(unsigned index)
+{
+    char want[QUERY_MAX + 1], number[8];
+    unsigned n = 0;
+    bool digits = true;
+
+    for (const char *c = sE.query; *c; ++c)
+        if (*c != ' ')
+        {
+            want[n++] = *c;
+            if (*c < '0' || *c > '9') digits = false;
+        }
+    want[n] = 0;
+    if (n == 0) return true;
+    if (strstr(sSearchNames[index], want)) return true;
+    snprintf(number, sizeof(number), "%03u", CtrStereoMon_GalleryIdAt(index) & 0x3FFF);
+    return digits && strstr(number, want) != NULL;
+}
+
+/* The list the chooser shows: every picture, or the edited ones only,
+ * those answering the search, the edited ones first when asked. */
+static void BuildList(void)
+{
+    unsigned count = CtrStereoMon_GalleryCount();
+
+    if (count > LIST_MAX) count = LIST_MAX;
+    if (sE.query[0]) MakeSearchNames();
+    sListCount = 0;
+    for (unsigned pass = 0; pass < 2; ++pass)
+        for (unsigned i = 0; i < count; ++i)
+        {
+            bool edited = CtrStereoMon_HasEdit(CtrStereoMon_GalleryIdAt(i));
+
+            if (sE.onlyEdited && !edited) continue;
+            /* Edited first: those on the first pass, the rest on the second. */
+            if (sE.editedFirst && !sE.onlyEdited ? edited != (pass == 0) : pass == 1) continue;
+            if (sE.query[0] && !Matches(i)) continue;
+            sList[sListCount++] = (uint16_t)i;
+        }
+    if (sE.chooseCursor >= sListCount) sE.chooseCursor = sListCount ? sListCount - 1 : 0;
+    sE.dirtyDraw = true;
+}
+
+/* The chooser, its cursor on the picture being edited when it is listed. */
+static void OpenChooser(void)
+{
+    unsigned index = CtrStereoMonGame_GalleryIndex();
+
+    Save(true);
+    sE.screen = S_CHOOSE;
+    sE.chooseCursor = 0;
+    BuildList();
+    for (unsigned k = 0; k < sListCount; ++k)
+        if (sList[k] == index) sE.chooseCursor = k;
+}
+
+static void OpenKeyboard(uint8_t what)
+{
+    sE.kbFor = what;
+    sE.kbReturn = sE.screen;
+    snprintf(sE.kbText, sizeof(sE.kbText), "%s", what == KB_SEARCH ? sE.query : CtrStereoMon_Author());
+    sE.screen = S_KEYBOARD;
+    sE.dirtyDraw = true;
+}
+
+/* The keyboard's text taken: the search narrows the chooser, the author's
+ * name signs the saves from now on. */
+static void KeyboardDone(void)
+{
+    if (sE.kbFor == KB_SEARCH)
+    {
+        sE.screen = S_CHOOSE;
+        sE.chooseCursor = 0;
+        BuildList();
+    }
+    else
+    {
+        char line[40];
+
+        CtrStereoMon_SetAuthor(sE.kbText);
+        sE.screen = S_EDIT;
+        snprintf(line, sizeof(line), "SAVES SIGNED %s", CtrStereoMon_Author()[0] ? CtrStereoMon_Author() : "BY NOBODY");
+        Toast(line);
+    }
+    sE.dirtyDraw = true;
+}
+
+static void KeyboardType(char c)
+{
+    char *text = sE.kbFor == KB_SEARCH ? sE.query : sE.kbText;
+    unsigned max = sE.kbFor == KB_SEARCH ? QUERY_MAX : CTR_STEREO_EDIT_AUTHOR, n = (unsigned)strlen(text);
+
+    if (c == '\b')
+    {
+        if (n) text[n - 1] = 0;
+    }
+    else if (c == 0)
+        text[0] = 0;
+    else if (n < max && !(c == ' ' && (n == 0 || text[n - 1] == ' ')))
+    {
+        text[n] = c;
+        text[n + 1] = 0;
+    }
+    /* The search narrows as it is typed. */
+    if (sE.kbFor == KB_SEARCH)
+    {
+        sE.chooseCursor = 0;
+        BuildList();
+    }
+    sE.dirtyDraw = true;
+}
+
 /* ── Keys ───────────────────────────────────────────────────────────── */
 
 /* The D-pad: zoom up and down (about the canvas's middle), undo and redo. */
@@ -912,9 +1098,37 @@ static void DpadKeys(unsigned dpad)
     if (dpad & CTR_KEY_RIGHT) Redo();
 }
 
+static void ToggleLayersView(void)
+{
+    sE.layersView = !sE.layersView;
+    CtrSettings_SetInt("edit_layers", sE.layersView);
+    Toast(sE.layersView ? "TOP SCREEN: LAYERS" : "TOP SCREEN: COLOURS");
+}
+
+static void ChooseKeys(unsigned down)
+{
+    unsigned count = sListCount;
+
+    if (down & (CTR_KEY_B | CTR_KEY_SELECT)) { sE.screen = S_EDIT; return; }
+    if (down & CTR_KEY_Y) { OpenKeyboard(KB_SEARCH); return; }
+    if (down & CTR_KEY_X)
+    {
+        sE.onlyEdited = !sE.onlyEdited;
+        BuildList();
+        return;
+    }
+    if (count == 0) return;
+    if (down & CTR_KEY_A) Choose(sList[sE.chooseCursor]);
+    else if (down & CTR_KEY_RIGHT) sE.chooseCursor = (sE.chooseCursor + 1) % count;
+    else if (down & CTR_KEY_LEFT) sE.chooseCursor = (sE.chooseCursor + count - 1) % count;
+    else if (down & CTR_KEY_DOWN) sE.chooseCursor = (sE.chooseCursor + CH_COLS) % count;
+    else if (down & CTR_KEY_UP) sE.chooseCursor = (sE.chooseCursor + count - CH_COLS % count) % count;
+    else if (down & CTR_KEY_R) sE.chooseCursor = (sE.chooseCursor + CH_PER_PAGE) % count;
+    else if (down & CTR_KEY_L) sE.chooseCursor = (sE.chooseCursor + count - CH_PER_PAGE % count) % count;
+}
+
 void CtrStereoEdit_Keys(unsigned down, unsigned held)
 {
-    unsigned count = CtrStereoMon_GalleryCount();
     const CtrInput *in = CtrInput_Get();
     bool lReleased = (sE.heldKeys & CTR_KEY_L) && !(held & CTR_KEY_L);
     unsigned lFrames = sE.lFrames;
@@ -924,16 +1138,19 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
     sE.heldKeys = held;
     sE.lFrames = (held & CTR_KEY_L) ? sE.lFrames + 1 : 0;
     sE.dirtyDraw = sE.dirtyDraw || down != 0;
+    if (sE.screen == S_KEYBOARD)
+    {
+        /* B rubs out, and leaves once there is nothing to rub out; START is OK. */
+        const char *text = sE.kbFor == KB_SEARCH ? sE.query : sE.kbText;
+
+        if (down & CTR_KEY_START) KeyboardDone();
+        else if ((down & CTR_KEY_B) && text[0]) KeyboardType('\b');
+        else if (down & CTR_KEY_B) sE.screen = sE.kbReturn == S_OPTIONS ? S_EDIT : sE.kbReturn;
+        return;
+    }
     if (sE.screen == S_CHOOSE)
     {
-        if (down & (CTR_KEY_B | CTR_KEY_SELECT)) sE.screen = S_EDIT;
-        else if (down & CTR_KEY_A) Choose(sE.chooseCursor);
-        else if (down & CTR_KEY_RIGHT) sE.chooseCursor = (sE.chooseCursor + 1) % count;
-        else if (down & CTR_KEY_LEFT) sE.chooseCursor = (sE.chooseCursor + count - 1) % count;
-        else if (down & CTR_KEY_DOWN) sE.chooseCursor = (sE.chooseCursor + 3) % count;
-        else if (down & CTR_KEY_UP) sE.chooseCursor = (sE.chooseCursor + count - 3) % count;
-        else if (down & CTR_KEY_R) sE.chooseCursor = (sE.chooseCursor + CH_PER_PAGE) % count;
-        else if (down & CTR_KEY_L) sE.chooseCursor = (sE.chooseCursor + count - CH_PER_PAGE % count) % count;
+        ChooseKeys(down);
         return;
     }
     if (sE.screen == S_OPTIONS || sE.screen == S_CONFIRM_RESET)
@@ -948,20 +1165,13 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
     if (down & CTR_KEY_R) OtherFrame();
     if (down & CTR_KEY_SELECT)
     {
-        Save(true);
-        sE.screen = S_CHOOSE;
-        sE.chooseCursor = CtrStereoMonGame_GalleryIndex();
+        OpenChooser();
         return;
     }
     if (down & CTR_KEY_B) { Close(!sE.fromGallery); return; }
     if (down & CTR_KEY_START) Save(false);
     if (down & CTR_KEY_A) sE.tool = T_BRUSH;
-    if (down & CTR_KEY_X)
-    {
-        sE.outlineOn = !sE.outlineOn;
-        CtrSettings_SetInt("edit_outline", sE.outlineOn);
-        Toast(sE.outlineOn ? "OUTLINE ON" : "OUTLINE OFF");
-    }
+    if (down & CTR_KEY_X) ToggleLayersView();
     if (down & CTR_KEY_Y)
     {
         sE.animate = !sE.animate;
@@ -995,24 +1205,105 @@ static int RowAt(int y)
     return y < ROW_Y0 ? 0 : row >= PLANES ? PLANES - 1 : row;
 }
 
-static void ButtonAct(int button)
+/* The left's buttons: where each is. */
+static void LeftButton(int b, int *x, int *y)
 {
+    *x = (b % 2 ? SL_SIZE_X : SL_ZOOM_X) - TOOL_W / 2;
+    *y = TOOL_Y0 + (b / 2) * TOOL_STEP;
+}
+
+static int LeftButtonAt(int x, int y)
+{
+    for (int b = 0; b < L_COUNT; ++b)
+    {
+        int bx, by;
+
+        LeftButton(b, &bx, &by);
+        if (x >= bx && x < bx + TOOL_W && y >= by && y < by + TOOL_H) return b;
+    }
+    return -1;
+}
+
+static void LeftAct(int b)
+{
+    static const uint8_t tools[] = {T_PAN, T_BRUSH, T_FILL};
+
+    if (b == L_UNDO) Undo();
+    else sE.tool = tools[b];
+}
+
+static void RightAct(int button)
+{
+    char line[24];
+
     switch (button)
     {
-    case B_OUTLINE:
-        sE.outlineOn = !sE.outlineOn;
-        CtrSettings_SetInt("edit_outline", sE.outlineOn);
+    case B_GRID_OFF: case B_GRID_WHITE: case B_GRID_BLACK:
+        sE.grid = (uint8_t)(button - B_GRID_OFF);
+        CtrSettings_SetInt("edit_grid", sE.grid);
         break;
     case B_OPACITY:
         sE.opacity = (uint8_t)((sE.opacity + 1) % OPACITIES);
         CtrSettings_SetInt("edit_opacity", sE.opacity);
+        snprintf(line, sizeof(line), "TINT STRENGTH %s", sOpacityNames[sE.opacity]);
+        Toast(line);
         break;
-    case B_GRID:
-        sE.grid = !sE.grid;
-        CtrSettings_SetInt("edit_grid", sE.grid);
+    case B_OUTLINE:
+        sE.outlineOn = !sE.outlineOn;
+        CtrSettings_SetInt("edit_outline", sE.outlineOn);
+        Toast(sE.outlineOn ? "OUTLINE ON" : "OUTLINE OFF");
         break;
     default: sE.screen = S_OPTIONS; break;
     }
+}
+
+/* The front's back, the back's front. */
+static void SwapSide(bool toBack)
+{
+    uint16_t other = CtrStereoMon_Counterpart(sE.id);
+    int index;
+
+    if (toBack == ((sE.id & 0xC000) != 0)) return;
+    if (other == 0 || (index = CtrStereoMon_GalleryIndexOf(other)) < 0)
+    {
+        Toast(toBack ? "NO BACK IN THE PACK" : "NO FRONT IN THE PACK");
+        return;
+    }
+    Choose((unsigned)index);
+}
+
+static void ToggleFinal(void)
+{
+    bool final = !CtrStereoMon_EditMeta()->finalized;
+
+    CtrStereoMon_SetFinalized(final);
+    sE.dirtyFile = true;
+    Save(true);
+    Toast(final ? "MARKED FINAL" : "NOT FINAL ANY MORE");
+}
+
+/* The bar over the picture's top: a tap on one of its buttons. */
+static bool BarAct(int x, int y)
+{
+    if (y < BAR_Y || y >= BAR_Y + BAR_H) return false;
+    if (x >= DEX_X && x < DEX_X + DEX_W) { sE.pressed = P_DEX; OpenChooser(); }
+    else if (x >= FB_X && x < FB_X + FB_W) { sE.pressed = P_FRONT; SwapSide(false); }
+    else if (x >= FB_X + FB_W && x < FB_X + 2 * FB_W) { sE.pressed = P_BACK; SwapSide(true); }
+    else if (x >= FRAME_X && x < FRAME_X + FRAME_W)
+    {
+        sE.pressed = P_FRAME;
+        if (sE.frames > 1) OtherFrame();
+        else Toast("ONE FRAME ONLY");
+    }
+    else if (x >= BATTLE_X && x < BATTLE_X + BATTLE_W)
+    {
+        sE.pressed = P_BATTLE;
+        sE.battleView = !sE.battleView;
+        Toast(sE.battleView ? "TOP SCREEN: AS IN BATTLE" : "TOP SCREEN: EDITOR");
+    }
+    else if (x >= FINAL_X && x < FINAL_X + FINAL_W) { sE.pressed = P_FINAL; ToggleFinal(); }
+    else return false;
+    return true;
 }
 
 static void TouchEdit(const CtrInput *in)
@@ -1021,33 +1312,10 @@ static void TouchEdit(const CtrInput *in)
 
     if (in->touchDown)
     {
-        sE.pressed = -1;
-        if (x < LEFT_W)
-        {
-            if (y < DEX_Y + DEX_H + 2)
-            {
-                sE.pressed = T_COUNT + B_COUNT;
-                Save(true);
-                sE.screen = S_CHOOSE;
-                sE.chooseCursor = CtrStereoMonGame_GalleryIndex();
-            }
-            else if (y < SL_BOTTOM + KNOB_R + 4)
-            {
-                sE.slider = x < (SL_ZOOM_X + SL_SIZE_X) / 2 ? SLIDER_ZOOM : SLIDER_SIZE;
-                SliderAt(y);
-            }
-            else
-            {
-                int row = (y - TOOL_Y0) / TOOL_STEP;
+        int b;
 
-                if (y >= TOOL_Y0 && row < T_COUNT && y - TOOL_Y0 - row * TOOL_STEP < TOOL_H)
-                {
-                    sE.tool = (uint8_t)row;
-                    sE.pressed = row;
-                }
-            }
-        }
-        else if (x >= RIGHT_X)
+        sE.pressed = P_NONE;
+        if (x >= RIGHT_X)
         {
             if (y < ROWS_END)
             {
@@ -1060,22 +1328,25 @@ static void TouchEdit(const CtrInput *in)
             {
                 int col = (x - ROW_X) / BTN_STEP_X, row = (y - BTN_Y0) / BTN_STEP_Y;
 
-                if (col >= 0 && col < 2 && row >= 0 && row < 2)
+                if (col >= 0 && col < 3 && row >= 0 && row < 2)
                 {
-                    sE.pressed = T_COUNT + row * 2 + col;
-                    ButtonAct(row * 2 + col);
+                    sE.pressed = P_RIGHT + row * 3 + col;
+                    RightAct(row * 3 + col);
                 }
             }
         }
-        else if (y < CORNER_Y + CORNER_H + 2 && x >= CAN_X + 4 && x < CAN_X + 4 + CORNER_W && CtrStereoMon_Counterpart(sE.id))
+        else if (BarAct(x, y)) {}
+        else if (y >= SL_TOP - KNOB_R - 2 && y <= SL_BOTTOM + KNOB_R + 2
+                 && ((x >= SL_ZOOM_X - SL_REACH && x <= SL_ZOOM_X + SL_REACH) || (x >= SL_SIZE_X - SL_REACH && x <= SL_SIZE_X + SL_REACH)))
         {
-            /* The front's back, the back's front. */
-            int index = CtrStereoMon_GalleryIndexOf(CtrStereoMon_Counterpart(sE.id));
-
-            if (index >= 0) Choose((unsigned)index);
+            sE.slider = x <= SL_ZOOM_X + SL_REACH ? SLIDER_ZOOM : SLIDER_SIZE;
+            SliderAt(y);
         }
-        else if (y < CORNER_Y + CORNER_H + 2 && x >= RIGHT_X - 4 - CORNER_W && x < RIGHT_X - 4 && sE.frames > 1)
-            OtherFrame();
+        else if ((b = LeftButtonAt(x, y)) >= 0)
+        {
+            sE.pressed = P_LEFT + b;
+            LeftAct(b);
+        }
         else if (sE.heldKeys & CTR_KEY_L)
         {
             /* L + a tap: the plane under the stylus. */
@@ -1190,9 +1461,16 @@ static void TouchEdit(const CtrInput *in)
         }
         if (sE.lassoing) FinishLasso();
         if (sE.stroking) EndStroke();
+        if (sE.slider == SLIDER_SIZE)
+        {
+            char line[16];
+
+            snprintf(line, sizeof(line), "BRUSH %u", sE.size);
+            Toast(line);
+        }
         sE.panning = false;
         sE.slider = SLIDER_NONE;
-        sE.pressed = -1;
+        sE.pressed = P_NONE;
         sE.dirtyDraw = true;
     }
     if (in->touchActive)
@@ -1203,18 +1481,17 @@ static void TouchEdit(const CtrInput *in)
     sE.touching = in->touchActive;
 }
 
-#define OPT_X 70
-#define OPT_Y 50
-#define OPT_W 180
-#define OPT_ROW 24
+#define OPT_X 60
+#define OPT_Y 30
+#define OPT_W 200
+#define OPT_ROW 26
 
 static void OptionAct(int row, bool rightHalf)
 {
     switch (row)
     {
     case O_DEPTH:
-        CtrStereoMon_SetDepth(CtrStereoMon_Depth() + (rightHalf ? 25 : -25));
-        CtrStereoMon_Recompose();
+        CtrStereoMon_SetDepth(CtrStereoMon_Depth() + (rightHalf ? CTR_STEREO_EDIT_DEPTH_STEP : -CTR_STEREO_EDIT_DEPTH_STEP));
         break;
     case O_PROPAGATE: sE.propagate = !sE.propagate; CtrSettings_SetInt("edit_propagate", sE.propagate); break;
     case O_PROPAGATE_NOW:
@@ -1230,6 +1507,7 @@ static void OptionAct(int row, bool rightHalf)
         }
         sE.screen = S_EDIT;
         break;
+    case O_AUTHOR: OpenKeyboard(KB_AUTHOR); break;
     case O_RESET:
         sE.screen = S_CONFIRM_RESET;
         break;
@@ -1287,23 +1565,56 @@ static void TouchOptions(const CtrInput *in)
 
 static void TouchChoose(const CtrInput *in)
 {
-    unsigned count = CtrStereoMon_GalleryCount(), page = sE.chooseCursor / CH_PER_PAGE, cell;
-    int col, row;
+    unsigned count = sListCount, page = sE.chooseCursor / CH_PER_PAGE, cell;
+    int x = in->touchX, y = in->touchY, col, row;
 
     if (!in->touchDown) return;
-    if (in->touchY < CH_Y0)
+    sE.dirtyDraw = true;
+    if (y < CH_Y0)
     {
-        /* The page arrows at the right of the title. */
-        if (in->touchX >= W - 60 && in->touchX < W - 30) sE.chooseCursor = (sE.chooseCursor + count - CH_PER_PAGE % count) % count;
-        else if (in->touchX >= W - 30) sE.chooseCursor = (sE.chooseCursor + CH_PER_PAGE) % count;
-        sE.dirtyDraw = true;
+        if (x >= CH_SEARCH_X && x < CH_SEARCH_X + CH_SEARCH_W) OpenKeyboard(KB_SEARCH);
+        else if (x >= CH_SHOW_X && x < CH_SHOW_X + CH_SHOW_W) { sE.onlyEdited = !sE.onlyEdited; BuildList(); }
+        else if (x >= CH_SORT_X && x < CH_SORT_X + CH_SORT_W) { sE.editedFirst = !sE.editedFirst; BuildList(); }
+        else if (count && x >= CH_PREV_X && x < CH_PREV_X + CH_PAGE_W)
+            sE.chooseCursor = (sE.chooseCursor + count - CH_PER_PAGE % count) % count;
+        else if (count && x >= CH_NEXT_X) sE.chooseCursor = (sE.chooseCursor + CH_PER_PAGE) % count;
         return;
     }
-    col = in->touchX / (W / CH_COLS);
-    row = (in->touchY - CH_Y0) / CH_ROW_H;
+    col = x / (W / CH_COLS);
+    row = (y - CH_Y0) / CH_ROW_H;
     if (row < 0 || row >= CH_ROWS || col >= CH_COLS) return;
     cell = page * CH_PER_PAGE + (unsigned)(row * CH_COLS + col);
-    if (cell < count) Choose(cell);
+    if (cell < count) Choose(sList[cell]);
+}
+
+/* The keyboard's keys: A..Z then 0..9, nine to a row. */
+static char KeyAt(int k) { return k < 26 ? (char)('A' + k) : (char)('0' + k - 26); }
+
+enum { KB_DEL, KB_SPACE, KB_CLEAR, KB_OK, KB_WIDE };
+#define KB_WIDE_W 72
+#define KB_WIDE_STEP 76
+
+static void TouchKeyboard(const CtrInput *in)
+{
+    int x = in->touchX, y = in->touchY;
+
+    if (!in->touchDown) return;
+    sE.dirtyDraw = true;
+    if (y >= KB_Y && y < KB_Y + KB_ROWS * KB_KEY_H && x >= KB_X && x < KB_X + KB_COLS * KB_KEY_W)
+    {
+        int k = (y - KB_Y) / KB_KEY_H * KB_COLS + (x - KB_X) / KB_KEY_W;
+
+        if (k < 36) KeyboardType(KeyAt(k));
+    }
+    else if (y >= KB_ROW2_Y && y < KB_ROW2_Y + KB_KEY_H && x >= KB_X)
+    {
+        int k = (x - KB_X) / KB_WIDE_STEP;
+
+        if (k == KB_DEL) KeyboardType('\b');
+        else if (k == KB_SPACE) KeyboardType(' ');
+        else if (k == KB_CLEAR) KeyboardType(0);
+        else if (k == KB_OK) KeyboardDone();
+    }
 }
 
 /* ── Drawing ────────────────────────────────────────────────────────── */
@@ -1313,7 +1624,7 @@ static inline void Px(int x, int y, uint16_t c)
     if (x >= 0 && y >= 0 && x < W && y < H) sCanvas[x * H + (H - 1 - y)] = c;
 }
 
-/* A rectangle, cut to the canvas between the side strips. */
+/* A rectangle, cut to the canvas left of the planes' column. */
 static void CanvasFill(int x, int y, int w, int h, uint16_t c)
 {
     int x0 = x < CAN_X ? CAN_X : x, x1 = x + w > RIGHT_X ? RIGHT_X : x + w;
@@ -1338,16 +1649,28 @@ static uint16_t Mix(uint16_t a, uint16_t b, unsigned ka, unsigned k)
 
 static uint16_t Rgb(unsigned r, unsigned g, unsigned b) { return (uint16_t)((r << 11) | (g << 5) | b); }
 
-/* The picture: every pixel tinted by its plane's colour, pixels without a
- * plane hatched red. */
+/* A colour's grey (RGB565). */
+static uint16_t Grey(uint16_t c)
+{
+    unsigned l = (2 * ((c >> 11) & 31) + 5 * (((c >> 5) & 63) >> 1) + (c & 31)) / 8;
+
+    return Rgb(l, l * 2, l);
+}
+
+/* A plane's colour for a plane not being edited: muted, half grey. */
+static uint16_t Muted(uint16_t c) { return Mix(c, Mix(Grey(c), Rgb(10, 20, 11), 1, 2), 3, 5); }
+
+/* The picture: every pixel tinted by its plane's colour (the plane being
+ * edited bright and saturated, the others muted and greyed), pixels
+ * without a plane hatched red; the grid in white or black over it. */
 static void DrawPicture(void)
 {
     const uint16_t out = Rgb(5, 10, 5), bg0 = Rgb(9, 18, 9), bg1 = Rgb(8, 16, 8), red = Rgb(28, 6, 8),
                    redDark = Rgb(16, 2, 4);
+    const uint16_t gridInk = sE.grid == GRID_WHITE ? Rgb(31, 63, 31) : Rgb(0, 0, 0);
     const uint16_t *pic = sE.pic[sE.frame];
     const int s = Zoom(), ox = CAN_X + sE.originX, oy = sE.originY;
     const unsigned k = sOpacities[sE.opacity];
-    const bool grid = sE.grid && s >= 4;
 
     CanvasFill(CAN_X, 0, CAN_W, H, out);
     for (int y = 0; y < DIM; ++y)
@@ -1366,23 +1689,21 @@ static void DrawPicture(void)
             else if ((p = GetPlane(sE.frame, i)) == NONE) c = (x + y) & 1 ? red : redDark;
             else if (p == sE.layer)
             {
-                /* The plane edited: its colour, lifted a little. */
+                /* The plane edited: its colour at full strength, lifted. */
                 c = Mix(sPlaneColours[p], Rgb565Of(pic[i]), k, 20);
-                c = Mix(Rgb(31, 63, 31), c, 1, 6);
+                c = Mix(Rgb(31, 63, 31), c, 1, 8);
             }
             else
             {
-                /* The others: a weaker tint, and darkened. */
-                c = Mix(sPlaneColours[p], Rgb565Of(pic[i]), k * 2 / 3, 20);
-                c = Mix(out, c, 2, 5);
+                /* The others: the pixel greyed, a muted tint, darkened. */
+                c = Mix(Muted(sPlaneColours[p]), Grey(Rgb565Of(pic[i])), k, 20);
+                c = Mix(out, c, 1, 3);
             }
             CanvasFill(sx, sy, s, s, c);
-            if (grid)
+            if (sE.grid != GRID_OFF)
             {
-                uint16_t line = Mix(c, 0, 3, 4);
-
-                CanvasFill(sx + s - 1, sy, 1, s, line);
-                CanvasFill(sx, sy + s - 1, s, 1, line);
+                CanvasFill(sx + s - 1, sy, 1, s, gridInk);
+                CanvasFill(sx, sy + s - 1, s, 1, gridInk);
             }
         }
     }
@@ -1402,35 +1723,43 @@ static void DrawPicture(void)
             }
         }
     }
-    /* Over the top corners: the front/back swap, the frame; the unsaved dot. */
-    if (CtrStereoMon_Counterpart(sE.id))
-    {
-        CtrBottomDraw_Plate(CAN_X + 4, CORNER_Y, CORNER_W, CORNER_H, 0, false);
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, (sE.id & 0xC000) ? "FRONT" : "BACK", CAN_X + 4 + CORNER_W / 2,
-                                  CORNER_Y + 2, CTR_DRAW_DARK);
-    }
-    if (sE.frames > 1)
-    {
-        char label[12];
+}
 
-        snprintf(label, sizeof(label), "F %u/%u", sE.frame + 1, sE.frames);
-        CtrBottomDraw_Plate(RIGHT_X - 4 - CORNER_W, CORNER_Y, CORNER_W, CORNER_H, 0, false);
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, RIGHT_X - 4 - CORNER_W / 2, CORNER_Y + 2, CTR_DRAW_DARK);
-    }
-    if (sE.dirtyFile) CanvasFill(RIGHT_X - 10 - CORNER_W, CORNER_Y + 6, 5, 5, Rgb(31, 12, 8));
-    if ((sE.heldKeys & CTR_KEY_L) || sE.toastFrames)
-    {
-        bool picking = sE.heldKeys & CTR_KEY_L;
+/* An icon (3ds_edit_icons.h: Lucide's, `size` pixels square) at (x, y):
+ * its ink with a dark edge all round, so it reads on any plate or colour. */
+static void DrawGlyph(const uint32_t *rows, int size, int x, int y, uint16_t ink, uint16_t edge)
+{
+#define INK(r, c) ((r) >= 0 && (r) < size && (c) >= 0 && (c) < size && ((rows[r] >> (size - 1 - (c))) & 1))
+    for (int r = -1; r <= size; ++r)
+        for (int c = -1; c <= size; ++c)
+        {
+            if (INK(r, c)) Px(x + c, y + r, ink);
+            else if (INK(r - 1, c) || INK(r + 1, c) || INK(r, c - 1) || INK(r, c + 1) || INK(r - 1, c - 1)
+                     || INK(r - 1, c + 1) || INK(r + 1, c - 1) || INK(r + 1, c + 1))
+                Px(x + c, y + r, edge);
+        }
+#undef INK
+}
 
-        CtrBottomDraw_Plate(CAN_X + 4, H - 22, CAN_W - 8, 20, 0, false);
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, picking ? "TAP A PIXEL TO PICK ITS PLANE" : sE.toast,
-                                  CAN_X + CAN_W / 2, H - 19, picking ? CTR_DRAW_BLUE : CTR_DRAW_DARK);
-    }
+static void Icon(int icon, bool large, int x, int y, uint16_t ink)
+{
+    if (large) DrawGlyph(sIconLarge[icon], ICON_LARGE, x, y, ink, Rgb(1, 2, 2));
+    else DrawGlyph(sIconSmall[icon], ICON_SMALL, x, y, ink, Rgb(1, 2, 2));
+}
+
+/* An icon in the middle of a plate. */
+static void PlateIcon(int x, int y, int w, int h, int look, bool pressed, int icon, bool large, uint16_t ink)
+{
+    int size = large ? ICON_LARGE : ICON_SMALL;
+
+    CtrBottomDraw_Plate(x, y, w, h, look, pressed);
+    Icon(icon, large, x + (w - size) / 2, y + (h - size) / 2, ink);
 }
 
 /* A plane's pixels as a preview `size` pixels square at (x, y): the
- * picture's own box, so a small Pokémon is not a speck. */
-static void DrawPreview(unsigned plane, int x, int y, int size)
+ * picture's own box, so a small Pokémon is not a speck; dimmed for a plane
+ * not being edited. */
+static void DrawPreview(unsigned plane, int x, int y, int size, bool dim)
 {
     const uint16_t *pic = sE.pic[sE.frame];
     uint16_t bg = Rgb(6, 12, 6);
@@ -1447,21 +1776,10 @@ static void DrawPreview(unsigned plane, int x, int y, int size)
             if (sx >= 0 && sy >= 0 && sx < DIM && sy < DIM)
             {
                 i = (unsigned)(sy * DIM + sx);
-                if (pic[i] != 0 && GetPlane(sE.frame, i) == plane) c = Rgb565Of(pic[i]);
+                if (pic[i] != 0 && GetPlane(sE.frame, i) == plane) c = dim ? Mix(Grey(Rgb565Of(pic[i])), bg, 1, 2) : Rgb565Of(pic[i]);
             }
             Px(x + px, y + py, c);
         }
-}
-
-static void DrawIcon(const uint16_t *bits, int x, int y, uint16_t ink, uint16_t shadow)
-{
-    for (int r = 0; r < 16; ++r)
-        for (int c = 0; c < 16; ++c)
-            if ((bits[r] >> (15 - c)) & 1)
-            {
-                Px(x + c + 1, y + r + 1, shadow);
-                Px(x + c, y + r, ink);
-            }
 }
 
 static void DrawDisc(int cx, int cy, int r, uint16_t c)
@@ -1471,51 +1789,98 @@ static void DrawDisc(int cx, int cy, int r, uint16_t c)
             if (dx * dx + dy * dy <= r * r + r) Px(cx + dx, cy + dy, c);
 }
 
-/* A slim slider: its track, its steps, a knob with its sign. */
-static void DrawSlider(int cx, int value, int steps, bool zoom)
+/* A slim slider over the picture: its track, its steps (those up to the
+ * value lit), a knob with its icon. */
+static void DrawSlider(int cx, int value, int steps, int icon, uint16_t iconInk)
 {
-    const uint16_t track = Rgb(12, 26, 14), knob = Rgb(6, 16, 9), ring = Rgb(31, 63, 31);
+    const uint16_t track = Rgb(26, 54, 28), edge = Rgb(1, 2, 2), knob = Rgb(10, 21, 12), ring = Rgb(31, 63, 31);
     int ky = SL_BOTTOM - (SL_BOTTOM - SL_TOP) * value / (steps - 1);
 
+    CtrBottomDraw_Fill(cx - 2, SL_TOP - 1, 5, SL_BOTTOM - SL_TOP + 3, edge);
     CtrBottomDraw_Fill(cx - 1, SL_TOP, 3, SL_BOTTOM - SL_TOP + 1, track);
-    for (int s = 0; s < steps; ++s) CtrBottomDraw_Fill(cx - 3, SL_BOTTOM - (SL_BOTTOM - SL_TOP) * s / (steps - 1), 7, 1, track);
-    DrawDisc(cx, ky, KNOB_R + 1, ring);
-    DrawDisc(cx, ky, KNOB_R, knob);
-    if (zoom)
+    for (int s = 0; s < steps; ++s)
     {
-        /* A magnifier's plus. */
-        CtrBottomDraw_Fill(cx - 3, ky, 7, 1, ring);
-        CtrBottomDraw_Fill(cx, ky - 3, 1, 7, ring);
+        int ty = SL_BOTTOM - (SL_BOTTOM - SL_TOP) * s / (steps - 1);
+
+        CtrBottomDraw_Fill(cx - 5, ty - 1, 11, 3, edge);
+        CtrBottomDraw_Fill(cx - 4, ty, 9, 1, s <= value ? Rgb(31, 56, 8) : track);
     }
-    else
-        DrawDisc(cx, ky, value, sPlaneColours[sE.layer]);
+    DrawDisc(cx, ky, KNOB_R + 2, edge);
+    DrawDisc(cx, ky, KNOB_R + 1, ring);
+    DrawDisc(cx, ky, KNOB_R - 1, knob);
+    Icon(icon, false, cx - ICON_SMALL / 2, ky - ICON_SMALL / 2, iconInk);
 }
 
+/* The left, over the picture: the sliders, each tool under its slider. */
 static void DrawLeft(void)
 {
-    CtrBottomDraw_Panel(0, 0, LEFT_W, H);
-    CtrBottomDraw_Plate(TOOL_X, DEX_Y, TOOL_W, DEX_H, 0, sE.pressed == T_COUNT + B_COUNT);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "DEX", TOOL_X + TOOL_W / 2, DEX_Y + 2, CTR_DRAW_DARK);
-    DrawSlider(SL_ZOOM_X, sE.zoom, ZOOMS, true);
-    DrawSlider(SL_SIZE_X, sE.size - 1, SIZES, false);
-    for (int row = 0; row < T_COUNT; ++row)
-    {
-        int y = TOOL_Y0 + row * TOOL_STEP;
-        bool on = sE.tool == row;
-        /* The brush is drawn in the colour of the plane it paints. */
-        uint16_t ink = row == T_BRUSH ? sPlaneColours[sE.layer] : on ? Rgb(31, 63, 31) : Rgb(6, 14, 8);
-        uint16_t shadow = row == T_BRUSH ? Rgb(2, 4, 2) : on ? Rgb(4, 14, 8) : Rgb(22, 50, 26);
+    static const int icons[L_COUNT] = {ICON_PAN, ICON_BRUSH, ICON_FILL, ICON_UNDO};
+    static const uint8_t tools[L_COUNT] = {T_PAN, T_BRUSH, T_FILL, T_COUNT};
 
-        CtrBottomDraw_Plate(TOOL_X, y, TOOL_W, TOOL_H, on ? 1 : 0, on || sE.pressed == row);
-        DrawIcon(sIcons[row], TOOL_X + (TOOL_W - 16) / 2, y + (TOOL_H - 16) / 2, ink, shadow);
+    DrawSlider(SL_ZOOM_X, sE.zoom, ZOOMS, ICON_ZOOM, Rgb(31, 63, 31));
+    DrawSlider(SL_SIZE_X, sE.size - 1, SIZES, ICON_BRUSH, sPlaneColours[sE.layer]);
+    for (int b = 0; b < L_COUNT; ++b)
+    {
+        int x, y;
+        bool on = tools[b] == sE.tool;
+        /* The brush is drawn in the colour of the plane it paints. */
+        uint16_t ink = b == L_BRUSH ? sPlaneColours[sE.layer] : Rgb(31, 63, 31);
+
+        LeftButton(b, &x, &y);
+        PlateIcon(x, y, TOOL_W, TOOL_H, on ? 1 : 0, on || sE.pressed == P_LEFT + b, icons[b], true, ink);
     }
 }
 
+/* The bar over the picture's top: what concerns the picture. */
+static void DrawBar(void)
+{
+    const bool back = (sE.id & 0xC000) != 0, other = CtrStereoMon_Counterpart(sE.id) != 0;
+    const bool final = CtrStereoMon_EditMeta()->finalized;
+    char label[12];
+
+    PlateIcon(DEX_X, BAR_Y, DEX_W, BAR_H, 0, sE.pressed == P_DEX, ICON_LIST, true, Rgb(31, 63, 31));
+    /* The F/B switch: the side shown chosen, the other greyed when the pack has none. */
+    CtrBottomDraw_Plate(FB_X, BAR_Y, FB_W, BAR_H, !back ? 1 : other ? 0 : 2, !back || sE.pressed == P_FRONT);
+    CtrBottomDraw_Plate(FB_X + FB_W, BAR_Y, FB_W, BAR_H, back ? 1 : other ? 0 : 2, back || sE.pressed == P_BACK);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "F", FB_X + FB_W / 2, BAR_Y + 5, !back ? CTR_DRAW_WHITE : other ? CTR_DRAW_DARK : CTR_DRAW_OFF);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "B", FB_X + FB_W + FB_W / 2, BAR_Y + 5, back ? CTR_DRAW_WHITE : other ? CTR_DRAW_DARK : CTR_DRAW_OFF);
+    snprintf(label, sizeof(label), "F%u/%u", sE.frame + 1, sE.frames);
+    CtrBottomDraw_Plate(FRAME_X, BAR_Y, FRAME_W, BAR_H, sE.frames > 1 ? 0 : 2, sE.pressed == P_FRAME);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, FRAME_X + FRAME_W / 2, BAR_Y + 5, sE.frames > 1 ? CTR_DRAW_DARK : CTR_DRAW_OFF);
+    PlateIcon(BATTLE_X, BAR_Y, BATTLE_W, BAR_H, sE.battleView ? 1 : 0, sE.battleView || sE.pressed == P_BATTLE, ICON_BATTLE,
+              true, Rgb(31, 63, 31));
+    /* Unsaved changes: a red dot. */
+    if (sE.dirtyFile)
+    {
+        DrawDisc(BATTLE_X + BATTLE_W + 8, BAR_Y + BAR_H / 2, 4, Rgb(1, 2, 2));
+        DrawDisc(BATTLE_X + BATTLE_W + 8, BAR_Y + BAR_H / 2, 3, Rgb(31, 12, 8));
+    }
+    /* FINAL: a checkbox. */
+    CtrBottomDraw_Plate(FINAL_X, BAR_Y, FINAL_W, BAR_H, final ? 1 : 0, final || sE.pressed == P_FINAL);
+    Icon(final ? ICON_BOX_CHECK : ICON_BOX, false, FINAL_X + 5, BAR_Y + (BAR_H - ICON_SMALL) / 2,
+         final ? Rgb(16, 63, 12) : Rgb(31, 63, 31));
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "FINAL", FINAL_X + 21, BAR_Y + 5, final ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+}
+
+static void DrawToast(void)
+{
+    if ((sE.heldKeys & CTR_KEY_L) || sE.toastFrames)
+    {
+        bool picking = sE.heldKeys & CTR_KEY_L;
+        int x0 = FREE_X, w = RIGHT_X - 4 - x0;
+
+        CtrBottomDraw_Plate(x0, H - 22, w, 20, 0, false);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, picking ? "TAP A PIXEL TO PICK ITS PLANE" : sE.toast, x0 + w / 2,
+                                  H - 19, picking ? CTR_DRAW_BLUE : CTR_DRAW_DARK);
+    }
+}
+
+/* The planes' column: the planes nearest first, each framed in its colour
+ * (bright for the plane being edited, muted for the others), then the
+ * grid's three looks and the tint, the outline and MORE. */
 static void DrawRight(void)
 {
-    static const uint16_t grid[16] = {0, 0, 0x7FFE, 0x4922, 0x4922, 0x7FFE, 0x4922, 0x4922, 0x7FFE,
-                                      0x4922, 0x4922, 0x7FFE, 0, 0, 0, 0};
-    const uint16_t ink = Rgb(6, 14, 8), shadow = Rgb(22, 50, 26);
+    static const int icons[B_COUNT] = {ICON_GRID_OFF, ICON_GRID, ICON_GRID, ICON_CONTRAST, ICON_OUTLINE, ICON_MORE};
     char label[4];
 
     CtrBottomDraw_Panel(RIGHT_X, 0, W, H);
@@ -1524,43 +1889,38 @@ static void DrawRight(void)
         unsigned plane = (unsigned)(PLANES - 1 - r);
         int y = ROW_Y0 + r * ROW_STEP;
         bool cur = plane == sE.layer, grabbed = sE.grabRow == r;
-        uint16_t colour = cur ? sPlaneColours[plane] : Mix(sPlaneColours[plane], Rgb(6, 12, 6), 1, 2);
+        uint16_t colour = cur ? sPlaneColours[plane] : Muted(sPlaneColours[plane]);
+        /* The number's ink: white on a dark colour, dark on a light one. */
+        bool light = (Grey(colour) >> 11) > 14;
 
-        /* The frame in the plane's colour (bright for the plane being
-         * edited, with a light rim), the thumbnail, the number. */
-        if (cur) CtrBottomDraw_Fill(ROW_X - 2, y - 1, ROW_SIDE + 4, ROW_SIDE, Rgb(31, 63, 31));
-        CtrBottomDraw_Fill(ROW_X, y, ROW_SIDE, ROW_SIDE - 2, colour);
-        DrawPreview(plane, ROW_X + ROW_FRAME, y + ROW_FRAME, THUMB);
+        if (cur)
+        {
+            CtrBottomDraw_Fill(ROW_X - 3, y - 2, ROW_SIDE + 6, ROW_SIDE + 4, Rgb(1, 2, 2));
+            CtrBottomDraw_Fill(ROW_X - 2, y - 1, ROW_SIDE + 4, ROW_SIDE + 2, Rgb(31, 63, 31));
+        }
+        CtrBottomDraw_Fill(ROW_X, y, ROW_SIDE, ROW_SIDE, colour);
+        DrawPreview(plane, ROW_X + ROW_FRAME, y + ROW_FRAME, THUMB, !cur);
         CtrBottomDraw_Fill(ROW_X + ROW_FRAME, y + ROW_FRAME, 10, 13, colour);
         snprintf(label, sizeof(label), "%d", r + 1);
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, ROW_X + ROW_FRAME + 5, y + ROW_FRAME, CTR_DRAW_DARK);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, ROW_X + ROW_FRAME + 5, y + ROW_FRAME,
+                                  light ? CTR_DRAW_DARK : CTR_DRAW_WHITE);
         if (grabbed) CtrBottomDraw_Fill(ROW_X + ROW_FRAME, y + ROW_FRAME, THUMB, 4, Rgb(31, 50, 10));
         if (sE.grabRow >= 0 && sE.grabTarget == r && !grabbed)
-            CtrBottomDraw_Fill(ROW_X - 2, sE.grabTarget > sE.grabRow ? y + ROW_SIDE - 2 : y - 2, ROW_SIDE + 4, 3, Rgb(31, 50, 10));
+            CtrBottomDraw_Fill(ROW_X - 2, sE.grabTarget > sE.grabRow ? y + ROW_SIDE - 1 : y - 3, ROW_SIDE + 4, 3, Rgb(31, 50, 10));
     }
     for (int b = 0; b < B_COUNT; ++b)
     {
-        int x = ROW_X + (b % 2) * BTN_STEP_X, y = BTN_Y0 + (b / 2) * BTN_STEP_Y;
-        bool on = (b == B_OUTLINE && sE.outlineOn) || (b == B_GRID && sE.grid);
+        int x = ROW_X - 1 + (b % 3) * BTN_STEP_X, y = BTN_Y0 + (b / 3) * BTN_STEP_Y;
+        bool on = (b <= B_GRID_BLACK && sE.grid == b - B_GRID_OFF) || (b == B_OUTLINE && sE.outlineOn);
+        /* The grid's buttons in the grid's own ink; the outline in its colour. */
+        uint16_t ink = b == B_GRID_BLACK ? Rgb(0, 0, 0) : b == B_OUTLINE ? sE.mark : Rgb(31, 63, 31);
 
-        CtrBottomDraw_Plate(x, y, BTN_W, BTN_H, on ? 1 : 0, on || sE.pressed == T_COUNT + b);
-        if (b == B_OUTLINE)
-        {
-            /* A dashed square in the mark colour. */
-            for (int t = 0; t < 11; t += 2)
-            {
-                Px(x + 7 + t, y + 3, sE.mark);
-                Px(x + 7 + t, y + 13, sE.mark);
-                Px(x + 7, y + 3 + t, sE.mark);
-                Px(x + 17, y + 3 + t, sE.mark);
-            }
-        }
-        else if (b == B_OPACITY)
-            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, sOpacityNames[sE.opacity], x + BTN_W / 2, y + 1, CTR_DRAW_DARK);
-        else if (b == B_GRID)
-            DrawIcon(grid, x + 4, y + 1, on ? Rgb(31, 63, 31) : ink, on ? Rgb(4, 14, 8) : shadow);
+        CtrBottomDraw_Plate(x, y, BTN_W, BTN_H, on ? 1 : 0, on || sE.pressed == P_RIGHT + b);
+        if (b == B_GRID_BLACK)
+            DrawGlyph(sIconSmall[icons[b]], ICON_SMALL, x + (BTN_W - ICON_SMALL) / 2, y + (BTN_H - ICON_SMALL) / 2, ink,
+                      Rgb(31, 63, 31));
         else
-            for (int d = 0; d < 3; ++d) CtrBottomDraw_Fill(x + 6 + d * 5, y + 8, 3, 3, ink);
+            Icon(icons[b], false, x + (BTN_W - ICON_SMALL) / 2, y + (BTN_H - ICON_SMALL) / 2, ink);
     }
 }
 
@@ -1577,8 +1937,9 @@ static void DrawConfirm(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"3D DEPTH  -/+", "AUTO PROPAGATE", "PROPAGATE NOW", "RESET TO PACK", "CLOSE"};
-    char depth[8];
+    static const char *const names[O_COUNT] = {"3D DEPTH", "AUTO PROPAGATE", "PROPAGATE NOW", "AUTHOR", "RESET TO PACK",
+                                               "CLOSE"};
+    char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
     for (int row = 0; row < O_COUNT; ++row)
@@ -1586,49 +1947,70 @@ static void DrawOptions(void)
         int y = OPT_Y + 8 + row * OPT_ROW;
 
         CtrBottomDraw_Plate(OPT_X + 8, y, OPT_W - 16, OPT_ROW - 4, 0, false);
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, names[row], OPT_X + 14, y + 4, CTR_DRAW_DARK);
-        if (row == O_PROPAGATE || row == O_DEPTH)
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, names[row], OPT_X + 14, y + 5, CTR_DRAW_DARK);
+        value[0] = 0;
+        if (row == O_DEPTH)
         {
-            const char *value = sE.propagate ? "ON" : "OFF";
+            /* A minus at the left half's end and a plus at the right's:
+             * a tap on either half. (The game font has no plus.) */
+            int mx = OPT_X + OPT_W / 2 - 14, px = OPT_X + OPT_W - 22, cy = y + (OPT_ROW - 4) / 2;
 
-            if (row == O_DEPTH)
-            {
-                snprintf(depth, sizeof(depth), "%d%%", CtrStereoMon_Depth());
-                value = depth;
-            }
-            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, value,
-                               OPT_X + OPT_W - 14 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, value), y + 4,
-                               CTR_DRAW_RED);
+            CtrBottomDraw_Fill(mx, cy - 1, 9, 3, Rgb(24, 6, 6));
+            CtrBottomDraw_Fill(px, cy - 1, 9, 3, Rgb(24, 6, 6));
+            CtrBottomDraw_Fill(px + 3, cy - 4, 3, 9, Rgb(24, 6, 6));
+            snprintf(value, sizeof(value), "%d / %d", CtrStereoMon_Depth(), CTR_STEREO_EDIT_DEPTH_MAX);
+            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, value, OPT_X + OPT_W * 3 / 4 - 10, y + 5, CTR_DRAW_RED);
+            value[0] = 0;
         }
+        else if (row == O_PROPAGATE) snprintf(value, sizeof(value), "%s", sE.propagate ? "ON" : "OFF");
+        else if (row == O_AUTHOR) snprintf(value, sizeof(value), "%s", CtrStereoMon_Author()[0] ? CtrStereoMon_Author() : "?");
+        if (value[0])
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, value,
+                               OPT_X + OPT_W - 14 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, value), y + 5, CTR_DRAW_RED);
     }
 }
 
 static void DrawChooser(void)
 {
-    unsigned count = CtrStereoMon_GalleryCount(), page = sE.chooseCursor / CH_PER_PAGE;
-    unsigned pages = (count + CH_PER_PAGE - 1) / CH_PER_PAGE;
-    char line[48], name[CTR_STEREO_MON_NAME];
+    unsigned count = sListCount, page = sE.chooseCursor / CH_PER_PAGE;
+    unsigned pages = count ? (count + CH_PER_PAGE - 1) / CH_PER_PAGE : 1;
+    char line[80], name[CTR_STEREO_MON_NAME];
 
     CtrBottomDraw_Panel(0, 0, W, H);
-    snprintf(line, sizeof(line), "CHOOSE A PICTURE  %u/%u", page + 1, pages);
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, 3, CTR_DRAW_DARK);
-    CtrBottomDraw_Plate(W - 60, 2, 28, 16, 0, false);
-    CtrBottomDraw_Plate(W - 30, 2, 28, 16, 0, false);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "L", W - 46, 3, CTR_DRAW_DARK);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "R", W - 16, 3, CTR_DRAW_DARK);
+    /* The bar: the search (what is typed), ALL or EDITED, the order, the pages. */
+    CtrBottomDraw_Plate(CH_SEARCH_X, 2, CH_SEARCH_W, 20, sE.query[0] ? 1 : 0, sE.query[0] != 0);
+    Icon(ICON_SEARCH, false, CH_SEARCH_X + 5, 6, Rgb(31, 63, 31));
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.query[0] ? sE.query : "SEARCH  Y", CH_SEARCH_X + 22, 5,
+                       sE.query[0] ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
+    CtrBottomDraw_Plate(CH_SHOW_X, 2, CH_SHOW_W, 20, sE.onlyEdited ? 1 : 0, sE.onlyEdited);
+    Icon(sE.onlyEdited ? ICON_PENCIL : ICON_FILTER, false, CH_SHOW_X + 4, 6, Rgb(31, 63, 31));
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.onlyEdited ? "EDITED" : "ALL", CH_SHOW_X + 19, 5,
+                       sE.onlyEdited ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(CH_SORT_X, 2, CH_SORT_W, 20, sE.editedFirst ? 1 : 0, sE.editedFirst);
+    Icon(ICON_SORT, false, CH_SORT_X + 4, 6, Rgb(31, 63, 31));
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.editedFirst ? "EDITED 1ST" : "BY NO.", CH_SORT_X + 19, 5,
+                       sE.editedFirst ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(CH_PREV_X, 2, CH_PAGE_W, 20, 0, false);
+    CtrBottomDraw_Plate(CH_NEXT_X, 2, CH_PAGE_W, 20, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "L", CH_PREV_X + CH_PAGE_W / 2, 5, CTR_DRAW_DARK);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "R", CH_NEXT_X + CH_PAGE_W / 2, 5, CTR_DRAW_DARK);
     sE.iconsMissing = false;
+    if (count == 0)
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_NORMAL, sE.onlyEdited ? "NO EDITED PICTURES YET" : "NOTHING BY THAT NAME",
+                                  W / 2, H / 2 - 8, CTR_DRAW_DARK);
     for (unsigned cell = 0; cell < CH_PER_PAGE; ++cell)
     {
-        unsigned index = page * CH_PER_PAGE + cell;
+        unsigned pos = page * CH_PER_PAGE + cell, index;
         int x = (int)(cell % CH_COLS) * (W / CH_COLS), y = CH_Y0 + (int)(cell / CH_COLS) * CH_ROW_H;
         uint16_t id, kind, number;
         bool cur;
 
-        if (index >= count) break;
+        if (pos >= count) break;
+        index = sList[pos];
         id = CtrStereoMon_GalleryIdAt(index);
         kind = id & 0xC000;
         number = id & 0x3FFF;
-        cur = index == sE.chooseCursor;
+        cur = pos == sE.chooseCursor;
         CtrStereoMonGame_Name(id, name, sizeof(name));
         CtrBottomDraw_Plate(x + 2, y, W / CH_COLS - 4, CH_ROW_H - 2, cur ? 1 : 0, cur);
         /* A Pokémon's icon (front or back); a trainer's or a player's kind. */
@@ -1643,9 +2025,65 @@ static void DrawChooser(void)
         else snprintf(line, sizeof(line), "%c%03u", kind == CTR_STEREO_ID_BACK ? 'B' : kind == CTR_STEREO_ID_TRAINER ? 'T' : 'P', number);
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 3, cur ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, name, x + 36, y + 16, cur ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
-        if (CtrStereoMon_HasEdit(id))
-            CtrBottomDraw_Fill(x + W / CH_COLS - 10, y + 5, 5, 5, cur ? Rgb(31, 60, 20) : Rgb(8, 40, 12));
+        /* Edited: a pencil; finished: a tick. */
+        if (CtrStereoMon_IsFinal(id))
+            Icon(ICON_CHECK, false, x + W / CH_COLS - 18, y + 3, Rgb(8, 58, 10));
+        else if (CtrStereoMon_HasEdit(id))
+            Icon(ICON_PENCIL, false, x + W / CH_COLS - 18, y + 3, Rgb(31, 52, 8));
     }
+    /* (The game font's strings take 39 characters at most.) */
+    snprintf(line, sizeof(line), "%u SHOWN   PAGE %u/%u   X EDITED ONLY", count, count ? page + 1 : 1, pages);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, CH_Y0 + CH_ROWS * CH_ROW_H + 1, CTR_DRAW_DARK);
+}
+
+static void DrawKeyboard(void)
+{
+    static const char *const wide[KB_WIDE] = {"DEL", "SPACE", "CLEAR", "OK"};
+    static const int wideIcons[KB_WIDE] = {ICON_DELETE, -1, ICON_X, ICON_ENTER};
+    const char *text = sE.kbFor == KB_SEARCH ? sE.query : sE.kbText;
+    char line[64];
+
+    CtrBottomDraw_Panel(0, 0, W, H);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.kbFor == KB_SEARCH ? "SEARCH A NAME OR A NUMBER" : "WHO SIGNS THE SAVES", 8, 2,
+                       CTR_DRAW_DARK);
+    /* The text so far, and where the next letter goes. */
+    CtrBottomDraw_Plate(6, 16, W - 12, 22, 1, false);
+    Icon(sE.kbFor == KB_SEARCH ? ICON_SEARCH : ICON_USER, false, 12, 21, Rgb(31, 63, 31));
+    CtrBottomDraw_Text(CTR_DRAW_FONT_NORMAL, text, 30, 19, CTR_DRAW_WHITE);
+    CtrBottomDraw_Fill(30 + CtrBottomDraw_TextWidth(CTR_DRAW_FONT_NORMAL, text) + 1, 33, 8, 2, Rgb(31, 63, 31));
+    for (int k = 0; k < 36; ++k)
+    {
+        int x = KB_X + (k % KB_COLS) * KB_KEY_W, y = KB_Y + (k / KB_COLS) * KB_KEY_H;
+        char key[2] = {KeyAt(k), 0};
+
+        CtrBottomDraw_Plate(x + 1, y + 1, KB_KEY_W - 2, KB_KEY_H - 2, 0, false);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_NORMAL, key, x + KB_KEY_W / 2, y + 6, CTR_DRAW_DARK);
+    }
+    for (int k = 0; k < KB_WIDE; ++k)
+    {
+        int x = KB_X + k * KB_WIDE_STEP;
+
+        CtrBottomDraw_Plate(x, KB_ROW2_Y, KB_WIDE_W, KB_KEY_H - 2, k == KB_OK ? 1 : 0, false);
+        if (wideIcons[k] >= 0) Icon(wideIcons[k], false, x + 6, KB_ROW2_Y + 8, Rgb(31, 63, 31));
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, wide[k], x + KB_WIDE_W / 2 + 6, KB_ROW2_Y + 7,
+                                  k == KB_OK ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+    }
+    /* What the search finds so far. */
+    if (sE.kbFor == KB_SEARCH)
+    {
+        char name[CTR_STEREO_MON_NAME];
+        unsigned n = (unsigned)snprintf(line, sizeof(line), "%u FOUND", sListCount);
+
+        for (unsigned k = 0; k < sListCount && k < 3; ++k)
+        {
+            CtrStereoMonGame_Name(CtrStereoMon_GalleryIdAt(sList[k]), name, sizeof(name));
+            /* The game font's strings take 39 characters at most. */
+            if (n + 2 + strlen(name) > 39) break;
+            n += (unsigned)snprintf(line + n, sizeof(line) - n, "%s%s", k ? ", " : ": ", name);
+        }
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 8, KB_ROW2_Y + KB_KEY_H + 4, CTR_DRAW_DARK);
+    }
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "B RUB OUT   START OK", 8, H - 15, CTR_DRAW_OFF);
 }
 
 static void Draw(void)
@@ -1653,6 +2091,8 @@ static void Draw(void)
     CtrBottomDraw_Begin(sCanvas);
     if (sE.screen == S_CHOOSE)
         DrawChooser();
+    else if (sE.screen == S_KEYBOARD)
+        DrawKeyboard();
     else if (sE.pl == NULL)
     {
         CtrBottomDraw_Panel(0, 0, W, H);
@@ -1660,8 +2100,10 @@ static void Draw(void)
     }
     else
     {
-        DrawLeft();
         DrawPicture();
+        DrawLeft();
+        DrawBar();
+        DrawToast();
         DrawRight();
         if (sE.screen == S_OPTIONS) DrawOptions();
         if (sE.screen == S_CONFIRM_RESET) DrawConfirm();
@@ -1677,32 +2119,43 @@ static void Draw(void)
  * (RGB565 in the canvas layout) at a few points.
  */
 typedef struct { uint16_t from, to; int16_t x, y; uint16_t key; } Step;
-#define TOOL_TAP(t) (TOOL_Y0 + (t) * TOOL_STEP + TOOL_H / 2)
-#define BTN_TAP_X(b) (ROW_X + ((b) % 2) * BTN_STEP_X + BTN_W / 2)
-#define BTN_TAP_Y(b) (BTN_Y0 + ((b) / 2) * BTN_STEP_Y + BTN_H / 2)
+#define LEFT_TAP_X(b) ((b) % 2 ? SL_SIZE_X : SL_ZOOM_X)
+#define LEFT_TAP_Y(b) (TOOL_Y0 + ((b) / 2) * TOOL_STEP + TOOL_H / 2)
+#define BTN_TAP_X(b) (ROW_X - 1 + ((b) % 3) * BTN_STEP_X + BTN_W / 2)
+#define BTN_TAP_Y(b) (BTN_Y0 + ((b) / 3) * BTN_STEP_Y + BTN_H / 2)
+#define KEY_TAP_X(k) (KB_X + ((k) % KB_COLS) * KB_KEY_W + KB_KEY_W / 2)
+#define KEY_TAP_Y(k) (KB_Y + ((k) / KB_COLS) * KB_KEY_H + KB_KEY_H / 2)
 static const Step sScript[] = {
-    {40, 41, TOOL_X + 16, TOOL_TAP(T_FILL), 0},            /* FILL */
-    {60, 61, CAN_X + CAN_W / 2, H / 2, 0},                 /* a tap on the body: its colour cell */
-    {90, 91, ROW_X + 25, ROW_Y0 + 2 * ROW_STEP + 25, 0},   /* plane 3 */
-    {120, 152, 0, 0, 0},                                   /* a loop (drawn below) */
+    {40, 41, LEFT_TAP_X(L_FILL), LEFT_TAP_Y(L_FILL), 0},       /* FILL */
+    {60, 61, 160, H / 2, 0},                                   /* a tap on the body: its colour cell */
+    {90, 91, ROW_X + 25, ROW_Y0 + 2 * ROW_STEP + 25, 0},       /* plane 3 */
+    {120, 152, 0, 0, 0},                                       /* a loop (drawn below) */
     {165, 166, BTN_TAP_X(B_OPACITY), BTN_TAP_Y(B_OPACITY), 0}, /* the tint lighter */
-    {175, 176, TOOL_X + 16, TOOL_TAP(T_BRUSH), 0},         /* BRUSH */
-    {180, 181, SL_SIZE_X, SL_TOP + 10, 0},                 /* the biggest brush */
-    {190, 210, 0, 0, 0},                                   /* a stroke (drawn below) */
-    {220, 221, 0, 0, CTR_KEY_UP},                          /* zoom in */
-    {230, 231, BTN_TAP_X(B_GRID), BTN_TAP_Y(B_GRID), 0},   /* the grid */
-    {240, 241, TOOL_X + 16, TOOL_TAP(T_PAN), 0},           /* PAN */
-    {245, 260, 0, 0, 0},                                   /* a drag (drawn below) */
-    {270, 271, BTN_TAP_X(B_MORE), BTN_TAP_Y(B_MORE), 0},   /* MORE */
-    {285, 286, 20, 20, 0},                                 /* (closes it: a tap outside) */
-    {290, 291, 0, 0, CTR_KEY_R},                           /* the other frame */
-    {300, 301, 0, 0, CTR_KEY_SELECT},                      /* the chooser */
-    {315, 316, 0, 0, CTR_KEY_RIGHT},
-    {330, 331, 0, 0, CTR_KEY_A},                           /* the next Pokémon */
-    {360, 361, CAN_X + 4 + CORNER_W / 2, CORNER_Y + 8, 0}, /* its back */
-    {420, 421, 0, 0, CTR_KEY_B},                           /* back to the gallery */
+    {175, 176, LEFT_TAP_X(L_BRUSH), LEFT_TAP_Y(L_BRUSH), 0},   /* BRUSH */
+    {180, 181, SL_SIZE_X, SL_TOP + 2, 0},                      /* the biggest brush */
+    {190, 210, 0, 0, 0},                                       /* a stroke (drawn below) */
+    {220, 221, 0, 0, CTR_KEY_UP},                              /* zoom in */
+    {230, 231, BTN_TAP_X(B_GRID_WHITE), BTN_TAP_Y(B_GRID_WHITE), 0}, /* the white grid */
+    {236, 237, 0, 0, CTR_KEY_X},                               /* VIEW LAYERS on the top screen */
+    {240, 241, LEFT_TAP_X(L_PAN), LEFT_TAP_Y(L_PAN), 0},       /* PAN */
+    {245, 260, 0, 0, 0},                                       /* a drag (drawn below) */
+    {270, 271, BTN_TAP_X(B_MORE), BTN_TAP_Y(B_MORE), 0},       /* MORE */
+    {285, 286, 10, 10, 0},                                     /* (closes it: a tap outside) */
+    {290, 291, 0, 0, CTR_KEY_R},                               /* the other frame */
+    {292, 293, BATTLE_X + 10, BAR_Y + 8, 0},                   /* the battle's view */
+    {296, 297, FINAL_X + 20, BAR_Y + 8, 0},                    /* FINAL */
+    {300, 301, 0, 0, CTR_KEY_SELECT},                          /* the chooser */
+    {306, 307, CH_SORT_X + 10, 10, 0},                         /* edited first */
+    {312, 313, CH_SEARCH_X + 20, 10, 0},                       /* the search */
+    {318, 319, KEY_TAP_X(1), KEY_TAP_Y(1), 0},                 /* B */
+    {322, 323, KEY_TAP_X(20), KEY_TAP_Y(20), 0},               /* U */
+    {326, 327, KEY_TAP_X(11), KEY_TAP_Y(11), 0},               /* L */
+    {330, 331, 0, 0, CTR_KEY_START},                           /* OK */
+    {336, 337, 0, 0, CTR_KEY_A},                               /* the first found */
+    {360, 361, FB_X + FB_W + 8, BAR_Y + 8, 0},                 /* its back */
+    {420, 421, 0, 0, CTR_KEY_B},                               /* back to the gallery */
 };
-static const uint16_t sDumpTicks[] = {30, 75, 105, 160, 172, 215, 225, 235, 265, 280, 310, 400};
+static const uint16_t sDumpTicks[] = {30, 75, 105, 160, 172, 215, 225, 239, 265, 280, 295, 299, 310, 316, 328, 333, 400};
 
 static void TestDump(void)
 {
@@ -1771,6 +2224,7 @@ static const CtrInput *TestInput(const CtrInput *real)
             unsigned key = sScript[k].key;
 
             if (sE.screen == S_EDIT && (key & CTR_KEY_DPAD)) DpadKeys(key);
+            else if (sE.screen == S_KEYBOARD || sE.screen == S_CHOOSE) CtrStereoEdit_Keys(key, 0);
             else CtrStereoEdit_Keys(key, key);
         }
     return &synth;
@@ -1834,13 +2288,14 @@ bool CtrStereoEdit_BottomFrame(void)
     in = TestInput(in);
     if (sE.pl != NULL) sE.dirtyDraw = true;
 #endif
-    if (sE.screen != S_CHOOSE && !Bind())
+    if (sE.screen != S_CHOOSE && sE.screen != S_KEYBOARD && !Bind())
     {
         if (sE.tick % 16 == 0) Draw();
         return true;
     }
     if (!sE.active) return true;
     if (sE.screen == S_CHOOSE) TouchChoose(in);
+    else if (sE.screen == S_KEYBOARD) TouchKeyboard(in);
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
     else if (sE.screen == S_CONFIRM_RESET) TouchConfirm(in);
     else
@@ -1850,16 +2305,18 @@ bool CtrStereoEdit_BottomFrame(void)
         CstickMon(in);
     }
     if (!sE.active) return true;
-    if (sE.screen != S_CHOOSE && sE.pl != NULL)
+    if (sE.screen != S_CHOOSE && sE.screen != S_KEYBOARD && sE.pl != NULL)
     {
         CtrStereoMon_SetEditing(true, sE.layer);
-        CtrStereoMon_SetEditView(sE.frame, sE.animate, sE.outlineOn, sE.mark);
+        CtrStereoMon_SetEditView(sE.frame, sE.animate, sE.outlineOn, sE.mark, sE.layersView, sE.battleView);
     }
     if (sE.toastFrames && --sE.toastFrames == 0) sE.dirtyDraw = true;
     /* The lasso's dashes run while it is drawn. */
     if (sE.lassoing && sE.tick % 8 == 0) sE.dirtyDraw = true;
     /* The chooser's icons come in one a frame. */
     if (sE.screen == S_CHOOSE && sE.iconsMissing) sE.dirtyDraw = true;
+    /* The top screen's frame number follows the animation. */
+    if (sE.animate && sE.tick % 30 == 0) sE.dirtyDraw = true;
     if (sE.dirtyDraw)
     {
         static float peak;

@@ -196,14 +196,50 @@ void CtrStereoMon_Recompose(void);
 /* The editor is open on the Pokémon: no turn, every plane drawn on its own,
  * the plane being edited named on the screen. */
 void CtrStereoMon_SetEditing(bool editing, unsigned plane);
+/* The planes' colours (RGB565), the farthest first: four clashing,
+ * saturated hues, like a UV checker map's, so that neighbouring planes never
+ * look alike (blue, yellow, cyan, red: the nearest red). */
+#define CTR_STEREO_EDIT_COLOURS {0x201F, 0xFFE0, 0x07FF, 0xF800}
 /* What the top screen shows while editing: the frame being edited (or the
- * animation), and the plane being edited outlined in `mark` (RGB565). */
-void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark);
-/* The 3D depth setting (percent, 0..300), shared with the gallery and the Pokédex. */
+ * animation, every frame for as long), the plane being edited outlined in
+ * `mark` (RGB565), every pixel tinted with its plane's colour (`layers`),
+ * and the battle's view of the picture (`battle`: its size, its place and
+ * its depth in a battle). */
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, bool layers, bool battle);
+/* The editor's 3D depth (percent, 0..CTR_STEREO_EDIT_DEPTH_MAX): its own
+ * setting, capped at half the gallery's usual depth to spare the eyes over
+ * a long session; the gallery and the Pokédex keep theirs. */
+#define CTR_STEREO_EDIT_DEPTH_MAX 50
+#define CTR_STEREO_EDIT_DEPTH_STEP 10
 int CtrStereoMon_Depth(void);
 void CtrStereoMon_SetDepth(int percent);
-/* The planes on show to the SD card, or that file removed and the pack's
- * planes read back. */
+/*
+ * Who edited a picture, and how far: an edit file ends with a 32-byte
+ * trailer (older files have none): "EM3DSMD1", u8 flags (bit 0 finalized),
+ * u8 0, u16 revision (one more on every save), u32 seconds since 2000-01-01
+ * of the last save (0 unknown), char author[16] (ASCII, NUL-padded). The
+ * author is the console's user name unless CTR_STEREO_EDIT_DIR/author.txt
+ * names someone else (CtrStereoMon_SetAuthor writes it).
+ */
+#define CTR_STEREO_EDIT_AUTHOR 16
+typedef struct
+{
+    bool finalized;
+    uint16_t revision;
+    uint32_t saved;
+    char author[CTR_STEREO_EDIT_AUTHOR + 1];
+} CtrStereoEditMeta;
+/* The shown picture's: what its file says, or empty without one. */
+const CtrStereoEditMeta *CtrStereoMon_EditMeta(void);
+/* Marks the shown picture finished (or not); kept with its next save. */
+void CtrStereoMon_SetFinalized(bool finalized);
+/* Whether an id's edit file is marked finished (scanned with EditScan). */
+bool CtrStereoMon_IsFinal(uint16_t id);
+/* The name saves are signed with (ASCII capitals), and changing it. */
+const char *CtrStereoMon_Author(void);
+void CtrStereoMon_SetAuthor(const char *name);
+/* The planes on show to the SD card (signed, its revision one more), or
+ * that file removed and the pack's planes read back. */
 bool CtrStereoMon_SaveEdit(void);
 bool CtrStereoMon_ResetEdit(void);
 /* Which Pokémon have edit files: scanned once (Scan) and then answered from

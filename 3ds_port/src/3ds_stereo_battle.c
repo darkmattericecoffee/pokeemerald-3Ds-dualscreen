@@ -56,6 +56,10 @@
 /* Pixels of the planes behind carried on each card (CtrStereoMon_ComposeTile):
  * the gap a card's shift opens shows those, not the scene. */
 #define SKIRT 2
+/* A back's stack (a Pokémon's or the player's) at this much of a front's
+ * depth: seen from behind and large at the bottom of the scene, it tore
+ * apart at a front's (BACK_DEPTH in 3ds_stereo_mon.c). */
+#define BACK_DEPTH 0.6f
 #define DEPTH_KEY "voxel_depth"
 #define PLANES_KEY "stereo_planes"
 #define ENABLED_KEY "battle_mon_3d"
@@ -494,6 +498,8 @@ void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eye
         percent = depths[index >= 0 && index < (int)(sizeof(depths) / sizeof(depths[0])) ? index : 3];
     }
     depth = eyeParallax * PARALLAX * percent / 100.0f * shiftScale;
+    if ((s->composedPlanes->id & 0xC000) == CTR_STEREO_ID_BACK || (s->composedPlanes->id & 0xC000) == CTR_STEREO_ID_PLAYER)
+        depth *= BACK_DEPTH;
     for (unsigned plane = 0; plane < groups; ++plane)
     {
         /* The plane's depth towards the viewer in sprite pixels. The left
