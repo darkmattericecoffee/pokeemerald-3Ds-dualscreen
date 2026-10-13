@@ -93,8 +93,10 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
  * strength written on it) at its left. */
 #define GRID_X SAVE_X
 #define GRID_Y (H - 4 - BAR_H)
-#define TINT_W 50
-#define TINT_X (GRID_X - 4 - TINT_W)
+/* The tint under the planes, across the column, its strength written on it. */
+#define TINT_X (ROW_X - 1)
+#define TINT_W (ROW_SIDE + 2)
+#define TINT_Y (H - 4 - BAR_H)
 /* Along its bottom: the hand, the zoom slider in the middle, the grid. */
 #define BOT_H 32
 #define BOT_Y (H - BOT_H)
@@ -121,7 +123,8 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define ROW_X (RIGHT_X + 4)
 #define TAB_Y 2
 #define TAB_H 14
-#define TAB_W 27
+#define RIGHT_W (W - RIGHT_X)
+#define TAB_W (RIGHT_W / 2)
 #define FRAME_Y (TAB_Y + TAB_H + 2)
 #define FRAME_H 18
 #define FRAME_W 22
@@ -1436,7 +1439,6 @@ static bool CornerAct(int x, int y)
 {
     if (y < GRID_Y || y >= GRID_Y + BAR_H) return false;
     if (x >= GRID_X && x < GRID_X + SAVE_W) { sE.pressed = P_RIGHT + B_GRID; RightAct(B_GRID); }
-    else if (x >= TINT_X && x < TINT_X + TINT_W) { sE.pressed = P_RIGHT + B_OPACITY; RightAct(B_OPACITY); }
     else return false;
     return true;
 }
@@ -1467,7 +1469,7 @@ static void TouchEdit(const CtrInput *in)
         {
             if (y < FRAME_Y)
             {
-                bool back = x >= RIGHT_X + 1 + TAB_W;
+                bool back = x >= RIGHT_X + TAB_W;
 
                 sE.pressed = back ? P_TAB_B : P_TAB_F;
                 SwapSide(back);
@@ -1478,6 +1480,11 @@ static void TouchEdit(const CtrInput *in)
 
                 sE.pressed = second ? P_FRAME2 : P_FRAME1;
                 FrameTap(second ? 1 : 0);
+            }
+            else if (y >= TINT_Y)
+            {
+                sE.pressed = P_RIGHT + B_OPACITY;
+                RightAct(B_OPACITY);
             }
             else if (y < ROWS_END)
             {
@@ -2149,7 +2156,6 @@ static void DrawTools(void)
 static void DrawBar(void)
 {
     const bool final = CtrStereoMon_EditMeta()->finalized, gridOn = sE.grid != GRID_OFF;
-    char pct[8];
 
     /* The chooser: the game's Pokédex. */
     CtrBottomDraw_Plate(DEX_X, BAR_Y, DEX_W, BAR_H, 0, sE.pressed == P_DEX);
@@ -2165,20 +2171,8 @@ static void DrawBar(void)
     Sprite(SPRITE_SAVE, SAVE_X + (SAVE_W - SPRITE_SIZE) / 2 - 1, BAR_Y + (BAR_H - SPRITE_SIZE) / 2);
     DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
     DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 3, sE.dirtyFile ? Rgb(31, 12, 8) : Rgb(8, 56, 10));
-    /* The bottom right: the tint with its strength, the grid (off: struck
-     * through; white or black as its lines are). */
-    CtrBottomDraw_Plate(TINT_X, GRID_Y, TINT_W, BAR_H, 0, sE.pressed == P_RIGHT + B_OPACITY);
-    DrawTintCircles(TINT_X + 3, GRID_Y + 3);
-    snprintf(pct, sizeof(pct), "%s", sOpacityNames[sE.opacity]);
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, pct, TINT_X + 22, GRID_Y + 5, CTR_DRAW_DARK);
-    {
-        /* A per cent sign, the game's font having none. */
-        int px = TINT_X + 22 + CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, pct) + 2, py = GRID_Y + 8;
-
-        for (int i = 0; i < 7; ++i) Px(px + 6 - i, py + i, INK_DARK);
-        CtrBottomDraw_Fill(px, py, 2, 2, INK_DARK);
-        CtrBottomDraw_Fill(px + 5, py + 5, 2, 2, INK_DARK);
-    }
+    /* The bottom right: the grid (off: struck through; white or black as
+     * its lines are). */
     CtrBottomDraw_Plate(GRID_X, GRID_Y, SAVE_W, BAR_H, gridOn ? 1 : 0, gridOn || sE.pressed == P_RIGHT + B_GRID);
     if (sE.grid == GRID_WHITE) CtrBottomDraw_Fill(GRID_X + 6, GRID_Y + 5, 14, 14, Rgb(8, 30, 12));
     Icon(ICON_GRID, false, GRID_X + (SAVE_W - ICON_SMALL) / 2, GRID_Y + (BAR_H - ICON_SMALL) / 2,
@@ -2241,9 +2235,12 @@ static void RoundFill(int x, int y, int w, int h, uint16_t c)
  * shown in front, light, open at its bottom onto the frames' buttons; the
  * other behind it, a shade darker and a pixel lower (greyed when the pack
  * has no other side). */
-static void DrawTab(int x, const char *label, bool front, bool other)
+/* A tab across half the column: the side shown in front, in the column's
+ * own green and open onto it; the other behind, a shade darker and a
+ * pixel lower, a soft shadow line where the front one overlaps it. */
+static void DrawTab(int x, const char *label, bool front, bool other, uint16_t panel)
 {
-    const uint16_t rim = Rgb(1, 2, 2), face = front ? Rgb(31, 63, 31) : other ? Rgb(24, 50, 25) : Rgb(20, 40, 21);
+    const uint16_t rim = Rgb(1, 2, 2), face = front ? panel : other ? Mix(panel, Rgb(0, 0, 0), 3, 4) : Mix(panel, Rgb(0, 0, 0), 5, 8);
     int y = TAB_Y + (front ? 0 : 1), h = TAB_H - (front ? 0 : 1);
 
     RoundFill(x, y, TAB_W, h + 2, rim);
@@ -2255,12 +2252,15 @@ static void DrawTab(int x, const char *label, bool front, bool other)
 static void DrawTabs(void)
 {
     const bool back = (sE.id & 0xC000) != 0, other = CtrStereoMon_Counterpart(sE.id) != 0;
-    const int x0 = RIGHT_X + 1;
+    const uint16_t panel = sCanvas[(RIGHT_X + 2) * H + (H - 1 - (TAB_Y + TAB_H + 2))];
+    const int x0 = RIGHT_X, fx = back ? x0 + TAB_W : x0;
 
-    /* A ledge the tabs stand on, the front one drawn last so it overlaps. */
+    /* A ledge the tabs stand on, the front one drawn last so it overlaps;
+     * a shadow a pixel wide along the front one's inner edge. */
     CtrBottomDraw_Fill(x0, TAB_Y + TAB_H, 2 * TAB_W, 1, Rgb(1, 2, 2));
-    DrawTab(back ? x0 : x0 + TAB_W, back ? "FRNT" : "BACK", false, other);
-    DrawTab(back ? x0 + TAB_W : x0, back ? "BACK" : "FRNT", true, true);
+    DrawTab(back ? x0 : x0 + TAB_W, back ? "FRNT" : "BACK", false, other, panel);
+    DrawTab(fx, back ? "BACK" : "FRNT", true, true, panel);
+    FillMix(back ? fx - 1 : fx + TAB_W, TAB_Y + 1, 1, TAB_H, Rgb(0, 0, 0), 1, 3);
 }
 
 static void DrawRight(void)
@@ -2284,6 +2284,19 @@ static void DrawRight(void)
     }
     CtrBottomDraw_Fill(ROW_X + FRAME_W, FRAME_Y + 1, 1, FRAME_H - 2, Rgb(1, 2, 2));
     DrawTabs();
+    /* The tint under the planes, its strength written on it. */
+    CtrBottomDraw_Plate(TINT_X, TINT_Y, TINT_W, BAR_H, 0, sE.pressed == P_RIGHT + B_OPACITY);
+    DrawTintCircles(TINT_X + 2, TINT_Y + 3);
+    snprintf(label, sizeof(label), "%s", sOpacityNames[sE.opacity]);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, label, TINT_X + 20, TINT_Y + 5, CTR_DRAW_DARK);
+    {
+        /* A per cent sign, the game's font having none. */
+        int px = TINT_X + 20 + CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, label) + 2, py = TINT_Y + 8;
+
+        for (int i = 0; i < 7; ++i) Px(px + 6 - i, py + i, INK_DARK);
+        CtrBottomDraw_Fill(px, py, 2, 2, INK_DARK);
+        CtrBottomDraw_Fill(px + 5, py + 5, 2, 2, INK_DARK);
+    }
     for (int r = 0; r < PLANES; ++r)
     {
         unsigned plane = (unsigned)(PLANES - 1 - r);
@@ -2582,7 +2595,7 @@ static const Step sScript[] = {
     {60, 61, 160, H / 2, 0},                                   /* a tap on the body: its colour cell */
     {90, 91, ROW_X + 25, ROW_Y0 + 2 * ROW_STEP + 25, 0},       /* plane 3 */
     {120, 152, 0, 0, 0},                                       /* a loop (drawn below) */
-    {165, 166, TINT_X + 20, GRID_Y + 12, 0},                   /* the tint lighter */
+    {165, 166, TINT_X + 20, TINT_Y + 12, 0},                   /* the tint lighter */
     {175, 176, TOOL_TAP_X, TOOL_TAP_Y(T_BRUSH), 0},            /* PENCIL */
     {180, 181, TOOL_TAP_X, TOOL_TAP_Y(T_BRUSH), 0},            /* its next size */
     {184, 214, TOOL_TAP_X, TOOL_TAP_Y(T_BRUSH), 0},            /* held: the size's slider */
@@ -2611,7 +2624,7 @@ static const Step sScript[] = {
     {366, 367, 0, 0, CTR_KEY_START},                           /* OK */
     {372, 373, 0, 0, CTR_KEY_A},                               /* the first found */
     {390, 391, ROW_X - 1 + FRAME_W + 2 + 11, FRAME_Y + 10, 0}, /* F2 */
-    {400, 401, RIGHT_X + 1 + TAB_W + 10, TAB_Y + 7, 0},        /* the back's tab */
+    {400, 401, RIGHT_X + TAB_W + 10, TAB_Y + 7, 0},        /* the back's tab */
     {440, 441, RIGHT_X + 12, TAB_Y + 7, 0},                    /* the front's tab */
     {480, 481, 0, 0, CTR_KEY_X},                               /* the battle view */
     {486, 487, 0, 0, CTR_KEY_Y},                               /* animated */
