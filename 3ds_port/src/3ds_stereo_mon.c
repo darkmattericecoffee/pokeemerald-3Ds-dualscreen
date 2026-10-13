@@ -23,6 +23,7 @@
 #include "3ds_input.h"
 #include "3ds_log.h"
 #include "3ds_stereo_mon.h"
+#include "3ds_button_icons.h"
 
 /*
  * One texture in linear memory with a 64x64 tile per frame and plane, two
@@ -1336,23 +1337,6 @@ static void Text57(float x, float y, const char *text, uint32_t colour, int px)
 
 static float Width57(const char *text, int px) { return (float)strlen(text) * F57_ADVANCE * px; }
 
-/* A pixel-art disc: whole-pixel runs row by row, `outer` the rim's radius
- * and `inner` the face's (the rim `rim` colour, the face `face`), its
- * centre between pixels at (cx, cy). */
-static void PixelDisc(int cx, int cy, int outer, int inner, uint32_t rim, uint32_t face)
-{
-    for (int row = -outer; row < outer; ++row)
-    {
-        float dy = row + 0.5f;
-        int ho = (int)(sqrtf((float)(outer * outer) - dy * dy) + 0.5f);
-        int hi = dy * dy < inner * inner ? (int)(sqrtf((float)(inner * inner) - dy * dy) + 0.5f) : 0;
-
-        if (ho <= 0) continue;
-        C2D_DrawRectSolid(cx - ho, cy + row, 0, 2 * ho, 1, rim);
-        if (hi > 0) C2D_DrawRectSolid(cx - hi, cy + row, 0, 2 * hi, 1, face);
-    }
-}
-
 /* A pixel-art rounded box, a 1-pixel rim, the corners cut by one pixel. */
 static void PixelBox(int x, int y, int w, int h, uint32_t rim, uint32_t face)
 {
@@ -1362,93 +1346,44 @@ static void PixelBox(int x, int y, int w, int h, uint32_t rim, uint32_t face)
 }
 
 /*
- * The 3DS's own controls as little pictures beside the help, in the look
- * of the console's manuals: a white face, a dark rim, the letter large.
- * Each is BTN_SIZE square but the shoulders and START/SELECT, which are
- * wider (BTN_WIDE).
+ * The console's controls as little pictures beside the help: Zacksly's
+ * button icons (3ds_button_icons.h), white with a faint pixel shadow, at
+ * the screen's own pixels. The touch screen is drawn here.
  */
-enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_PAD, BTN_CSTICK, BTN_DPAD_UD, BTN_DPAD_LR, BTN_START, BTN_SELECT, BTN_TOUCH };
-#define BTN_SIZE 20
-#define BTN_WIDE 30
-
-static int ButtonWidth(int kind)
-{
-    return kind == BTN_L || kind == BTN_R || kind == BTN_START || kind == BTN_SELECT ? BTN_WIDE : BTN_SIZE;
-}
+static int ButtonWidth(int kind) { return kind == BTN_TOUCH ? 20 : sButtonIcons[kind].w; }
+static int ButtonHeight(int kind) { return kind == BTN_TOUCH ? 20 : sButtonIcons[kind].h; }
 
 static void DrawButton(int kind, int x, int y)
 {
-    const uint32_t rim = C2D_Color32(40, 42, 50, 255), face = C2D_Color32(248, 248, 250, 255);
-    const uint32_t ink = C2D_Color32(40, 42, 50, 255), lit = C2D_Color32(250, 200, 40, 255);
-    const int cx = x + BTN_SIZE / 2, cy = y + BTN_SIZE / 2;
+    const uint32_t ink = C2D_Color32(248, 248, 250, 255), shadow = C2D_Color32(0, 0, 0, 64);
+    const CtrButtonIcon *icon = &sButtonIcons[kind];
 
-    switch (kind)
+    if (kind == BTN_TOUCH)
     {
-    case BTN_A: case BTN_B: case BTN_X: case BTN_Y:
-    {
-        char letter[2] = {"ABXY"[kind - BTN_A], 0};
-
-        PixelDisc(cx, cy, 10, 8, rim, face);
-        Text57(cx - 5, cy - 7, letter, ink, 2);
-        break;
-    }
-    case BTN_L: case BTN_R:
-        /* A shoulder: a wide box, its outer top corner cut deeper. */
-        PixelBox(x, y + 2, BTN_WIDE, BTN_SIZE - 4, rim, face);
-        if (kind == BTN_L)
-        {
-            C2D_DrawRectSolid(x, y + 2, 0, 3, 1, C2D_Color32(62, 64, 70, 255));
-            C2D_DrawRectSolid(x, y + 3, 0, 1, 2, C2D_Color32(62, 64, 70, 255));
-            C2D_DrawRectSolid(x + 1, y + 3, 0, 2, 1, rim);
-            C2D_DrawRectSolid(x + 1, y + 4, 0, 1, 1, rim);
-        }
-        else
-        {
-            C2D_DrawRectSolid(x + BTN_WIDE - 3, y + 2, 0, 3, 1, C2D_Color32(62, 64, 70, 255));
-            C2D_DrawRectSolid(x + BTN_WIDE - 1, y + 3, 0, 1, 2, C2D_Color32(62, 64, 70, 255));
-            C2D_DrawRectSolid(x + BTN_WIDE - 3, y + 3, 0, 2, 1, rim);
-            C2D_DrawRectSolid(x + BTN_WIDE - 2, y + 4, 0, 1, 1, rim);
-        }
-        Text57(x + BTN_WIDE / 2 - 5, cy - 7, kind == BTN_L ? "L" : "R", ink, 2);
-        break;
-    case BTN_PAD:
-        /* The Circle Pad: a ring, a grey cap. */
-        PixelDisc(cx, cy, 10, 9, rim, face);
-        PixelDisc(cx, cy, 6, 5, rim, C2D_Color32(190, 192, 200, 255));
-        break;
-    case BTN_CSTICK:
-        PixelDisc(cx, cy, 7, 6, rim, C2D_Color32(190, 192, 200, 255));
-        Text57(cx - 2, cy - 3, "C", ink, 1);
-        break;
-    case BTN_DPAD_UD: case BTN_DPAD_LR:
-        /* The cross: a rim, a white face, the two arms meant lit. */
-        C2D_DrawRectSolid(cx - 4, y, 0, 8, BTN_SIZE, rim);
-        C2D_DrawRectSolid(x, cy - 4, 0, BTN_SIZE, 8, rim);
-        C2D_DrawRectSolid(cx - 3, y + 1, 0, 6, BTN_SIZE - 2, face);
-        C2D_DrawRectSolid(x + 1, cy - 3, 0, BTN_SIZE - 2, 6, face);
-        if (kind == BTN_DPAD_UD)
-        {
-            C2D_DrawRectSolid(cx - 3, y + 1, 0, 6, 5, lit);
-            C2D_DrawRectSolid(cx - 3, y + BTN_SIZE - 6, 0, 6, 5, lit);
-        }
-        else
-        {
-            C2D_DrawRectSolid(x + 1, cy - 3, 0, 5, 6, lit);
-            C2D_DrawRectSolid(x + BTN_SIZE - 6, cy - 3, 0, 5, 6, lit);
-        }
-        break;
-    case BTN_START: case BTN_SELECT:
-        /* A pill with its name. */
-        PixelBox(x, cy - 5, BTN_WIDE, 10, rim, face);
-        Text57(x + (BTN_WIDE - Width57(kind == BTN_START ? "START" : "SELECT", 1)) / 2 + 1, cy - 3,
-               kind == BTN_START ? "START" : "SELECT", ink, 1);
-        break;
-    default:
         /* The touch screen with the stylus's point on it. */
-        PixelBox(x, y + 3, BTN_SIZE, BTN_SIZE - 6, rim, face);
-        C2D_DrawRectSolid(cx - 2, cy - 2, 0, 4, 4, lit);
-        C2D_DrawRectSolid(cx + 1, y, 0, 2, 7, rim);
-        break;
+        const uint32_t rim = C2D_Color32(248, 248, 250, 255), face = C2D_Color32(62, 64, 70, 255);
+
+        PixelBox(x, y + 3, 20, 14, rim, face);
+        C2D_DrawRectSolid(x + 8, y + 8, 0, 4, 4, C2D_Color32(250, 200, 40, 255));
+        C2D_DrawRectSolid(x + 11, y, 0, 2, 7, rim);
+        return;
+    }
+    for (int r = 0; r < icon->h; ++r)
+    {
+        const uint8_t *row = sButtonPixels + icon->offset + r * icon->w;
+        int start = -1;
+        uint8_t code = 0;
+
+        /* Each row as runs of one code. */
+        for (int c = 0; c <= icon->w; ++c)
+        {
+            uint8_t v = c < icon->w ? row[c] : 0;
+
+            if (v == code) continue;
+            if (code) C2D_DrawRectSolid(x + start, y + r, 0, c - start, 1, code == 1 ? ink : shadow);
+            code = v;
+            start = c;
+        }
     }
 }
 
@@ -1457,6 +1392,8 @@ static void DrawButton(int kind, int x, int y)
  * and the words to its left. */
 typedef struct { int button, button2; const char *line1, *line2; } Help;
 #define HELP_ROW 28
+/* The second control of a pair, or this: "HOLD" after the first. */
+#define BTN_HOLD -2
 
 static void DrawHelp(bool right, int y, const Help *help, unsigned count)
 {
@@ -1465,17 +1402,20 @@ static void DrawHelp(bool right, int y, const Help *help, unsigned count)
     for (unsigned i = 0; i < count; ++i, y += HELP_ROW)
     {
         const Help *h = &help[i];
-        int w1 = ButtonWidth(h->button), w2 = h->button2 >= 0 ? ButtonWidth(h->button2) : 0;
-        int controls = w1 + (h->button2 >= 0 ? 8 + w2 : 0);
+        int w1 = ButtonWidth(h->button), w2 = h->button2 >= 0 ? ButtonWidth(h->button2) : h->button2 == BTN_HOLD ? 24 : 0;
+        int controls = w1 + (h->button2 != -1 ? 8 + w2 : 0);
         int bx = right ? CTR_GAME_WIDTH - 6 - controls : 6, tx;
         float n1 = Width57(h->line1, 2), n2 = h->line2 ? Width57(h->line2, 2) : 0, wide = n1 > n2 ? n1 : n2;
 
-        DrawButton(h->button, bx, y);
+        /* The controls sit in the middle of the row's 20 pixels. */
+        DrawButton(h->button, bx, y + (20 - ButtonHeight(h->button)) / 2);
         if (h->button2 >= 0)
         {
             Text57(bx + w1 + 1, y + 7, "+", plus, 1);
-            DrawButton(h->button2, bx + w1 + 8, y);
+            DrawButton(h->button2, bx + w1 + 8, y + (20 - ButtonHeight(h->button2)) / 2);
         }
+        else if (h->button2 == BTN_HOLD)
+            Text57(bx + w1 + 4, y + 7, "HOLD", plus, 1);
         tx = right ? bx - 8 - (int)wide : bx + controls + 8;
         if (h->line2)
         {
@@ -1500,7 +1440,7 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
     static const uint16_t colours[CTR_STEREO_EDIT_PLANES] = CTR_STEREO_EDIT_COLOURS;
     static const Help left[] = {
         {BTN_L, -1, "PLANE", NULL},
-        {BTN_L, BTN_TOUCH, "PICK", NULL},
+        {BTN_L_SMALL, BTN_HOLD, "PICK", NULL},
         {BTN_PAD, -1, "PAN", NULL},
         {BTN_DPAD_UD, -1, "ZOOM", NULL},
         {BTN_DPAD_LR, -1, "UNDO", "REDO"},

@@ -14,6 +14,8 @@ Where every part of Pokémon Emerald 3Ds Dual Screen comes from, and what ships 
 | Recipe (`emerald3ds.recipe`) | generated from a build | offsets, sizes, CRCs, engine pointers | no | yes |
 | Builder (`builder/`) | Pokémon Emerald 3Ds Dual Screen | `LICENSE-PORT.md` | yes | standalone executable |
 | libctru, citro2d, citro3d | devkitPro | zlib | no | linked |
+| Plane editor's tool icons (`3ds_port/src/3ds_edit_icons.h`, made by `tools/sprite_editor/gen_icons.mjs`) | [Pixelarticons](https://pixelarticons.com) by Gerrit Halfmann, rasterised at 24 and 12 px | MIT | yes (bitmaps) | compiled into the 3DSX |
+| Plane editor's button pictures (`3ds_port/src/3ds_button_icons.h`, made by `tools/sprite_editor/gen_buttons.mjs`) | "Switch Button Icons and Controls" by Zacksly (https://zacksly.itch.io), the Full Solid set, modified: cropped, a pixel shadow added, the D-pad pairs merged, a C-stick made from a stick | CC BY 3.0 (credit Zacksly) | yes (bitmaps) | compiled into the 3DSX |
 | Python, Tk, Pillow, PyInstaller runtime | their projects | PSF / BSD / HPND / GPL+exception | no | inside the builder |
 
 ## Rules the tooling enforces
