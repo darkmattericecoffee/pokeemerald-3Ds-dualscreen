@@ -54,6 +54,7 @@
 #include "3ds_bottom.h"
 #include "3ds_bottom_draw.h"
 #include "3ds_edit_icons.h"
+#include "3ds_edit_sprites.h"
 #include "3ds_input.h"
 #include "3ds_log.h"
 #include "3ds_platform.h"
@@ -113,6 +114,8 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define LASSO_Y (PENCIL_Y + TOOL_H + 6)
 #define SL_REACH 11
 #define KNOB_R 8
+/* The zoom's knob is larger: the magnifier sits on it. */
+#define ZOOM_KNOB_R 12
 /* The planes' column: the frame's button at the top, then a framed
  * thumbnail a plane, nearest first. */
 #define ROW_X (RIGHT_X + 4)
@@ -1366,7 +1369,7 @@ static bool BarAct(int x, int y)
 static bool BottomAct(int x, int y)
 {
     if (y < BOT_Y) return false;
-    if (x >= ZOOM_X0 - SL_REACH && x <= ZOOM_X1 + SL_REACH)
+    if (x >= ZOOM_X0 - ZOOM_KNOB_R - 2 && x <= ZOOM_X1 + ZOOM_KNOB_R + 2)
     {
         sE.slider = SLIDER_ZOOM;
         SliderAt(x, y);
@@ -1835,6 +1838,30 @@ static void Icon(int icon, bool large, int x, int y, uint16_t ink)
     else DrawGlyph(sIconSmall[icon], ICON_SMALL, x, y, ink);
 }
 
+/* A colour sprite (3ds_edit_sprites.h: the user's own, 16 px) at (x, y),
+ * pixel for pixel, with the icons' faint shadow a pixel down and right. */
+static inline bool SpriteInk(const uint16_t *px, int r, int c)
+{
+    return r >= 0 && r < SPRITE_SIZE && c >= 0 && c < SPRITE_SIZE && px[r * SPRITE_SIZE + c] != SPRITE_CLEAR;
+}
+
+static void Sprite(int sprite, int x, int y)
+{
+    const uint16_t *px = sSprites[sprite];
+
+    for (int r = 0; r <= SPRITE_SIZE; ++r)
+        for (int c = 0; c <= SPRITE_SIZE; ++c)
+        {
+            if (SpriteInk(px, r, c)) Px(x + c, y + r, px[r * SPRITE_SIZE + c]);
+            else if (SpriteInk(px, r - 1, c - 1) && x + c >= 0 && y + r >= 0 && x + c < W && y + r < H)
+            {
+                uint16_t *at = &sCanvas[(x + c) * H + (H - 1 - (y + r))];
+
+                *at = Mix(Rgb(0, 0, 0), *at, 1, 5);
+            }
+        }
+}
+
 /* The ink an icon takes on a plate: the dark grey on a plain one, and on
  * a chosen (green) one too, where white did not read. */
 static uint16_t InkOn(bool chosen) { (void)chosen; return INK_DARK; }
@@ -1936,10 +1963,10 @@ static void DrawTrack(int x0, int y0, int x1, int y1, int value, int steps)
     }
 }
 
-static void DrawKnob(int cx, int cy)
+static void DrawKnob(int cx, int cy, int r)
 {
-    DrawDisc(cx, cy, KNOB_R + 1, Rgb(1, 2, 2));
-    DrawDisc(cx, cy, KNOB_R, Rgb(31, 63, 31));
+    DrawDisc(cx, cy, r + 1, Rgb(1, 2, 2));
+    DrawDisc(cx, cy, r, Rgb(31, 63, 31));
 }
 
 /* The zoom slider along the bottom, its knob the magnifier. */
@@ -1948,8 +1975,8 @@ static void DrawZoomSlider(void)
     int kx = ZOOM_X0 + (ZOOM_X1 - ZOOM_X0) * sE.zoom / (ZOOMS - 1);
 
     DrawTrack(ZOOM_X0, ZOOM_CY, ZOOM_X1, ZOOM_CY, sE.zoom, ZOOMS);
-    DrawKnob(kx, ZOOM_CY);
-    Icon(ICON_ZOOM, false, kx - ICON_SMALL / 2, ZOOM_CY - ICON_SMALL / 2, INK_DARK);
+    DrawKnob(kx, ZOOM_CY, ZOOM_KNOB_R);
+    Sprite(SPRITE_ZOOM, kx - SPRITE_SIZE / 2, ZOOM_CY - SPRITE_SIZE / 2);
 }
 
 /* The brush size's slider over the pencil, its knob the brush itself: a
@@ -1962,7 +1989,7 @@ static void DrawSizeSlider(void)
     if (r > KNOB_R - 1) r = KNOB_R - 1;
     if (r < 1) r = 1;
     DrawTrack(SIZE_CX, SIZE_TOP, SIZE_CX, SIZE_BOTTOM, sE.size - 1, SIZES);
-    DrawKnob(SIZE_CX, ky);
+    DrawKnob(SIZE_CX, ky, KNOB_R);
     DrawDisc(SIZE_CX, ky, r, sPlaneColours[sE.layer]);
 }
 
@@ -1970,7 +1997,7 @@ static void DrawSizeSlider(void)
  * hand at the bottom; the grid's button at the bottom right. */
 static void DrawTools(void)
 {
-    static const int icons[T_COUNT] = {ICON_PENCIL, ICON_LASSO, ICON_PAN};
+    static const int sprites[T_COUNT] = {SPRITE_PENCIL, SPRITE_BUCKET, SPRITE_HAND};
     bool gridOn = sE.grid != GRID_OFF;
 
     if (sE.tool == T_BRUSH) DrawSizeSlider();
@@ -1981,7 +2008,7 @@ static void DrawTools(void)
 
         ToolButton(t, &x, &y);
         DrawRoundPlate(x + TOOL_W / 2, y + TOOL_H / 2, TOOL_W / 2, on, on || sE.pressed == P_TOOL + t);
-        Icon(icons[t], true, x + (TOOL_W - ICON_LARGE) / 2, y + (TOOL_H - ICON_LARGE) / 2, InkOn(on));
+        Sprite(sprites[t], x + (TOOL_W - SPRITE_SIZE) / 2, y + (TOOL_H - SPRITE_SIZE) / 2);
     }
     DrawZoomSlider();
     /* The grid: off (a bare square), white or black, as the lines are. */
