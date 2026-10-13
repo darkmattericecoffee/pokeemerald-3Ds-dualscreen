@@ -86,8 +86,8 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define UNDO_W 22
 #define REDO_X (UNDO_X + UNDO_W + 2)
 #define BATTLE_X (REDO_X + UNDO_W + 16)
-#define BATTLE_W 28
-#define FB_X (BATTLE_X + BATTLE_W + 22)
+#define BATTLE_W 44
+#define FB_X (BATTLE_X + BATTLE_W + 12)
 #define FB_W 18
 #define FINAL_W 26
 #define FINAL_X (RIGHT_X - 4 - FINAL_W)
@@ -1887,6 +1887,27 @@ static void DrawRoundPlate(int cx, int cy, int r, bool chosen, bool pressed)
     }
 }
 
+/* The tint's button: three circles overlapping, red, yellow and blue, each
+ * laid over what is under it at the tint's strength, ringed in its colour. */
+static void DrawTintCircles(int x, int y)
+{
+    static const uint16_t colours[3] = {0xF800, 0xFFE0, 0x201F};
+    static const int8_t centres[3][2] = {{5, 6}, {10, 6}, {8, 11}};
+    const int r = 4;
+
+    for (int k = 0; k < 3; ++k)
+        for (int dy = -r; dy <= r; ++dy)
+            for (int dx = -r; dx <= r; ++dx)
+            {
+                int d = dx * dx + dy * dy, px = x + centres[k][0] + dx, py = y + centres[k][1] + dy;
+                uint16_t *at;
+
+                if (d > r * r + r || px < 0 || py < 0 || px >= W || py >= H) continue;
+                at = &sCanvas[px * H + (H - 1 - py)];
+                *at = d > r * r - r ? Mix(colours[k], Rgb(1, 2, 2), 2, 3) : Mix(colours[k], *at, sOpacities[sE.opacity], 20);
+            }
+}
+
 /* An icon in the middle of a plate. */
 static void PlateIcon(int x, int y, int w, int h, int look, bool pressed, int icon, bool large, uint16_t ink)
 {
@@ -2014,8 +2035,22 @@ static void DrawTools(void)
     /* The grid: off (a bare square), white or black, as the lines are. */
     CtrBottomDraw_Plate(GRID_X, GRID_Y, GRID_W, GRID_H, gridOn ? 1 : 0, gridOn || sE.pressed == P_GRID);
     if (sE.grid == GRID_WHITE) CtrBottomDraw_Fill(GRID_X + 7, GRID_Y + 5, 14, 14, Rgb(8, 30, 12));
-    Icon(gridOn ? ICON_GRID : ICON_GRID_OFF, false, GRID_X + (GRID_W - ICON_SMALL) / 2, GRID_Y + (GRID_H - ICON_SMALL) / 2,
+    Icon(ICON_GRID, false, GRID_X + (GRID_W - ICON_SMALL) / 2, GRID_Y + (GRID_H - ICON_SMALL) / 2,
          sE.grid == GRID_WHITE ? INK_WHITE : sE.grid == GRID_BLACK ? Rgb(0, 0, 0) : INK_DARK);
+    if (!gridOn)
+    {
+        /* Off: the grid struck through, a stripe from its lower left to its
+         * upper right, clear of the lines by the plate's face either side. */
+        int x0 = GRID_X + (GRID_W - ICON_SMALL) / 2 - 1, y0 = GRID_Y + (GRID_H - ICON_SMALL) / 2 + ICON_SMALL;
+
+        for (int i = 0; i <= ICON_SMALL + 1; ++i)
+        {
+            Px(x0 + i - 1, y0 - i, Rgb(30, 60, 31));
+            Px(x0 + i + 2, y0 - i, Rgb(30, 60, 31));
+            Px(x0 + i, y0 - i, INK_DARK);
+            Px(x0 + i + 1, y0 - i, INK_DARK);
+        }
+    }
 }
 
 /* The bar along the picture's top. */
@@ -2024,14 +2059,17 @@ static void DrawBar(void)
     const bool back = (sE.id & 0xC000) != 0, other = CtrStereoMon_Counterpart(sE.id) != 0;
     const bool final = CtrStereoMon_EditMeta()->finalized;
 
-    PlateIcon(DEX_X, BAR_Y, DEX_W, BAR_H, 0, sE.pressed == P_DEX, ICON_LIST, true, INK_DARK);
+    /* The chooser: the game's Pokédex. */
+    CtrBottomDraw_Plate(DEX_X, BAR_Y, DEX_W, BAR_H, 0, sE.pressed == P_DEX);
+    CtrBottomDraw_GamePic(CTR_DRAW_PIC_DEX, DEX_X + DEX_W / 2, BAR_Y + BAR_H / 2);
     PlateIcon(UNDO_X, BAR_Y, UNDO_W, BAR_H, sUndoCount ? 0 : 2, sE.pressed == P_UNDO, ICON_UNDO, false,
               sUndoCount ? INK_DARK : INK_OFF);
     PlateIcon(REDO_X, BAR_Y, UNDO_W, BAR_H, sRedoCount ? 0 : 2, sE.pressed == P_REDO, ICON_REDO, false,
               sRedoCount ? INK_DARK : INK_OFF);
-    /* The battle: chosen while it is on. */
-    PlateIcon(BATTLE_X, BAR_Y, BATTLE_W, BAR_H, sE.inBattle ? 1 : 0, sE.inBattle || sE.pressed == P_BATTLE, ICON_BATTLE, true,
-              INK_DARK);
+    /* The battle: a Poké Ball and BTL; chosen while it is on. */
+    CtrBottomDraw_Plate(BATTLE_X, BAR_Y, BATTLE_W, BAR_H, sE.inBattle ? 1 : 0, sE.inBattle || sE.pressed == P_BATTLE);
+    CtrBottomDraw_GamePic(CTR_DRAW_PIC_BALL, BATTLE_X + 11, BAR_Y + BAR_H / 2);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "BTL", BATTLE_X + 22, BAR_Y + 5, sE.inBattle ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
     /* The F/B switch: the side shown chosen, the other greyed when the pack has none. */
     CtrBottomDraw_Plate(FB_X, BAR_Y, FB_W, BAR_H, !back ? 1 : other ? 0 : 2, !back || sE.pressed == P_FRONT);
     CtrBottomDraw_Plate(FB_X + FB_W, BAR_Y, FB_W, BAR_H, back ? 1 : other ? 0 : 2, back || sE.pressed == P_BACK);
@@ -2089,7 +2127,7 @@ static void RoundFill(int x, int y, int w, int h, uint16_t c)
 
 static void DrawRight(void)
 {
-    static const int icons[B_COUNT] = {ICON_SETTINGS, ICON_OUTLINE, ICON_MORE};
+    static const int icons[B_COUNT] = {-1, ICON_OUTLINE, ICON_MORE};
     char label[12];
 
     CtrBottomDraw_Panel(RIGHT_X, 0, W, H);
@@ -2130,7 +2168,8 @@ static void DrawRight(void)
         uint16_t ink = b == B_OUTLINE && !on ? sE.mark : InkOn(on);
 
         CtrBottomDraw_Plate(x, y, BTN_W, BTN_H, on ? 1 : 0, on || sE.pressed == P_RIGHT + b);
-        Icon(icons[b], false, x + (BTN_W - ICON_SMALL) / 2, y + (BTN_H - ICON_SMALL) / 2, ink);
+        if (b == B_OPACITY) DrawTintCircles(x, y);
+        else Icon(icons[b], false, x + (BTN_W - ICON_SMALL) / 2, y + (BTN_H - ICON_SMALL) / 2, ink);
     }
 }
 
@@ -2394,6 +2433,7 @@ static const Step sScript[] = {
     {190, 210, 0, 0, 0},                                       /* a stroke (drawn below) */
     {220, 221, 0, 0, CTR_KEY_UP},                              /* zoom in */
     {230, 231, GRID_X + 14, GRID_Y + 12, 0},                   /* the grid's next look */
+    {233, 234, GRID_X + 14, GRID_Y + 12, 0},                   /* and the next */
     {236, 237, 0, 0, CTR_KEY_X},                               /* VIEW LAYERS on the top screen */
     {240, 241, HAND_X + 15, BOT_Y + BOT_H / 2, 0},             /* HAND */
     {245, 260, 0, 0, 0},                                       /* a drag (drawn below) */

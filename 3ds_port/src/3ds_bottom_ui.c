@@ -8192,3 +8192,10 @@ bool CtrBottomDraw_MonIcon(uint16_t national, int x, int y)
     DrawSprite(tiles, 4, 4, x, y, sRes.monIconPal[pal].c);
     return true;
 }
+
+void CtrBottomDraw_GamePic(int pic, int cx, int cy)
+{
+    const Icon *icon = &sRes.column[pic == CTR_DRAW_PIC_BALL ? SCR_POKEMON : SCR_POKEDEX];
+
+    if (icon->tiles) DrawSpriteCentred(icon->tiles, icon->size, icon->size, 2 * cx, 2 * cy, icon->pal.c);
+}

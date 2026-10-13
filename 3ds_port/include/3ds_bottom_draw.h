@@ -46,5 +46,9 @@ int CtrBottomDraw_TextWidth(int font, const char *ascii);
  * number. One icon is read from RomFS per Begin: false when this one is
  * not in yet (draw again next frame). */
 bool CtrBottomDraw_MonIcon(uint16_t national, int x, int y);
+/* The game's own little pictures the bottom screen's column uses (the
+ * Pokédex's, the Poké Ball's), their visible pixels centred on (cx, cy). */
+enum { CTR_DRAW_PIC_DEX, CTR_DRAW_PIC_BALL };
+void CtrBottomDraw_GamePic(int pic, int cx, int cy);
 
 #endif
