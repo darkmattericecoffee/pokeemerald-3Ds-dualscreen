@@ -770,7 +770,6 @@ static bool InsideLoop(unsigned i)
 static void FinishLasso(void)
 {
     int minX = 1 << 20, minY = 1 << 20, maxX = -(1 << 20), maxY = -(1 << 20);
-    char line[40];
 
     sE.lassoing = false;
     sE.dirtyDraw = true;
@@ -804,10 +803,7 @@ static void FinishLasso(void)
     }
     for (unsigned i = 0; i < N; ++i)
         if (BitGet(sMask, i)) SetPixel(i);
-    if (sE.strokeCount) snprintf(line, sizeof(line), "%u PIXELS TO PLANE %u", sE.strokeCount, PLANES - sE.layer);
-    else snprintf(line, sizeof(line), "ALREADY ON PLANE %u", PLANES - sE.layer);
     EndStroke();
-    Toast(line);
 }
 
 /* The bucket: from the picture pixel tapped, every opaque pixel reached
@@ -817,10 +813,8 @@ static void BucketFill(unsigned s)
 {
     static const int8_t nb[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
     unsigned head = 0, tail = 0;
-    char line[40];
 
-    if (!Opaque(sE.frame, s)) { Toast("BUCKET: TAP INSIDE A SHAPE"); return; }
-    if (GetPlane(sE.frame, s) == sE.layer) { Toast("ALREADY ON THIS PLANE"); return; }
+    if (!Opaque(sE.frame, s) || GetPlane(sE.frame, s) == sE.layer) return;
     memset(sMask, 0, sizeof(sMask));
     for (unsigned i = 0; i < N; ++i) sLabel[i] = -1;
     sLabel[s] = 0;
@@ -846,9 +840,7 @@ static void BucketFill(unsigned s)
     BeginStroke("bucket");
     for (unsigned i = 0; i < N; ++i)
         if (BitGet(sMask, i)) SetPixel(i);
-    snprintf(line, sizeof(line), "%u PIXELS TO PLANE %u", sE.strokeCount, PLANES - sE.layer);
     EndStroke();
-    Toast(line);
 }
 
 /* ── Planes ─────────────────────────────────────────────────────────── */
@@ -902,12 +894,9 @@ static void MovePlane(unsigned from, unsigned to)
 
 static void PickPlane(unsigned plane)
 {
-    char line[24];
-
     sE.layer = plane;
     sE.helpDirty = true;
-    snprintf(line, sizeof(line), "PLANE %u", PLANES - plane);
-    Toast(line);
+    sE.dirtyDraw = true;
 }
 
 /* The other frame, when there is one. */
@@ -1203,11 +1192,8 @@ static void CycleView(void)
 /* The brush's next size (round again after the largest). */
 static void CycleSize(void)
 {
-    char line[24];
-
     sE.size = (uint8_t)(sE.size % SIZES + 1);
-    snprintf(line, sizeof(line), "BRUSH %u", sE.size);
-    Toast(line);
+    sE.dirtyDraw = true;
 }
 
 static void ChooseKeys(unsigned down)
@@ -1267,10 +1253,7 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
      * (held, L is the picker). */
     if (down & CTR_KEY_L) sE.lPicked = false;
     if (lReleased && !sE.lPicked && lFrames < L_HOLD_FRAMES && sE.tool != T_BRUSH)
-    {
         sE.tool = T_BRUSH;
-        Toast("PENCIL");
-    }
     if (down & CTR_KEY_R) OtherFrame();
     if (down & CTR_KEY_SELECT)
     {
@@ -1511,8 +1494,6 @@ static void TouchEdit(const CtrInput *in)
             if (PictureAt(x, y, &px, &py) && Opaque(sE.frame, (unsigned)(py * DIM + px))
                 && GetPlane(sE.frame, (unsigned)(py * DIM + px)) != NONE)
                 PickPlane(GetPlane(sE.frame, (unsigned)(py * DIM + px)));
-            else
-                Toast("NO PLANE THERE");
         }
         else if (sE.tool == T_PAN)
         {
@@ -2334,9 +2315,9 @@ static void DrawConfirm(void)
     CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, CF_H / 8, false);
     if (final)
     {
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, isFinal ? "THIS PICTURE IS FINAL." : "SAVED. IS THIS PICTURE DONE?",
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, isFinal ? "THIS EDIT IS MARKED FINAL." : "SAVED. MARK THIS EDIT AS FINAL?",
                                   CF_X + CF_W / 2, CF_Y + 10, CTR_DRAW_DARK);
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, isFinal ? "OPEN IT FOR CHANGES AGAIN?" : "FINAL MARKS IT AS YOU LIKE IT.",
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, isFinal ? "TAKE THE MARK OFF AGAIN?" : "YOU CAN STILL CHANGE IT AFTER.",
                                   CF_X + CF_W / 2, CF_Y + 26, CTR_DRAW_BLUE);
     }
     else
