@@ -208,7 +208,7 @@ void CtrStereoMon_SetEditing(bool editing, unsigned plane);
  * `mark` (RGB565), and the view: the colours, every pixel tinted with its
  * plane's colour, or the picture in its place in a battle. */
 enum { CTR_STEREO_VIEW_COLOURS, CTR_STEREO_VIEW_LAYERS, CTR_STEREO_VIEW_BATTLE };
-void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view);
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view, bool controls);
 /* The other side of the picture being edited (a front's back, a back's
  * front) for the battle view: `frames` of 64x64 RGBA5551 pixels, copied
  * here, drawn flat in its own battle place; NULL for none. */
@@ -233,7 +233,7 @@ void CtrStereoMon_SetDepth(int percent);
 enum
 {
     CTR_HELP_NAME, CTR_HELP_FRAME, CTR_HELP_PLANE, CTR_HELP_DEPTH, CTR_HELP_REVISION, CTR_HELP_STATE,
-    CTR_HELP_L_PLANE, CTR_HELP_L_PICK, CTR_HELP_L_PAN, CTR_HELP_L_ZOOM, CTR_HELP_L_UNDO,
+    CTR_HELP_L_PLANE, CTR_HELP_B_OUTLINE, CTR_HELP_L_PAN, CTR_HELP_L_ZOOM, CTR_HELP_L_UNDO,
     CTR_HELP_R_ANIMATE, CTR_HELP_R_LAYERS, CTR_HELP_R_FRAME, CTR_HELP_R_MON, CTR_HELP_R_SAVE, CTR_HELP_R_BACK,
     CTR_HELP_HOLD
 };

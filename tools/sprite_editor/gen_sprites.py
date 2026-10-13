@@ -20,7 +20,7 @@ OUT = os.path.join(ROOT, "3ds_port", "src", "3ds_edit_sprites.h")
 SIZE = 16
 CLEAR = 0xF81F
 # Enum name, file: in the order the header lists them.
-SPRITES = [("SPRITE_PENCIL", "pencil"), ("SPRITE_BUCKET", "bucket"), ("SPRITE_HAND", "hand"), ("SPRITE_ZOOM", "zoom")]
+SPRITES = [("SPRITE_PENCIL", "pencil"), ("SPRITE_BUCKET", "bucket"), ("SPRITE_HAND", "hand"), ("SPRITE_ZOOM", "zoom"), ("SPRITE_LASSO", "lasso")]
 
 
 def load_png(path):

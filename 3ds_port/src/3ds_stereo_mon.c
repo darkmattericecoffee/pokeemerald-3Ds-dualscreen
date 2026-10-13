@@ -133,7 +133,7 @@ static bool sEditAnimate, sEditOutline;
 static uint32_t sEditMark;
 /* The editor's other views: every pixel in its plane's colour (composed
  * from sTinted instead of the picture), and the battle's. */
-static bool sEditLayers, sEditBattle;
+static bool sEditLayers, sEditBattle, sEditControls = true;
 static uint16_t sTinted[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
 /* The editor's own depth (CtrStereoMon_Depth), -1 until read. */
 static int sEditDepth = -1;
@@ -694,9 +694,11 @@ void CtrStereoMon_SetDepth(int percent)
     CtrSettings_SetInt(EDIT_DEPTH_KEY, sEditDepth);
 }
 
-void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view)
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view, bool controls)
 {
     bool layers = view == CTR_STEREO_VIEW_LAYERS;
+
+    sEditControls = controls;
 
     sEditFrame = frame;
     sEditAnimate = animate;
@@ -1538,24 +1540,44 @@ static void DrawBattleEye(float sign, float slider, unsigned frame)
                  sMeta.finalized ? C2D_Color32(120, 240, 120, 255) : C2D_Color32(245, 181, 69, 255));
 }
 
-static void DrawEditEye(float sign, float slider, unsigned frame)
+/* The controls: the left hand's down the left, the right hand's down the
+ * right, Y and A along the bottom in the middle; off by the editor's
+ * SHOW CONTROLS. */
+static void DrawControls(void)
 {
-    static const uint16_t colours[CTR_STEREO_EDIT_PLANES] = CTR_STEREO_EDIT_COLOURS;
     static const Help left[] = {
         {BTN_L, false, CTR_HELP_L_PLANE},
-        {BTN_L_SMALL, true, CTR_HELP_L_PICK},
         {BTN_PAD, false, CTR_HELP_L_PAN},
         {BTN_DPAD_UD, false, CTR_HELP_L_ZOOM},
         {BTN_DPAD_LR, false, CTR_HELP_L_UNDO},
     };
     static const Help right[] = {
-        {BTN_Y, false, CTR_HELP_R_ANIMATE},
-        {BTN_X, false, CTR_HELP_R_LAYERS},
         {BTN_R, false, CTR_HELP_R_FRAME},
+        {BTN_X, false, CTR_HELP_R_LAYERS},
         {BTN_CSTICK, false, CTR_HELP_R_MON},
         {BTN_START, false, CTR_HELP_R_SAVE},
         {BTN_B, false, CTR_HELP_R_BACK},
     };
+    const uint32_t words = C2D_Color32(225, 230, 240, 255);
+    int y = CTR_GAME_HEIGHT - 24, x;
+
+    if (!sEditControls) return;
+    DrawHelp(false, 128, left, sizeof(left) / sizeof(left[0]));
+    DrawHelp(true, 102, right, sizeof(right) / sizeof(right[0]));
+    /* Y ANIMATE and A OUTLINE side by side at the bottom. */
+    x = CTR_GAME_WIDTH / 2 - (HelpWidth(CTR_HELP_R_ANIMATE) + HelpWidth(CTR_HELP_B_OUTLINE) + 2 * BTN_SIZE + 40) / 2;
+    DrawHelpCell(CTR_HELP_R_ANIMATE, x, y + 3, words);
+    x += HelpWidth(CTR_HELP_R_ANIMATE) + 8;
+    DrawButton(BTN_Y, x, y - 2);
+    x += BTN_SIZE + 24;
+    DrawHelpCell(CTR_HELP_B_OUTLINE, x, y + 3, words);
+    x += HelpWidth(CTR_HELP_B_OUTLINE) + 8;
+    DrawButton(BTN_A, x, y - 2);
+}
+
+static void DrawEditEye(float sign, float slider, unsigned frame)
+{
+    static const uint16_t colours[CTR_STEREO_EDIT_PLANES] = CTR_STEREO_EDIT_COLOURS;
     const unsigned groups = Groups();
     const uint32_t cyan = C2D_Color32(80, 230, 240, 255), white = C2D_Color32(240, 242, 248, 255);
     const uint32_t dim = C2D_Color32(185, 190, 205, 255);
@@ -1564,6 +1586,7 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
     if (sEditBattle)
     {
         DrawBattleEye(sign, slider, frame);
+        DrawControls();
         return;
     }
     /* The grid at the screen's depth, a shadow under the feet. */
@@ -1609,8 +1632,7 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
     DrawHelpCell(CTR_HELP_STATE, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_STATE), y,
                  sMeta.finalized ? C2D_Color32(120, 240, 120, 255) : C2D_Color32(245, 181, 69, 255));
     (void)groups;
-    DrawHelp(false, 102, left, sizeof(left) / sizeof(left[0]));
-    DrawHelp(true, 76, right, sizeof(right) / sizeof(right[0]));
+    DrawControls();
 }
 
 static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned frame)

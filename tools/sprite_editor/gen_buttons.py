@@ -17,7 +17,7 @@ OUT = os.path.join(ROOT, "3ds_port", "src", "3ds_button_sprites.h")
 SIZE = 24
 # Enum name, file: in the order the header lists them.
 BUTTONS = [
-    ("BTN_B", "btn_b"), ("BTN_X", "btn_x"), ("BTN_Y", "btn_y"), ("BTN_START", "btn_plus"),
+    ("BTN_A", "btn_a"), ("BTN_B", "btn_b"), ("BTN_X", "btn_x"), ("BTN_Y", "btn_y"), ("BTN_START", "btn_plus"),
     ("BTN_L", "shoulder_l"), ("BTN_R", "shoulder_r"), ("BTN_L_SMALL", "shoulder_l_hold"),
     ("BTN_DPAD_UD", "dpad_updown"), ("BTN_DPAD_LR", "dpad_leftright"), ("BTN_PAD", "circle_pad"),
     ("BTN_CSTICK", "c_stick"),
