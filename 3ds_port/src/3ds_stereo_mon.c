@@ -37,9 +37,13 @@
  */
 #define DIM CTR_STEREO_MON_DIM
 #define TEX_MAX_TILES 32
-/* Up to five frames of four groups: 32 tiles, four across. */
+/* Up to five frames of four groups: 32 tiles, four across. After a battle
+ * the linear heap may hold no run that long (the battle keeps a texture of
+ * its own): then half, then a quarter (eight tiles: the editor's four
+ * planes and two frames, or a gallery picture's eight planes, one frame). */
 #define TEX_MAX_W (4 * DIM)
 #define TEX_MAX_H 512
+static unsigned sTexW = TEX_MAX_W, sTexTiles = TEX_MAX_TILES;
 /* Tiles composed per frame, at most. */
 #define TILES_PER_FRAME 6
 /* Screen pixels per sprite pixel, and where the sprite's middle sits. */
@@ -927,27 +931,35 @@ static bool TextureReady(void)
 {
     unsigned groups = Groups(), frames = sFrames, tiles, cols;
 
-    if (frames * groups > TEX_MAX_TILES) frames = 1;
-    tiles = frames * groups;
-    cols = (tiles + TEX_MAX_H / DIM - 1) / (TEX_MAX_H / DIM);
-    if (cols < 1) cols = 1;
     if (sTexReady) return true;
     if (!sTexAllocated)
     {
-        if (!C3D_TexInit(&sTex, TEX_MAX_W, TEX_MAX_H, GPU_RGBA5551))
+        static const unsigned widths[] = {TEX_MAX_W, 2 * DIM, DIM};
+        unsigned k;
+
+        for (k = 0; k < 3; ++k)
+            if (C3D_TexInit(&sTex, (uint16_t)widths[k], TEX_MAX_H, GPU_RGBA5551)) break;
+        if (k == 3)
         {
-            CtrLog_Write(CTR_LOG_ERROR, "stereo: no linear memory for a %ux%u texture (free=%lu)",
-                         TEX_MAX_W, TEX_MAX_H, (unsigned long)linearSpaceFree());
+            CtrLog_Write(CTR_LOG_ERROR, "stereo: no linear memory for even a %ux%u texture (free=%lu)", DIM, TEX_MAX_H,
+                         (unsigned long)linearSpaceFree());
             return false;
         }
+        sTexW = widths[k];
+        sTexTiles = (sTexW / DIM) * (TEX_MAX_H / DIM);
         C3D_TexSetFilter(&sTex, GPU_NEAREST, GPU_NEAREST);
         C3D_TexSetWrap(&sTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
         sTexAllocated = true;
-        CtrLog_Write(CTR_LOG_VIDEO, "stereo: a %ux%u texture (linear free=%lu)", TEX_MAX_W, TEX_MAX_H,
+        CtrLog_Write(CTR_LOG_VIDEO, "stereo: a %ux%u texture, %u tiles (linear free=%lu)", sTexW, TEX_MAX_H, sTexTiles,
                      (unsigned long)linearSpaceFree());
     }
+    if (groups > sTexTiles) groups = sTexTiles;
+    if (frames * groups > sTexTiles) frames = 1;
+    tiles = frames * groups;
+    cols = (tiles + TEX_MAX_H / DIM - 1) / (TEX_MAX_H / DIM);
+    if (cols < 1) cols = 1;
     /* Every texel written, so that nothing of what the memory held is read. */
-    memset(sTex.data, 0, TEX_MAX_W * TEX_MAX_H * 2);
+    memset(sTex.data, 0, sTexW * TEX_MAX_H * 2);
     C3D_TexFlush(&sTex);
     sTexCols = cols;
     sTexFrames = frames;
@@ -956,8 +968,8 @@ static bool TextureReady(void)
     {
         unsigned x = (tile % cols) * DIM, y = (tile / cols) * DIM;
 
-        sTiles[tile] = (Tex3DS_SubTexture){DIM, DIM, x / (float)TEX_MAX_W, 1.0f - y / (float)TEX_MAX_H,
-                                           (x + DIM) / (float)TEX_MAX_W, 1.0f - (y + DIM) / (float)TEX_MAX_H};
+        sTiles[tile] = (Tex3DS_SubTexture){DIM, DIM, x / (float)sTexW, 1.0f - y / (float)TEX_MAX_H,
+                                           (x + DIM) / (float)sTexW, 1.0f - (y + DIM) / (float)TEX_MAX_H};
     }
     sTexReady = true;
     sComposed = 0;
@@ -1009,7 +1021,7 @@ static void ComposeSome(void)
     if (tinted && sComposed == 0) TintLayers();
     for (unsigned n = 0; n < TILES_PER_FRAME && sComposed < sToCompose; ++n, ++sComposed)
         CtrStereoMon_ComposeTile(tinted ? sTinted[sComposed / groups] : sPicture[sComposed / groups], sPlanes, &sShown, sComposed / groups, groups,
-                                 sComposed % groups, sTex.data, TEX_MAX_W,
+                                 sComposed % groups, sTex.data, sTexW,
                                  (sComposed % sTexCols) * DIM, (sComposed / sTexCols) * DIM, SKIRT);
     C3D_TexFlush(&sTex);
 }

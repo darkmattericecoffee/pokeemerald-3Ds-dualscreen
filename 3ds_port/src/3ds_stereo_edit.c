@@ -2276,7 +2276,7 @@ static void DrawKeyboard(void)
 static void MakeHelpSheet(void)
 {
     static const char *const fixed[] = {"PLANE", "PICK", "PAN", "ZOOM", "UNDO/REDO", "ANIMATE", "VIEW LAYERS",
-                                        "FRAME", "MON", "SAVE", "BACK", "HOLD"};
+                                        "FRAME", "SWITCH PKMN", "SAVE", "BACK", "HOLD"};
     static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
     const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();
     char text[CTR_HELP_CELLS][40];
