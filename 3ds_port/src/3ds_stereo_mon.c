@@ -128,7 +128,7 @@ static bool sEditAnimate, sEditOutline;
 static uint32_t sEditMark;
 /* The editor's other views: every pixel in its plane's colour (composed
  * from sTinted instead of the picture), and the battle's. */
-static bool sEditLayers, sEditBattle;
+static bool sEditLayers;
 static uint16_t sTinted[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
 /* The editor's own depth (CtrStereoMon_Depth), -1 until read. */
 static int sEditDepth = -1;
@@ -686,7 +686,7 @@ void CtrStereoMon_SetDepth(int percent)
     CtrSettings_SetInt(EDIT_DEPTH_KEY, sEditDepth);
 }
 
-void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, bool layers, bool battle)
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, bool layers)
 {
     sEditFrame = frame;
     sEditAnimate = animate;
@@ -694,7 +694,6 @@ void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16
     sEditMark = C2D_Color32(((mark >> 11) & 31) * 255 / 31, ((mark >> 5) & 63) * 255 / 63, (mark & 31) * 255 / 31, 230);
     if (layers != sEditLayers) sTexReady = false;
     sEditLayers = layers;
-    sEditBattle = battle;
 }
 
 const CtrStereoEditMeta *CtrStereoMon_EditMeta(void) { return &sMeta; }
@@ -825,6 +824,7 @@ bool CtrStereoMon_SaveEdit(void)
         sEdited = true;
         SetMark(sId, true);
         SetMarkOf(sId, true, sMeta.finalized);
+        CtrStereoBattle_ForgetPlanes();
     }
     CtrLog_Write(ok ? CTR_LOG_FS : CTR_LOG_ERROR, "stereo: id %04x edit %s (r%u by %s%s)", sId, ok ? "saved" : "NOT saved",
                  sMeta.revision, sMeta.author, sMeta.finalized ? ", final" : "");
@@ -850,6 +850,7 @@ bool CtrStereoMon_ResetEdit(void)
     SetMark(sId, false);
     SetMarkOf(sId, true, false);
     memset(&sMeta, 0, sizeof(sMeta));
+    CtrStereoBattle_ForgetPlanes();
     sTexReady = false;
     return true;
 }
@@ -1245,184 +1246,242 @@ static void DrawDex(float sign, float slider, unsigned frame)
 
 /* ── The editor's top screen ────────────────────────────────────────── */
 
-/* A disc (an ellipse `ry` tall) of stacked bars: the ellipse primitive
- * draws a box in the emulator. */
-static void DrawOval(float cx, float cy, float rx, float ry, uint32_t colour)
-{
-    for (int r = -(int)ry; r <= (int)ry; ++r)
-    {
-        float half = rx * sqrtf(1.0f - (float)(r * r) / (ry * ry));
+/* A 5x7 pixel font (A-Z, 0-9 and a few signs), drawn as whole pixels at
+ * `px` screen pixels each: crisp, as the bottom screen's icons are. */
+static const uint8_t sFont57[][7] = {
+    {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}, /* A */
+    {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E}, /* B */
+    {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}, /* C */
+    {0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C}, /* D */
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}, /* E */
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}, /* F */
+    {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F}, /* G */
+    {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}, /* H */
+    {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}, /* I */
+    {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C}, /* J */
+    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, /* K */
+    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}, /* L */
+    {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}, /* M */
+    {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11}, /* N */
+    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, /* O */
+    {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}, /* P */
+    {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D}, /* Q */
+    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}, /* R */
+    {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}, /* S */
+    {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}, /* T */
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, /* U */
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}, /* V */
+    {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A}, /* W */
+    {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}, /* X */
+    {0x11, 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04}, /* Y */
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F}, /* Z */
+    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, /* 0 */
+    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, /* 1 */
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}, /* 2 */
+    {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E}, /* 3 */
+    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, /* 4 */
+    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}, /* 5 */
+    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, /* 6 */
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, /* 7 */
+    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, /* 8 */
+    {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}, /* 9 */
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C}, /* . */
+    {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00}, /* - */
+    {0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00}, /* : */
+    {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10}, /* / */
+    {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03}, /* % */
+    {0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00}, /* + */
+    {0x0C, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00}, /* ' */
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04}, /* ? */
+    {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04}, /* ! */
+    {0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02}, /* < */
+    {0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08}, /* > */
 
-        if (half > 0.0f) C2D_DrawRectSolid(cx - half, cy + r, 0, 2 * half, 1, colour);
+};
+static const char sFont57Order[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:/%+'?!<>";
+#define F57_ADVANCE 6
+
+static void Text57(float x, float y, const char *text, uint32_t colour, int px)
+{
+    for (; *text; ++text, x += F57_ADVANCE * px)
+    {
+        char c = *text >= 'a' && *text <= 'z' ? (char)(*text - 'a' + 'A') : *text;
+        const char *at = c == ' ' ? NULL : strchr(sFont57Order, c);
+        const uint8_t *rows;
+
+        if (at == NULL) continue;
+        rows = sFont57[at - sFont57Order];
+        for (int r = 0; r < 7; ++r)
+        {
+            /* Each row as runs of set pixels: fewer rectangles. */
+            int cstart = -1;
+
+            for (int cc = 0; cc <= 5; ++cc)
+            {
+                bool on = cc < 5 && ((rows[r] >> (4 - cc)) & 1);
+
+                if (on && cstart < 0) cstart = cc;
+                if (!on && cstart >= 0)
+                {
+                    C2D_DrawRectSolid(x + cstart * px, y + r * px, 0, (cc - cstart) * px, px, colour);
+                    cstart = -1;
+                }
+            }
+        }
     }
 }
 
-/* The 3DS's own controls as little pictures beside the help: what is to be
- * pressed looks like the thing itself. */
-enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_PAD, BTN_CSTICK, BTN_DPAD_UD, BTN_DPAD_LR, BTN_START, BTN_SELECT, BTN_TOUCH };
-#define BTN_SIZE 18
+static float Width57(const char *text, int px) { return (float)strlen(text) * F57_ADVANCE * px; }
 
-static void DrawButton(int kind, float x, float y, uint32_t ink, uint32_t face)
+/* A pixel-art disc: whole-pixel runs row by row, `outer` the rim's radius
+ * and `inner` the face's (the rim `rim` colour, the face `face`), its
+ * centre between pixels at (cx, cy). */
+static void PixelDisc(int cx, int cy, int outer, int inner, uint32_t rim, uint32_t face)
 {
-    const float cx = x + BTN_SIZE / 2.0f, cy = y + BTN_SIZE / 2.0f;
+    for (int row = -outer; row < outer; ++row)
+    {
+        float dy = row + 0.5f;
+        int ho = (int)(sqrtf((float)(outer * outer) - dy * dy) + 0.5f);
+        int hi = dy * dy < inner * inner ? (int)(sqrtf((float)(inner * inner) - dy * dy) + 0.5f) : 0;
+
+        if (ho <= 0) continue;
+        C2D_DrawRectSolid(cx - ho, cy + row, 0, 2 * ho, 1, rim);
+        if (hi > 0) C2D_DrawRectSolid(cx - hi, cy + row, 0, 2 * hi, 1, face);
+    }
+}
+
+/* A pixel-art rounded box, a 1-pixel rim, the corners cut by one pixel. */
+static void PixelBox(int x, int y, int w, int h, uint32_t rim, uint32_t face)
+{
+    C2D_DrawRectSolid(x + 1, y, 0, w - 2, h, rim);
+    C2D_DrawRectSolid(x, y + 1, 0, w, h - 2, rim);
+    C2D_DrawRectSolid(x + 1, y + 1, 0, w - 2, h - 2, face);
+}
+
+/*
+ * The 3DS's own controls as little pictures beside the help, in the look
+ * of the console's manuals: a white face, a dark rim, the letter large.
+ * Each is BTN_SIZE square but the shoulders and START/SELECT, which are
+ * wider (BTN_WIDE).
+ */
+enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_PAD, BTN_CSTICK, BTN_DPAD_UD, BTN_DPAD_LR, BTN_START, BTN_SELECT, BTN_TOUCH };
+#define BTN_SIZE 20
+#define BTN_WIDE 30
+
+static int ButtonWidth(int kind)
+{
+    return kind == BTN_L || kind == BTN_R || kind == BTN_START || kind == BTN_SELECT ? BTN_WIDE : BTN_SIZE;
+}
+
+static void DrawButton(int kind, int x, int y)
+{
+    const uint32_t rim = C2D_Color32(40, 42, 50, 255), face = C2D_Color32(248, 248, 250, 255);
+    const uint32_t ink = C2D_Color32(40, 42, 50, 255), lit = C2D_Color32(250, 200, 40, 255);
+    const int cx = x + BTN_SIZE / 2, cy = y + BTN_SIZE / 2;
 
     switch (kind)
     {
     case BTN_A: case BTN_B: case BTN_X: case BTN_Y:
     {
-        /* A round face button with its letter. */
         char letter[2] = {"ABXY"[kind - BTN_A], 0};
 
-        DrawOval(cx, cy, 8.5f, 8.5f, ink);
-        DrawOval(cx, cy, 7.0f, 7.0f, face);
-        DrawTextSized(cx - 3, cy - 5, letter, ink, 2);
+        PixelDisc(cx, cy, 10, 8, rim, face);
+        Text57(cx - 5, cy - 7, letter, ink, 2);
         break;
     }
     case BTN_L: case BTN_R:
-    {
-        /* A shoulder button: wide, its outer top corner rounded. */
-        bool left = kind == BTN_L;
-
-        C2D_DrawRectSolid(x, y + 3, 0, BTN_SIZE, 13, ink);
-        C2D_DrawRectSolid(left ? x + 3 : x, y + 1, 0, BTN_SIZE - 3, 2, ink);
-        C2D_DrawRectSolid(x + 1.5f, y + 4.5f, 0, BTN_SIZE - 3, 10, face);
-        DrawTextSized(cx - 3, y + 5, left ? "L" : "R", ink, 2);
-        break;
-    }
-    case BTN_PAD:
-        /* The Circle Pad: a ring, its cap. */
-        DrawOval(cx, cy, 8.5f, 8.5f, ink);
-        DrawOval(cx, cy, 7.0f, 7.0f, face);
-        DrawOval(cx, cy, 4.5f, 4.5f, ink);
-        break;
-    case BTN_CSTICK:
-        DrawOval(cx, cy, 5.5f, 5.5f, ink);
-        DrawOval(cx, cy, 4.0f, 4.0f, face);
-        DrawTextSized(cx - 1.5f, cy - 2.5f, "C", ink, 1);
-        break;
-    case BTN_DPAD_UD: case BTN_DPAD_LR:
-    {
-        /* The cross, the arms that are meant lit. */
-        const uint32_t lit = C2D_Color32(255, 214, 64, 255);
-        bool ud = kind == BTN_DPAD_UD;
-
-        C2D_DrawRectSolid(cx - 3, y, 0, 6, BTN_SIZE, ink);
-        C2D_DrawRectSolid(x, cy - 3, 0, BTN_SIZE, 6, ink);
-        C2D_DrawRectSolid(cx - 1.5f, y + 1.5f, 0, 3, BTN_SIZE - 3, face);
-        C2D_DrawRectSolid(x + 1.5f, cy - 1.5f, 0, BTN_SIZE - 3, 3, face);
-        if (ud)
+        /* A shoulder: a wide box, its outer top corner cut deeper. */
+        PixelBox(x, y + 2, BTN_WIDE, BTN_SIZE - 4, rim, face);
+        if (kind == BTN_L)
         {
-            C2D_DrawRectSolid(cx - 1.5f, y + 1.5f, 0, 3, 5, lit);
-            C2D_DrawRectSolid(cx - 1.5f, y + BTN_SIZE - 6.5f, 0, 3, 5, lit);
+            C2D_DrawRectSolid(x, y + 2, 0, 3, 1, C2D_Color32(62, 64, 70, 255));
+            C2D_DrawRectSolid(x, y + 3, 0, 1, 2, C2D_Color32(62, 64, 70, 255));
+            C2D_DrawRectSolid(x + 1, y + 3, 0, 2, 1, rim);
+            C2D_DrawRectSolid(x + 1, y + 4, 0, 1, 1, rim);
         }
         else
         {
-            C2D_DrawRectSolid(x + 1.5f, cy - 1.5f, 0, 5, 3, lit);
-            C2D_DrawRectSolid(x + BTN_SIZE - 6.5f, cy - 1.5f, 0, 5, 3, lit);
+            C2D_DrawRectSolid(x + BTN_WIDE - 3, y + 2, 0, 3, 1, C2D_Color32(62, 64, 70, 255));
+            C2D_DrawRectSolid(x + BTN_WIDE - 1, y + 3, 0, 1, 2, C2D_Color32(62, 64, 70, 255));
+            C2D_DrawRectSolid(x + BTN_WIDE - 3, y + 3, 0, 2, 1, rim);
+            C2D_DrawRectSolid(x + BTN_WIDE - 2, y + 4, 0, 1, 1, rim);
+        }
+        Text57(x + BTN_WIDE / 2 - 5, cy - 7, kind == BTN_L ? "L" : "R", ink, 2);
+        break;
+    case BTN_PAD:
+        /* The Circle Pad: a ring, a grey cap. */
+        PixelDisc(cx, cy, 10, 9, rim, face);
+        PixelDisc(cx, cy, 6, 5, rim, C2D_Color32(190, 192, 200, 255));
+        break;
+    case BTN_CSTICK:
+        PixelDisc(cx, cy, 7, 6, rim, C2D_Color32(190, 192, 200, 255));
+        Text57(cx - 2, cy - 3, "C", ink, 1);
+        break;
+    case BTN_DPAD_UD: case BTN_DPAD_LR:
+        /* The cross: a rim, a white face, the two arms meant lit. */
+        C2D_DrawRectSolid(cx - 4, y, 0, 8, BTN_SIZE, rim);
+        C2D_DrawRectSolid(x, cy - 4, 0, BTN_SIZE, 8, rim);
+        C2D_DrawRectSolid(cx - 3, y + 1, 0, 6, BTN_SIZE - 2, face);
+        C2D_DrawRectSolid(x + 1, cy - 3, 0, BTN_SIZE - 2, 6, face);
+        if (kind == BTN_DPAD_UD)
+        {
+            C2D_DrawRectSolid(cx - 3, y + 1, 0, 6, 5, lit);
+            C2D_DrawRectSolid(cx - 3, y + BTN_SIZE - 6, 0, 6, 5, lit);
+        }
+        else
+        {
+            C2D_DrawRectSolid(x + 1, cy - 3, 0, 5, 6, lit);
+            C2D_DrawRectSolid(x + BTN_SIZE - 6, cy - 3, 0, 5, 6, lit);
         }
         break;
-    }
     case BTN_START: case BTN_SELECT:
         /* A pill with its name. */
-        C2D_DrawRectSolid(x - 6, cy - 4, 0, BTN_SIZE + 12, 9, ink);
-        C2D_DrawRectSolid(x - 5, cy - 3, 0, BTN_SIZE + 10, 7, face);
-        DrawTextSized(cx - (kind == BTN_START ? 10 : 12), cy - 2, kind == BTN_START ? "START" : "SELECT", ink, 1);
+        PixelBox(x, cy - 5, BTN_WIDE, 10, rim, face);
+        Text57(x + (BTN_WIDE - Width57(kind == BTN_START ? "START" : "SELECT", 1)) / 2 + 1, cy - 3,
+               kind == BTN_START ? "START" : "SELECT", ink, 1);
         break;
     default:
-        /* The stylus on the touch screen. */
-        C2D_DrawRectSolid(x + 1, y + 4, 0, BTN_SIZE - 2, 12, ink);
-        C2D_DrawRectSolid(x + 2.5f, y + 5.5f, 0, BTN_SIZE - 5, 9, face);
-        C2D_DrawRectSolid(cx + 1, y, 0, 2, 9, ink);
+        /* The touch screen with the stylus's point on it. */
+        PixelBox(x, y + 3, BTN_SIZE, BTN_SIZE - 6, rim, face);
+        C2D_DrawRectSolid(cx - 2, cy - 2, 0, 4, 4, lit);
+        C2D_DrawRectSolid(cx + 1, y, 0, 2, 7, rim);
         break;
     }
 }
 
-/* A line of help: the control, then its words (one or two lines) beside
- * it, the left-hand controls down the left, the right-hand ones down the
- * right with the control at the screen's edge. */
+/* A line of help: the control (two, joined by a plus), then its words
+ * beside it; the right-hand column has the control at the screen's edge
+ * and the words to its left. */
 typedef struct { int button, button2; const char *line1, *line2; } Help;
-#define HELP_ROW 24
+#define HELP_ROW 28
 
-static void DrawHelp(bool right, float y, const Help *help, unsigned count)
+static void DrawHelp(bool right, int y, const Help *help, unsigned count)
 {
-    const uint32_t ink = C2D_Color32(225, 230, 240, 255), face = C2D_Color32(44, 46, 54, 255);
-    const uint32_t words = C2D_Color32(200, 205, 215, 255);
+    const uint32_t words = C2D_Color32(215, 220, 230, 255), plus = C2D_Color32(215, 220, 230, 255);
 
     for (unsigned i = 0; i < count; ++i, y += HELP_ROW)
     {
         const Help *h = &help[i];
-        float bx = right ? CTR_GAME_WIDTH - 6 - BTN_SIZE : 6, tx;
-        int n1 = (int)strlen(h->line1), n2 = h->line2 ? (int)strlen(h->line2) : 0, wide = n1 > n2 ? n1 : n2;
-        float ty = h->line2 ? y : y + 4;
+        int w1 = ButtonWidth(h->button), w2 = h->button2 >= 0 ? ButtonWidth(h->button2) : 0;
+        int controls = w1 + (h->button2 >= 0 ? 8 + w2 : 0);
+        int bx = right ? CTR_GAME_WIDTH - 6 - controls : 6, tx;
+        float n1 = Width57(h->line1, 2), n2 = h->line2 ? Width57(h->line2, 2) : 0, wide = n1 > n2 ? n1 : n2;
 
-        DrawButton(h->button, bx, y, ink, face);
+        DrawButton(h->button, bx, y);
         if (h->button2 >= 0)
         {
-            /* A control together with another: "+" and the second. */
-            float bx2 = right ? bx - BTN_SIZE - 10 : bx + BTN_SIZE + 10;
-
-            DrawTextSized(right ? bx - 8 : bx + BTN_SIZE + 2, y + 5, "+", ink, 1);
-            DrawButton(h->button2, bx2, y, ink, face);
-            bx = bx2;
+            Text57(bx + w1 + 1, y + 7, "+", plus, 1);
+            DrawButton(h->button2, bx + w1 + 8, y);
         }
-        tx = right ? bx - 6 - wide * GLYPH_ADVANCE : bx + BTN_SIZE + 6;
-        /* START and SELECT are wider than the others. */
-        if (h->button == BTN_START || h->button == BTN_SELECT) tx += right ? -6 : 6;
-        DrawTextSized(right ? tx + (wide - n1) * GLYPH_ADVANCE : tx, ty, h->line1, words, GLYPH_PIXEL);
-        if (h->line2) DrawTextSized(right ? tx + (wide - n2) * GLYPH_ADVANCE : tx, ty + 12, h->line2, words, GLYPH_PIXEL);
+        tx = right ? bx - 8 - (int)wide : bx + controls + 8;
+        if (h->line2)
+        {
+            Text57(right ? tx + (wide - n1) : tx, y - 5, h->line1, words, 2);
+            Text57(right ? tx + (wide - n2) : tx, y + 10, h->line2, words, 2);
+        }
+        else
+            Text57(right ? tx + (wide - n1) : tx, y + 3, h->line1, words, 2);
     }
-}
-
-/* The battle's view of the picture: the GBA screen at the battle's 1.5x,
- * the picture where the battle stands it (a front at the opponent's mound,
- * a back at the player's place over the text box), the planes at the
- * battle's own depth (3ds_stereo_battle.c, 3ds_video.c) and the stack and
- * the scenery behind the screen as the battle puts them. */
-#define BTL_ZOOM 1.5f
-#define BTL_X0 ((CTR_GAME_WIDTH - 240 * BTL_ZOOM) / 2)
-#define BTL_PARALLAX 0.17f
-#define BTL_BACK_DEPTH 4.0f
-#define BTL_SPRITE_DEPTH 2.0f
-#define BTL_SPRITE_FAR 44
-#define BTL_SPRITE_NEAR 80
-
-static void DrawBattle(float sign, float slider, unsigned frame)
-{
-    static const int depths[] = {25, 50, 75, 100, 125, 150, 200};
-    const bool back = (sId & 0xC000) == CTR_STEREO_ID_BACK || (sId & 0xC000) == CTR_STEREO_ID_PLAYER;
-    const float eye = sign * slider, z = BTL_ZOOM, x0 = BTL_X0;
-    const float scenery = -eye * BTL_BACK_DEPTH;
-    int index = CtrSettings_GetInt("voxel_depth", 3), percent, left, top, centre;
-    float near, shift;
-    char line[48];
-
-    percent = depths[index >= 0 && index < (int)(sizeof(depths) / sizeof(depths[0])) ? index : 3];
-    /* The scenery: a sky, the field, the two mounds. */
-    C2D_DrawRectangle(x0 + scenery, 0, 0, 240 * z, 70 * z, C2D_Color32(150, 200, 240, 255),
-                      C2D_Color32(150, 200, 240, 255), C2D_Color32(210, 236, 248, 255), C2D_Color32(210, 236, 248, 255));
-    C2D_DrawRectSolid(x0 + scenery, 70 * z, 0, 240 * z, 42 * z, C2D_Color32(120, 192, 96, 255));
-    DrawOval(x0 + scenery + 176 * z, 74 * z, 60 * z, 11 * z, C2D_Color32(96, 160, 72, 255));
-    DrawOval(x0 + scenery + 176 * z, 72 * z, 56 * z, 9 * z, C2D_Color32(176, 216, 120, 255));
-    DrawOval(x0 + scenery + 72 * z, 110 * z, 70 * z, 12 * z, C2D_Color32(96, 160, 72, 255));
-    DrawOval(x0 + scenery + 72 * z, 108 * z, 66 * z, 10 * z, C2D_Color32(176, 216, 120, 255));
-    /* The picture where the battle has it: a back centred on (72, 80), a
-     * front and a trainer standing on the opponent's mound at (176, 72). */
-    left = back ? 72 - DIM / 2 : 176 - DIM / 2;
-    top = back ? 80 - DIM / 2 : 72 - sBoxBottom;
-    centre = top + DIM / 2;
-    near = (centre - BTL_SPRITE_FAR) / (float)(BTL_SPRITE_NEAR - BTL_SPRITE_FAR);
-    near = near < 0 ? 0 : near > 1 ? 1 : near;
-    shift = -eye * BTL_SPRITE_DEPTH * (1 - near);
-    DrawStack(x0 + left * z + shift, top * z, z, eye * BTL_PARALLAX * percent / 100.0f * DepthOf(sId), frame, NULL);
-    /* The text box at the screen's depth, over the player's side. */
-    C2D_DrawRectSolid(x0, 112 * z, 0, 240 * z, 48 * z, C2D_Color32(40, 80, 96, 255));
-    C2D_DrawRectSolid(x0 + 4, 112 * z + 4, 0, 240 * z - 8, 48 * z - 8, C2D_Color32(248, 248, 248, 255));
-    snprintf(line, sizeof(line), "BATTLE PREVIEW  3D DEPTH %d%%", percent);
-    DrawText(x0 + 14, 112 * z + 14, line, C2D_Color32(64, 64, 72, 255));
-    DrawText(x0 + 14, 112 * z + 34, back ? "AS THE PLAYER SEES IT" : "AS A FOE STANDS", C2D_Color32(64, 64, 72, 255));
-    /* The bars beside the GBA screen. */
-    C2D_DrawRectSolid(0, 0, 0, x0, CTR_GAME_HEIGHT, C2D_Color32(10, 12, 18, 255));
-    C2D_DrawRectSolid(CTR_GAME_WIDTH - x0, 0, 0, x0, CTR_GAME_HEIGHT, C2D_Color32(10, 12, 18, 255));
 }
 
 /*
@@ -1453,25 +1512,28 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
     };
     const unsigned groups = Groups();
     const uint32_t cyan = C2D_Color32(80, 230, 240, 255), white = C2D_Color32(240, 242, 248, 255);
+    const uint32_t dim = C2D_Color32(165, 170, 185, 255);
     unsigned number = sEditPlane < groups ? groups - sEditPlane : 0;
     char line[48];
-    float y;
+    int y;
 
-    if (sEditBattle)
-    {
-        DrawBattle(sign, slider, frame);
-        if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "NO.%03u %s", sId, sName);
-        else snprintf(line, sizeof(line), "%s", sName);
-        DrawText(BTL_X0 + 6, 6, line, C2D_Color32(40, 44, 60, 255));
-        return;
-    }
     /* The grid at the screen's depth, a shadow under the feet. */
     C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, C2D_Color32(62, 64, 70, 255));
-    for (int gx = 8; gx < CTR_GAME_WIDTH; gx += 24) C2D_DrawRectSolid(gx, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(86, 88, 96, 255));
-    for (int gy = 10; gy < CTR_GAME_HEIGHT; gy += 24) C2D_DrawRectSolid(0, gy, 0, CTR_GAME_WIDTH, 1, C2D_Color32(86, 88, 96, 255));
-    DrawOval(CENTRE_X + ((sBoxLeft + sBoxRight + 1) / 2.0f - DIM / 2) * SCALE,
-             CENTRE_Y - DIM / 2 * SCALE + (sBoxBottom + 1) * SCALE - 2,
-             (sBoxRight - sBoxLeft + 1) * SCALE * 0.45f, 7, C2D_Color32(235, 238, 245, 230));
+    for (int gx = 8; gx < CTR_GAME_WIDTH; gx += 24) C2D_DrawRectSolid(gx, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(80, 82, 90, 255));
+    for (int gy = 10; gy < CTR_GAME_HEIGHT; gy += 24) C2D_DrawRectSolid(0, gy, 0, CTR_GAME_WIDTH, 1, C2D_Color32(80, 82, 90, 255));
+    {
+        int scx = (int)(CENTRE_X + ((sBoxLeft + sBoxRight + 1) / 2.0f - DIM / 2) * SCALE);
+        int scy = (int)(CENTRE_Y - DIM / 2 * SCALE + (sBoxBottom + 1) * SCALE) - 2;
+        int rx = (int)((sBoxRight - sBoxLeft + 1) * SCALE * 0.45f);
+
+        for (int row = -6; row < 6; ++row)
+        {
+            float dy = (row + 0.5f) / 6.0f;
+            int half = (int)(rx * sqrtf(1.0f - dy * dy) + 0.5f);
+
+            if (half > 0) C2D_DrawRectSolid(scx - half, scy + row, 0, 2 * half, 1, C2D_Color32(235, 238, 245, 220));
+        }
+    }
     DrawPlanes(sign, slider, frame, NULL, SCALE);
     if (sEditOutline && sEditPlane < groups && sTexReady && sComposed == sToCompose)
     {
@@ -1481,12 +1543,12 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
     /* The name and the frame. */
     if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "/%03u-%s", sId, sName);
     else snprintf(line, sizeof(line), "/%s", sName);
-    DrawText(8, 6, line, white);
+    Text57(8, 6, line, white, 2);
     if (sFrames > 1)
     {
         if (sEditAnimate) snprintf(line, sizeof(line), "ANIMATING %u/%u", frame + 1, sFrames);
         else snprintf(line, sizeof(line), "FRAME %u OF %u", sEditFrame + 1, sFrames);
-        DrawText(8, 20, line, cyan);
+        Text57(8, 24, line, cyan, 1);
     }
     /* What is being edited: the plane in its colour, the depth, who, how far. */
     y = 6;
@@ -1495,28 +1557,28 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
     {
         uint16_t c = colours[sEditPlane < CTR_STEREO_EDIT_PLANES ? sEditPlane : 0];
 
-        DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), y, line,
-                 C2D_Color32(((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31, 255));
+        Text57(CTR_GAME_WIDTH - 8 - Width57(line, 2), y, line,
+               C2D_Color32(((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31, 255), 2);
     }
-    y += 14;
+    y += 18;
     snprintf(line, sizeof(line), "3D %d%%%s", CtrStereoMon_Depth(), sEditLayers ? "  LAYERS" : "");
-    DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), y, line, C2D_Color32(160, 165, 180, 255));
-    y += 14;
+    Text57(CTR_GAME_WIDTH - 8 - Width57(line, 1), y, line, dim, 1);
+    y += 10;
     if (sMeta.revision)
     {
         snprintf(line, sizeof(line), "R%u %s", sMeta.revision, sMeta.author[0] ? sMeta.author : "?");
-        DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), y, line, C2D_Color32(160, 165, 180, 255));
-        y += 14;
+        Text57(CTR_GAME_WIDTH - 8 - Width57(line, 1), y, line, dim, 1);
+        y += 10;
     }
     if (sMeta.finalized || sEdited)
     {
         const char *text = sMeta.finalized ? "FINAL" : "EDITED";
 
-        DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(text), y, text,
-                 sMeta.finalized ? C2D_Color32(120, 240, 120, 255) : C2D_Color32(245, 181, 69, 255));
+        Text57(CTR_GAME_WIDTH - 8 - Width57(text, 1), y, text,
+               sMeta.finalized ? C2D_Color32(120, 240, 120, 255) : C2D_Color32(245, 181, 69, 255), 1);
     }
-    DrawHelp(false, 104, left, sizeof(left) / sizeof(left[0]));
-    DrawHelp(true, 86, right, sizeof(right) / sizeof(right[0]));
+    DrawHelp(false, 96, left, sizeof(left) / sizeof(left[0]));
+    DrawHelp(true, 64, right, sizeof(right) / sizeof(right[0]));
 }
 
 static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned frame)

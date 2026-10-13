@@ -141,6 +141,9 @@ int CtrSettings_GetInt(const char *key, int fallback);
 void CtrSettings_SetInt(const char *key, int value);
 /* Fast-forward: game frames per shown frame, 1 to 4 (OPTIONS, ZR/ZL). */
 int CtrSettings_Speed(void);
+/* The game run as fast as the console allows regardless of the speed
+ * setting (the plane editor's battle, through its intro). */
+void CtrPlatform_SetTurbo(bool on);
 void CtrSettings_StepSpeed(int direction, bool wrap);
 /* False on a fast-forwarded frame that is not shown: the sound engine skips
  * it, so music and effects keep their own speed (3ds_sound.c). */

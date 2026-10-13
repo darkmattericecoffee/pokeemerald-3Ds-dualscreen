@@ -249,6 +249,16 @@ void CtrStereoBattle_ClearBattlers(void)
     }
 }
 
+void CtrStereoBattle_ForgetPlanes(void)
+{
+    SlotsInit();
+    for (unsigned i = 0; i < SLOTS; ++i)
+    {
+        sSlots[i].mon.id = sSlots[i].trainer.id = sSlots[i].playerBack.id = 0;
+        sSlots[i].mon.ok = sSlots[i].trainer.ok = sSlots[i].playerBack.ok = false;
+    }
+}
+
 /* The texture, made once; false without the linear memory for it. */
 static bool TextureReady(void)
 {

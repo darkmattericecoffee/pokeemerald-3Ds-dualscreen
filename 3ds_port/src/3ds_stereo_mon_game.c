@@ -17,11 +17,17 @@
 #include "pokemon.h"
 #include "battle.h"
 #include "battle_anim.h"
+#include "battle_controllers.h"
 #include "battle_setup.h"
+#include "pokemon_animation.h"
 #include "graphics.h"
 #include "overworld.h"
 #include "random.h"
+#include "script.h"
+#include "script_pokemon_util.h"
+#include "trainer_see.h"
 #include "wild_encounter.h"
+#include "constants/items.h"
 #include "constants/map_groups.h"
 #include "constants/wild_encounter.h"
 #include "constants/map_types.h"
@@ -51,6 +57,7 @@ bool8 CtrPokedex_Close(bool8 leave);
 #define DEX_HOLD_FRAMES 60
 
 static void BattleFrame(void);
+static void TryBattleFrame(void);
 
 #define OPEN_KEYS (CTR_KEY_L | CTR_KEY_R)
 #define START_HOLD_FRAMES 90
@@ -69,6 +76,14 @@ static u8 sDexHold;
 /* The editor asked for (OPTIONS, or X on the Pokédex's page): opened once
  * the gallery shows its Pokémon. */
 static bool8 sOpenEditor, sOpenFromGallery;
+/* The editor's battle (CtrStereoMonGame_TryBattle): the picture asked for,
+ * whether it waits for the field, whether its battle has begun, and the
+ * gallery index to come back to. */
+static u16 sTryId;
+static bool8 sTryPending, sTryStarted, sTryInBattle, sTryMenuSeen;
+static unsigned sTryReturn;
+/* Frames until the battle's Pokémon are made to move again. */
+static u16 sTryAnimWait;
 
 /* LZ77 data of a game symbol (an asset stub, resolved from the game data)
  * into a buffer of `capacity` bytes; the size comes from the stream's own
@@ -342,6 +357,7 @@ void CtrStereoMonGame_Frame(void)
     if (!CtrStereoMon_Load())
         return;
     BattleFrame();
+    TryBattleFrame();
     if ((held & CTR_KEY_GAME) == CTR_KEY_START && !sGallery)
         ++sStartHeld;
     else
@@ -440,6 +456,110 @@ void CtrStereoMonGame_Frame(void)
         CtrStereoEdit_Open(sOpenFromGallery);
         sOpenFromGallery = FALSE;
     }
+}
+
+/* The battle's two Pokémon made to play their own animations again every
+ * few seconds while they stand still, so their movement can be judged
+ * (the game plays them once, at the send-out). */
+static void TryBattleMove(void)
+{
+    static const u8 positions[2] = {B_POSITION_OPPONENT_LEFT, B_POSITION_PLAYER_LEFT};
+
+    if (sTryAnimWait > 0)
+    {
+        --sTryAnimWait;
+        return;
+    }
+    sTryAnimWait = (u16)(90 + Random() % 150);
+    if (gBattleSpritesDataPtr == NULL) return;
+    for (unsigned k = 0; k < 2; ++k)
+    {
+        u8 battler = GetBattlerAtPosition(positions[k]);
+        struct Sprite *sprite;
+        u16 species;
+
+        if (battler >= gBattlersCount || gBattlerSpriteIds[battler] >= MAX_SPRITES) continue;
+        sprite = &gSprites[gBattlerSpriteIds[battler]];
+        if (!sprite->inUse || sprite->invisible || sprite->callback != SpriteCallbackDummy) continue;
+        species = GetMonData(&(k == 0 ? gEnemyParty : gPlayerParty)[gBattlerPartyIndexes[battler]], MON_DATA_SPECIES);
+        if (species == SPECIES_NONE || species >= NUM_SPECIES) continue;
+        if (k == 0) DoMonFrontSpriteAnimation(sprite, species, TRUE, 0);
+        else LaunchAnimationTaskForBackSprite(sprite, GetSpeciesBackAnimSet(species));
+    }
+}
+
+/* The editor's battle: started once the editor has closed and the field
+ * stands still; the editor opened again once the field is back. */
+static void TryBattleFrame(void)
+{
+    bool8 field = gMain.callback2 == CB2_Overworld && !gMain.inBattle && !ArePlayerFieldControlsLocked();
+
+    if (sTryPending && !sGallery && field)
+    {
+        u16 kind = sTryId & 0xC000, number = sTryId & 0x3FFF;
+
+        sTryPending = FALSE;
+        sTryStarted = TRUE;
+        sTryInBattle = FALSE;
+        if (kind == CTR_STEREO_ID_TRAINER)
+        {
+            unsigned i;
+
+            for (i = 1; i < TRAINERS_COUNT && gTrainers[i].trainerPic != number; ++i) {}
+            if (i == TRAINERS_COUNT) i = 1;
+            gTrainerBattleOpponent_A = (u16)i;
+            gNoOfApproachingTrainers = 0;
+            BattleSetup_StartTrainerBattle();
+            CtrLog_Write(CTR_LOG_VIDEO, "stereo edit: a battle against trainer %u (pic %u)", i, number);
+        }
+        else
+        {
+            u16 species = kind == CTR_STEREO_ID_PLAYER ? SPECIES_ZIGZAGOON : NationalPokedexNumToSpecies(number);
+            u8 level = GetMonData(&gPlayerParty[0], MON_DATA_LEVEL);
+
+            if (species == SPECIES_NONE) species = SPECIES_ZIGZAGOON;
+            if (level < 2) level = 2;
+            CreateScriptedWildMon(species, level, ITEM_NONE);
+            BattleSetup_StartScriptedWildBattle();
+            CtrLog_Write(CTR_LOG_VIDEO, "stereo edit: a wild battle against species %u at level %u", species, level);
+        }
+        return;
+    }
+    if (sTryStarted && gMain.inBattle)
+    {
+        if (!sTryInBattle)
+        {
+            sTryInBattle = TRUE;
+            sTryMenuSeen = FALSE;
+            sTryAnimWait = 60;
+        }
+        /* The intro (the slide, the throw, the text) as fast as the console
+         * goes, until the fight menu first asks: the battle is only the
+         * stage for the picture. */
+        if (!sTryMenuSeen && gBattleBufferA[B_POSITION_PLAYER_LEFT][0] == CONTROLLER_CHOOSEACTION)
+            sTryMenuSeen = TRUE;
+        CtrPlatform_SetTurbo(!sTryMenuSeen);
+        if (sTryMenuSeen) TryBattleMove();
+    }
+    if (sTryStarted && sTryInBattle && field)
+    {
+        /* The battle is over: back to the editor on the same picture. */
+        sTryStarted = sTryInBattle = FALSE;
+        CtrPlatform_SetTurbo(FALSE);
+        sIndex = sTryReturn;
+        sGallery = TRUE;
+        sOpenEditor = TRUE;
+        sMask = 2;
+    }
+}
+
+bool CtrStereoMonGame_TryBattle(uint16_t id)
+{
+    if (gMain.callback2 != CB2_Overworld || gMain.inBattle || CalculatePlayerPartyCount() == 0) return false;
+    sTryId = id;
+    sTryPending = TRUE;
+    sTryReturn = sIndex;
+    return true;
 }
 
 void CtrStereoMonGame_OpenEditor(void)

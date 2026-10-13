@@ -202,10 +202,9 @@ void CtrStereoMon_SetEditing(bool editing, unsigned plane);
 #define CTR_STEREO_EDIT_COLOURS {0x201F, 0xFFE0, 0x07FF, 0xF800}
 /* What the top screen shows while editing: the frame being edited (or the
  * animation, every frame for as long), the plane being edited outlined in
- * `mark` (RGB565), every pixel tinted with its plane's colour (`layers`),
- * and the battle's view of the picture (`battle`: its size, its place and
- * its depth in a battle). */
-void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, bool layers, bool battle);
+ * `mark` (RGB565), and every pixel tinted with its plane's colour
+ * (`layers`). */
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, bool layers);
 /* The editor's 3D depth (percent, 0..CTR_STEREO_EDIT_DEPTH_MAX): its own
  * setting, capped at half the gallery's usual depth to spare the eyes over
  * a long session; the gallery and the Pokédex keep theirs. */
@@ -277,6 +276,9 @@ void CtrStereoBattle_SetSlot(unsigned position, unsigned tileNum, const uint8_t 
                              uint16_t monId, uint16_t trainerId, uint16_t playerId, const uint8_t *backSheet,
                              unsigned backFrames);
 void CtrStereoBattle_ClearBattlers(void);
+/* The planes read for the battle are forgotten: the next battle reads them
+ * again (the editor saved new ones). */
+void CtrStereoBattle_ForgetPlanes(void);
 /* Whether the battle draws its Pokémon in 3D at all (OPTIONS' 3D BATTLE). */
 bool CtrStereoBattle_Enabled(void);
 /*
@@ -322,6 +324,14 @@ void CtrStereoMonGame_OpenEditor(void);
 unsigned CtrStereoMonGame_GalleryIndex(void);
 void CtrStereoMonGame_SelectIndex(unsigned index);
 void CtrStereoMonGame_CloseGallery(void);
+/*
+ * For the editor: the picture tried in a real battle. From the field, a
+ * wild battle against the Pokémon (a Pokémon's front or back: the player's
+ * lead Pokémon shows its back) or against a trainer with that picture, the
+ * planes as saved; when it ends, the editor opens again on the picture.
+ * False when no battle can start here (not in the field, no party).
+ */
+bool CtrStereoMonGame_TryBattle(uint16_t id);
 
 /* ── Game side: the plane editor (3ds_stereo_edit.c) ──────────────────── */
 

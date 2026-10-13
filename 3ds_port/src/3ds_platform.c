@@ -202,9 +202,13 @@ static unsigned sHidden;
 static uint64_t sShownTick;
 static float sPresentMs = 4.0f;
 
+static bool sTurbo;
+
+void CtrPlatform_SetTurbo(bool on) { sTurbo = on; }
+
 static bool FrameShown(uint64_t now)
 {
-    int speed = CtrSettings_Speed();
+    int speed = sTurbo ? 8 : CtrSettings_Speed();
     float since = sShownTick ? (now - sShownTick) * 1000.0f / SYSCLOCK_ARM11 : FRAME_MS;
 
     if (speed <= 1 || ++sHidden >= (unsigned)speed || since + sTiming.gameMs + sPresentMs > FRAME_MS)
