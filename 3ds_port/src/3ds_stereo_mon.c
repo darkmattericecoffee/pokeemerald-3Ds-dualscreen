@@ -23,7 +23,7 @@
 #include "3ds_input.h"
 #include "3ds_log.h"
 #include "3ds_stereo_mon.h"
-#include "3ds_button_icons.h"
+#include "3ds_button_sprites.h"
 
 /*
  * One texture in linear memory with a 64x64 tile per frame and plane, two
@@ -1333,18 +1333,46 @@ static void PixelBox(int x, int y, int w, int h, uint32_t rim, uint32_t face)
 }
 
 /*
- * The console's controls as little pictures beside the help: Zacksly's
- * button icons (3ds_button_icons.h), white with a faint pixel shadow, at
- * the screen's own pixels. The touch screen is drawn here.
+ * The console's controls as little pictures beside the help: the author's
+ * own (3ds_button_sprites.h, 24 px), uploaded once into a 512x32 texture
+ * and drawn from it; the touch screen is drawn here.
  */
-static int ButtonWidth(int kind) { return kind == BTN_TOUCH ? 20 : sButtonIcons[kind].w; }
-static int ButtonHeight(int kind) { return kind == BTN_TOUCH ? 20 : sButtonIcons[kind].h; }
+#define BTN_TEX_W 512
+#define BTN_TEX_H 32
+static C3D_Tex sButtonTex;
+static bool sButtonTexReady;
+
+static bool ButtonTexture(void)
+{
+    uint16_t *texels;
+
+    if (sButtonTexReady) return true;
+    if (!C3D_TexInit(&sButtonTex, BTN_TEX_W, BTN_TEX_H, GPU_RGBA5551))
+    {
+        CtrLog_Write(CTR_LOG_ERROR, "stereo: no linear memory for the buttons' texture");
+        return false;
+    }
+    C3D_TexSetFilter(&sButtonTex, GPU_NEAREST, GPU_NEAREST);
+    C3D_TexSetWrap(&sButtonTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+    texels = sButtonTex.data;
+    memset(texels, 0, BTN_TEX_W * BTN_TEX_H * 2);
+    for (unsigned b = 0; b < BTN_COUNT - 1; ++b)
+        for (unsigned y = 0; y < BTN_SIZE; ++y)
+            for (unsigned x = 0; x < BTN_SIZE; ++x)
+                texels[CtrVideo_Texel(b * BTN_SIZE + x, y, BTN_TEX_W)] = sButtonSprites[b][y * BTN_SIZE + x];
+    C3D_TexFlush(&sButtonTex);
+    sButtonTexReady = true;
+    return true;
+}
+
+static int ButtonWidth(int kind) { return kind == BTN_TOUCH ? 20 : BTN_SIZE; }
+static int ButtonHeight(int kind) { return kind == BTN_TOUCH ? 20 : BTN_SIZE; }
 
 static void DrawButton(int kind, int x, int y)
 {
-    const uint32_t ink = C2D_Color32(248, 248, 250, 255), shadow = C2D_Color32(0, 0, 0, 64);
-    const uint32_t dark = C2D_Color32(30, 32, 38, 255);
-    const CtrButtonIcon *icon = &sButtonIcons[kind];
+    Tex3DS_SubTexture sub;
+    C2D_Image image = {&sButtonTex, &sub};
+    float u0;
 
     if (kind == BTN_TOUCH)
     {
@@ -1356,23 +1384,10 @@ static void DrawButton(int kind, int x, int y)
         C2D_DrawRectSolid(x + 11, y, 0, 2, 7, rim);
         return;
     }
-    for (int r = 0; r < icon->h; ++r)
-    {
-        const uint8_t *row = sButtonPixels + icon->offset + r * icon->w;
-        int start = -1;
-        uint8_t code = 0;
-
-        /* Each row as runs of one code. */
-        for (int c = 0; c <= icon->w; ++c)
-        {
-            uint8_t v = c < icon->w ? row[c] : 0;
-
-            if (v == code) continue;
-            if (code) C2D_DrawRectSolid(x + start, y + r, 0, c - start, 1, code == 1 ? ink : code == 3 ? dark : shadow);
-            code = v;
-            start = c;
-        }
-    }
+    if (!ButtonTexture()) return;
+    u0 = kind * BTN_SIZE / (float)BTN_TEX_W;
+    sub = (Tex3DS_SubTexture){BTN_SIZE, BTN_SIZE, u0, 1.0f, u0 + BTN_SIZE / (float)BTN_TEX_W, 1.0f - BTN_SIZE / (float)BTN_TEX_H};
+    C2D_DrawImageAt(image, x, y, 0, NULL, 1.0f, 1.0f);
 }
 
 /* A line of help: the control (with HOLD after it for the picker), then
