@@ -57,7 +57,6 @@ bool8 CtrPokedex_Close(bool8 leave);
 #define DEX_HOLD_FRAMES 60
 
 static void BattleFrame(void);
-static void TryBattleFrame(void);
 
 #define OPEN_KEYS (CTR_KEY_L | CTR_KEY_R)
 #define START_HOLD_FRAMES 90
@@ -76,23 +75,6 @@ static u8 sDexHold;
 /* The editor asked for (OPTIONS, or X on the Pokédex's page): opened once
  * the gallery shows its Pokémon. */
 static bool8 sOpenEditor, sOpenFromGallery;
-/* The editor's battle (CtrStereoMonGame_TryBattle): the picture asked for,
- * whether it waits for the field, whether its battle has begun, and the
- * gallery index to come back to. */
-static u16 sTryId;
-static bool8 sTryPending, sTryStarted, sTryInBattle, sTryMenuSeen;
-static unsigned sTryReturn;
-/* Frames until the battle's Pokémon are made to move again. */
-static u16 sTryAnimWait;
-/* The player's party while the battle is fought with a clone of the
- * picture's Pokémon in its place (so its back is on screen too). */
-static struct Pokemon sPartyKept[PARTY_SIZE];
-static u8 sPartyKeptCount;
-static bool8 sPartySwapped;
-/* Leaving: RUN chosen and A pressed for the player, every few frames,
- * until the field is back. */
-static bool8 sTryLeaving;
-static unsigned sTryInjected;
 
 /* LZ77 data of a game symbol (an asset stub, resolved from the game data)
  * into a buffer of `capacity` bytes; the size comes from the stream's own
@@ -350,7 +332,13 @@ static void Show(u16 id, bool8 gallery)
     CtrStereoMonGame_Name(id, name, sizeof(name));
     if (frames && CtrStereoMon_ShowId(id, picture[0], frames, name, gallery))
     {
-        if (!gallery) Backdrop(NationalPokedexNumToSpecies(id));
+        u16 kind = id & 0xC000, mate = CtrStereoMon_Counterpart(id);
+
+        /* A Pokémon's battle backdrop, and the other side of it for the
+         * editor's battle view. */
+        if (kind == 0 || kind == CTR_STEREO_ID_BACK) Backdrop(NationalPokedexNumToSpecies(id & 0x3FFF));
+        if (mate && (frames = DecodePicture(mate, picture[0])) != 0) CtrStereoMon_SetCompanion(picture[0], frames);
+        else CtrStereoMon_SetCompanion(NULL, 0);
         CtrLog_Write(CTR_LOG_VIDEO, "stereo: id %04x %s, %u frames (%s)", id, name, frames, gallery ? "gallery" : "pokedex");
     }
 }
@@ -366,7 +354,6 @@ void CtrStereoMonGame_Frame(void)
     if (!CtrStereoMon_Load())
         return;
     BattleFrame();
-    TryBattleFrame();
     if ((held & CTR_KEY_GAME) == CTR_KEY_START && !sGallery)
         ++sStartHeld;
     else
@@ -382,10 +369,9 @@ void CtrStereoMonGame_Frame(void)
         sOpenEditor = TRUE;
         sMask = 2;
     }
-    else if (sGallery && CtrStereoEdit_Active() && !CtrStereoMonGame_TryBattleOn())
+    else if (sGallery && CtrStereoEdit_Active())
     {
-        /* The editor has the keys; it leaves the gallery itself. In its
-         * battle the game has them and the editor keeps the stylus. */
+        /* The editor has the keys; it leaves the gallery itself. */
         CtrStereoEdit_Keys(down, held);
     }
     else if (((held & OPEN_KEYS) == OPEN_KEYS && (down & CTR_KEY_START)) || sStartHeld == START_HOLD_FRAMES)
@@ -418,7 +404,7 @@ void CtrStereoMonGame_Frame(void)
             sGallery = FALSE;
         else
         {
-            if (!CtrStereoEdit_Active() && !CtrStereoMonGame_TryBattleOn())
+            if (!CtrStereoEdit_Active())
             {
                 if (down & CTR_KEY_RIGHT) sIndex = (sIndex + 1) % count;
                 if (down & CTR_KEY_LEFT) sIndex = (sIndex + count - 1) % count;
@@ -468,155 +454,6 @@ void CtrStereoMonGame_Frame(void)
     }
 }
 
-/* The battle's two Pokémon made to play their own animations again every
- * few seconds while they stand still, so their movement can be judged
- * (the game plays them once, at the send-out). */
-static void TryBattleMove(void)
-{
-    static const u8 positions[2] = {B_POSITION_OPPONENT_LEFT, B_POSITION_PLAYER_LEFT};
-
-    if (sTryAnimWait > 0)
-    {
-        --sTryAnimWait;
-        return;
-    }
-    sTryAnimWait = (u16)(90 + Random() % 150);
-    if (gBattleSpritesDataPtr == NULL) return;
-    for (unsigned k = 0; k < 2; ++k)
-    {
-        u8 battler = GetBattlerAtPosition(positions[k]);
-        struct Sprite *sprite;
-        u16 species;
-
-        if (battler >= gBattlersCount || gBattlerSpriteIds[battler] >= MAX_SPRITES) continue;
-        sprite = &gSprites[gBattlerSpriteIds[battler]];
-        if (!sprite->inUse || sprite->invisible || sprite->callback != SpriteCallbackDummy) continue;
-        species = GetMonData(&(k == 0 ? gEnemyParty : gPlayerParty)[gBattlerPartyIndexes[battler]], MON_DATA_SPECIES);
-        if (species == SPECIES_NONE || species >= NUM_SPECIES) continue;
-        if (k == 0) DoMonFrontSpriteAnimation(sprite, species, TRUE, 0);
-        else LaunchAnimationTaskForBackSprite(sprite, GetSpeciesBackAnimSet(species));
-    }
-}
-
-/* The editor's battle: started once the editor has closed and the field
- * stands still; the editor opened again once the field is back. */
-static void TryBattleFrame(void)
-{
-    bool8 field = gMain.callback2 == CB2_Overworld && !gMain.inBattle && !ArePlayerFieldControlsLocked();
-
-    if (sTryPending && field)
-    {
-        u16 kind = sTryId & 0xC000, number = sTryId & 0x3FFF;
-
-        sTryPending = FALSE;
-        sTryStarted = TRUE;
-        sTryInBattle = FALSE;
-        /* The top screen is the battle's; the editor keeps the bottom. */
-        CtrStereoMon_SetDrawn(false);
-        if (kind == 0 || kind == CTR_STEREO_ID_BACK)
-        {
-            /* The player's side: a clone of the Pokémon at level 100, so
-             * its back stands on screen with its front, and so that
-             * running away always works. The party comes back after. */
-            u16 species = NationalPokedexNumToSpecies(number);
-
-            if (species != SPECIES_NONE)
-            {
-                memcpy(sPartyKept, gPlayerParty, sizeof(sPartyKept));
-                sPartyKeptCount = gPlayerPartyCount;
-                ZeroPlayerPartyMons();
-                CreateMon(&gPlayerParty[0], species, 100, USE_RANDOM_IVS, FALSE, 0, OT_ID_PLAYER_ID, 0);
-                gPlayerPartyCount = 1;
-                sPartySwapped = TRUE;
-            }
-        }
-        if (kind == CTR_STEREO_ID_TRAINER)
-        {
-            unsigned i;
-
-            for (i = 1; i < TRAINERS_COUNT && gTrainers[i].trainerPic != number; ++i) {}
-            if (i == TRAINERS_COUNT) i = 1;
-            gTrainerBattleOpponent_A = (u16)i;
-            gNoOfApproachingTrainers = 0;
-            BattleSetup_StartTrainerBattle();
-            CtrLog_Write(CTR_LOG_VIDEO, "stereo edit: a battle against trainer %u (pic %u)", i, number);
-        }
-        else
-        {
-            u16 species = kind == CTR_STEREO_ID_PLAYER ? SPECIES_ZIGZAGOON : NationalPokedexNumToSpecies(number);
-            u8 level = 50;
-
-            if (species == SPECIES_NONE) species = SPECIES_ZIGZAGOON;
-            CreateScriptedWildMon(species, level, ITEM_NONE);
-            BattleSetup_StartScriptedWildBattle();
-            CtrLog_Write(CTR_LOG_VIDEO, "stereo edit: a wild battle against species %u at level %u", species, level);
-        }
-        return;
-    }
-    if (sTryStarted && gMain.inBattle)
-    {
-        if (!sTryInBattle)
-        {
-            sTryInBattle = TRUE;
-            sTryMenuSeen = FALSE;
-            sTryAnimWait = 60;
-        }
-        /* The intro (the slide, the throw, the text) as fast as the console
-         * goes, until the fight menu first asks: the battle is only the
-         * stage for the picture. */
-        if (!sTryMenuSeen && gBattleBufferA[B_POSITION_PLAYER_LEFT][0] == CONTROLLER_CHOOSEACTION)
-            sTryMenuSeen = TRUE;
-        CtrPlatform_SetTurbo(!sTryMenuSeen || sTryLeaving);
-        if (sTryMenuSeen && !sTryLeaving) TryBattleMove();
-        sTryInjected = 0;
-        if (sTryLeaving)
-        {
-            /* On the action menu: the cursor on RUN, then A; through the
-             * text after: A every few frames. */
-            if (gBattleBufferA[B_POSITION_PLAYER_LEFT][0] == CONTROLLER_CHOOSEACTION)
-                gActionSelectionCursor[B_POSITION_PLAYER_LEFT] = 3;
-            if (gMain.vblankCounter1 % 6 == 0) sTryInjected = A_BUTTON;
-        }
-    }
-    if (sTryStarted && sTryInBattle && field)
-    {
-        /* The battle is over: the party back, the editor's top screen back. */
-        CtrLog_Write(CTR_LOG_VIDEO, "stereo edit: the battle is over, back to the editor");
-        sTryStarted = sTryInBattle = sTryLeaving = FALSE;
-        sTryInjected = 0;
-        CtrPlatform_SetTurbo(FALSE);
-        if (sPartySwapped)
-        {
-            memcpy(gPlayerParty, sPartyKept, sizeof(sPartyKept));
-            gPlayerPartyCount = sPartyKeptCount;
-            sPartySwapped = FALSE;
-        }
-        CtrStereoMon_SetDrawn(true);
-        sIndex = sTryReturn;
-        sGallery = TRUE;
-        if (!CtrStereoEdit_Active()) sOpenEditor = TRUE;
-        sMask = 2;
-    }
-}
-
-bool CtrStereoMonGame_TryBattleOn(void) { return sTryPending || sTryStarted; }
-
-void CtrStereoMonGame_LeaveBattle(void)
-{
-    if (sTryStarted) sTryLeaving = TRUE;
-}
-
-unsigned CtrStereoMonGame_InjectedKeys(void) { return sTryInjected; }
-
-bool CtrStereoMonGame_TryBattle(uint16_t id)
-{
-    if (gMain.callback2 != CB2_Overworld || gMain.inBattle || CalculatePlayerPartyCount() == 0) return false;
-    sTryId = id;
-    sTryPending = TRUE;
-    sTryReturn = sIndex;
-    return true;
-}
-
 void CtrStereoMonGame_OpenEditor(void)
 {
     if (!CtrStereoMon_Load() || CtrStereoMon_Count() == 0) return;
@@ -642,7 +479,7 @@ void CtrStereoMonGame_CloseGallery(void)
 
 bool CtrStereoMonGame_TakesKeys(void)
 {
-    return (sGallery && !CtrStereoMonGame_TryBattleOn()) || sMask != 0;
+    return sGallery || sMask != 0;
 }
 
 /*

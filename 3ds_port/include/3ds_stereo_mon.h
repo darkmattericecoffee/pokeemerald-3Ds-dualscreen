@@ -205,9 +205,14 @@ void CtrStereoMon_SetEditing(bool editing, unsigned plane);
 #define CTR_STEREO_EDIT_COLOURS {0x201F, 0xFFE0, 0x07FF, 0xF800}
 /* What the top screen shows while editing: the frame being edited (or the
  * animation, every frame for as long), the plane being edited outlined in
- * `mark` (RGB565), and every pixel tinted with its plane's colour
- * (`layers`). */
-void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, bool layers);
+ * `mark` (RGB565), and the view: the colours, every pixel tinted with its
+ * plane's colour, or the picture in its place in a battle. */
+enum { CTR_STEREO_VIEW_COLOURS, CTR_STEREO_VIEW_LAYERS, CTR_STEREO_VIEW_BATTLE };
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view);
+/* The other side of the picture being edited (a front's back, a back's
+ * front) for the battle view: `frames` of 64x64 RGBA5551 pixels, copied
+ * here, drawn flat in its own battle place; NULL for none. */
+void CtrStereoMon_SetCompanion(const uint16_t *picture, unsigned frames);
 /* The editor's 3D depth (percent, 0..CTR_STEREO_EDIT_DEPTH_MAX): its own
  * setting, capped at half the gallery's usual depth to spare the eyes over
  * a long session; the gallery and the Pokédex keep theirs. */
@@ -350,21 +355,6 @@ void CtrStereoMonGame_OpenEditor(void);
 unsigned CtrStereoMonGame_GalleryIndex(void);
 void CtrStereoMonGame_SelectIndex(unsigned index);
 void CtrStereoMonGame_CloseGallery(void);
-/*
- * For the editor: the picture tried in a real battle. From the field, a
- * wild battle against the Pokémon (a Pokémon's front or back: the player's
- * lead Pokémon shows its back) or against a trainer with that picture, the
- * planes as saved; when it ends, the editor opens again on the picture.
- * False when no battle can start here (not in the field, no party).
- */
-bool CtrStereoMonGame_TryBattle(uint16_t id);
-/* Whether that battle is on (asked for, or being fought): the editor keeps
- * the bottom screen and the stylus, the game the buttons. */
-bool CtrStereoMonGame_TryBattleOn(void);
-/* The battle left: RUN chosen for the player and the text passed, at turbo. */
-void CtrStereoMonGame_LeaveBattle(void);
-/* Keys the editor's battle presses for the player this frame (GBA bits). */
-unsigned CtrStereoMonGame_InjectedKeys(void);
 
 /* ── Game side: the plane editor (3ds_stereo_edit.c) ──────────────────── */
 

@@ -133,7 +133,7 @@ static bool sEditAnimate, sEditOutline;
 static uint32_t sEditMark;
 /* The editor's other views: every pixel in its plane's colour (composed
  * from sTinted instead of the picture), and the battle's. */
-static bool sEditLayers;
+static bool sEditLayers, sEditBattle;
 static uint16_t sTinted[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
 /* The editor's own depth (CtrStereoMon_Depth), -1 until read. */
 static int sEditDepth = -1;
@@ -694,17 +694,55 @@ void CtrStereoMon_SetDepth(int percent)
     CtrSettings_SetInt(EDIT_DEPTH_KEY, sEditDepth);
 }
 
-void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, bool layers)
+void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view)
 {
+    bool layers = view == CTR_STEREO_VIEW_LAYERS;
+
     sEditFrame = frame;
     sEditAnimate = animate;
     sEditOutline = outline;
     sEditMark = C2D_Color32(((mark >> 11) & 31) * 255 / 31, ((mark >> 5) & 63) * 255 / 63, (mark & 31) * 255 / 31, 230);
     if (layers != sEditLayers) sTexReady = false;
     sEditLayers = layers;
+    sEditBattle = view == CTR_STEREO_VIEW_BATTLE;
 }
 
 const CtrStereoEditMeta *CtrStereoMon_EditMeta(void) { return &sMeta; }
+
+/* The companion: the other side's picture, flat, in a 128x64 texture (its
+ * frames side by side). */
+static C3D_Tex sMateTex;
+static bool sMateAllocated, sMateReady;
+static unsigned sMateFrames;
+
+void CtrStereoMon_SetCompanion(const uint16_t *picture, unsigned frames)
+{
+    uint16_t *texels;
+
+    sMateReady = false;
+    if (picture == NULL || frames == 0) return;
+    if (!sMateAllocated)
+    {
+        if (!C3D_TexInit(&sMateTex, 2 * DIM, DIM, GPU_RGBA5551))
+        {
+            CtrLog_Write(CTR_LOG_ERROR, "stereo: no linear memory for the companion's texture");
+            return;
+        }
+        C3D_TexSetFilter(&sMateTex, GPU_NEAREST, GPU_NEAREST);
+        C3D_TexSetWrap(&sMateTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+        sMateAllocated = true;
+    }
+    if (frames > 2) frames = 2;
+    texels = sMateTex.data;
+    memset(texels, 0, 2 * DIM * DIM * 2);
+    for (unsigned f = 0; f < frames; ++f)
+        for (unsigned y = 0; y < DIM; ++y)
+            for (unsigned x = 0; x < DIM; ++x)
+                texels[CtrVideo_Texel(f * DIM + x, y, 2 * DIM)] = picture[f * DIM * DIM + y * DIM + x];
+    C3D_TexFlush(&sMateTex);
+    sMateFrames = frames;
+    sMateReady = true;
+}
 
 void CtrStereoMon_SetFinalized(bool finalized) { sMeta.finalized = finalized; }
 
@@ -1421,6 +1459,85 @@ static void DrawHelp(bool right, int y, const Help *help, unsigned count)
  * ones down the right. Planes are numbered for people front to back: 1 the
  * nearest.
  */
+/*
+ * The battle view: the picture where a battle puts it, over the species'
+ * battle backdrop, the other side of it (flat) in its own place, and the
+ * battle's boxes mocked up: the two HP boxes and the text box. GBA
+ * pixels at 1.5x, the frame's 240 columns in the middle of the 400.
+ */
+#define BATTLE_SCALE 1.5f
+#define BATTLE_X0 ((CTR_GAME_WIDTH - 240 * BATTLE_SCALE) / 2)
+/* The 64x64 pictures' top-left corners in GBA pixels: the opponent's
+ * front, the player's back (where the game's own sprites stand). */
+#define BATTLE_FOE_X 144
+#define BATTLE_FOE_Y 20
+#define BATTLE_OWN_X 32
+#define BATTLE_OWN_Y 60
+static float GbaX(float x) { return BATTLE_X0 + x * BATTLE_SCALE; }
+static float GbaY(float y) { return y * BATTLE_SCALE; }
+
+static void DrawBattleBox(float x, float y, float w, float h, const char *name, bool foe)
+{
+    const uint32_t rim = C2D_Color32(40, 44, 56, 255), face = C2D_Color32(244, 244, 236, 255);
+    const uint32_t bar = C2D_Color32(82, 86, 92, 255), hp = C2D_Color32(96, 200, 80, 255);
+    float bx = x + 8, by = y + h - 10;
+
+    PixelBox((int)x, (int)y, (int)w, (int)h, rim, face);
+    DrawText(x + 8, y + 5, name, C2D_Color32(60, 64, 72, 255));
+    DrawText(x + w - 8 - GLYPH_ADVANCE * 4, y + 5, "L100", C2D_Color32(60, 64, 72, 255));
+    C2D_DrawRectSolid(bx, by, 0, w - 16, 5, bar);
+    C2D_DrawRectSolid(bx + 1, by + 1, 0, w - 18, 3, hp);
+    (void)foe;
+}
+
+static void DrawBattleEye(float sign, float slider, unsigned frame)
+{
+    const bool back = (sId & 0xC000) != 0;
+    const int percent = CtrStereoMon_Depth();
+    const float depth = slider * percent / 100.0f * PARALLAX;
+    const float ownX = GbaX(BATTLE_OWN_X), ownY = GbaY(BATTLE_OWN_Y), foeX = GbaX(BATTLE_FOE_X), foeY = GbaY(BATTLE_FOE_Y);
+    char line[48];
+
+    C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, sBackdropReady ? sSky : C2D_Color32(62, 64, 70, 255));
+    if (sBackdropReady)
+    {
+        const Tex3DS_SubTexture whole = {BACKDROP_W, BACKDROP_H, 0.0f, 1.0f, 1.0f, 0.0f};
+
+        /* The terrain a little behind the screen. */
+        C2D_DrawImageAt((C2D_Image){&sBackdrop, &whole}, GbaX(-8) - sign * slider * 3.0f, GbaY(0), 0, NULL, BATTLE_SCALE,
+                        BATTLE_SCALE);
+    }
+    /* The text box along the bottom. */
+    C2D_DrawRectSolid(0, GbaY(112), 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT - GbaY(112), C2D_Color32(40, 48, 72, 255));
+    C2D_DrawRectSolid(GbaX(0), GbaY(114), 0, 240 * BATTLE_SCALE, GbaY(44), C2D_Color32(232, 232, 224, 255));
+    C2D_DrawRectSolid(GbaX(2), GbaY(116), 0, 236 * BATTLE_SCALE, GbaY(40), C2D_Color32(56, 80, 128, 255));
+    snprintf(line, sizeof(line), "WHAT WILL %s DO?", sName);
+    DrawText(GbaX(10), GbaY(124), line, C2D_Color32(240, 240, 240, 255));
+    /* The other side, flat, then the planes in their place. */
+    if (sMateReady)
+    {
+        unsigned f = frame < sMateFrames ? frame : 0;
+        const Tex3DS_SubTexture sub = {DIM, DIM, f * 0.5f, 1.0f, f * 0.5f + 0.5f, 0.0f};
+        float mx = back ? foeX : ownX, my = back ? foeY : ownY;
+        float mateDepth = back ? 1.0f : BACK_DEPTH;
+
+        C2D_DrawImageAt((C2D_Image){&sMateTex, &sub}, mx + sign * depth * mateDepth * 2.0f, my, 0, NULL, BATTLE_SCALE,
+                        BATTLE_SCALE);
+    }
+    DrawStack(back ? ownX : foeX, back ? ownY : foeY, BATTLE_SCALE, sign * depth * DepthOf(sId), frame, NULL);
+    if (sEditOutline && sEditPlane < Groups() && sTexReady && sComposed == sToCompose)
+    {
+        OutlineRuns(frame, sEditPlane);
+        DrawOutline();
+    }
+    /* The HP boxes: the opponent's at the top left, the player's at the right. */
+    DrawBattleBox(GbaX(20), GbaY(14), 100 * BATTLE_SCALE, 24 * BATTLE_SCALE, sName, true);
+    DrawBattleBox(GbaX(130), GbaY(82), 104 * BATTLE_SCALE, 26 * BATTLE_SCALE, sName, false);
+    DrawHelpCell(CTR_HELP_FRAME, 8, GbaY(2), C2D_Color32(80, 230, 240, 255));
+    DrawHelpCell(CTR_HELP_STATE, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_STATE), GbaY(2),
+                 sMeta.finalized ? C2D_Color32(120, 240, 120, 255) : C2D_Color32(245, 181, 69, 255));
+}
+
 static void DrawEditEye(float sign, float slider, unsigned frame)
 {
     static const uint16_t colours[CTR_STEREO_EDIT_PLANES] = CTR_STEREO_EDIT_COLOURS;
@@ -1444,6 +1561,11 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
     const uint32_t dim = C2D_Color32(185, 190, 205, 255);
     int y;
 
+    if (sEditBattle)
+    {
+        DrawBattleEye(sign, slider, frame);
+        return;
+    }
     /* The grid at the screen's depth, a shadow under the feet. */
     C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, C2D_Color32(62, 64, 70, 255));
     for (int gx = 8; gx < CTR_GAME_WIDTH; gx += 24) C2D_DrawRectSolid(gx, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(80, 82, 90, 255));
