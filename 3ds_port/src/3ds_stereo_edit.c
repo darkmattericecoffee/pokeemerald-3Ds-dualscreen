@@ -96,7 +96,8 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 /* The tint under the planes, across the column, its strength written on it. */
 #define TINT_X (ROW_X - 1)
 #define TINT_W (ROW_SIDE + 2)
-#define TINT_Y (H - 4 - BAR_H)
+#define TINT_H 18
+#define TINT_Y (H - 2 - TINT_H)
 /* Along its bottom: the hand, the zoom slider in the middle, the grid. */
 #define BOT_H 32
 #define BOT_Y (H - BOT_H)
@@ -121,7 +122,7 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
  * framed thumbnail a plane, nearest first; the front/back tabs down the
  * column's right edge. */
 #define ROW_X (RIGHT_X + 4)
-#define TAB_Y 2
+#define TAB_Y 0
 #define TAB_H 14
 #define RIGHT_W (W - RIGHT_X)
 #define TAB_W (RIGHT_W / 2)
@@ -129,9 +130,9 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define FRAME_H 18
 #define FRAME_W 22
 #define ROW_Y0 (FRAME_Y + FRAME_H + 4)
-#define ROW_STEP 44
+#define ROW_STEP 46
 #define ROW_FRAME 3
-#define ROW_SIDE 42
+#define ROW_SIDE 44
 #define THUMB (ROW_SIDE - 2 * ROW_FRAME)
 #define ROWS_END (ROW_Y0 + PLANES * ROW_STEP)
 /* The buttons under them, in a row: the tint, the outline and MORE. */
@@ -2240,13 +2241,16 @@ static void RoundFill(int x, int y, int w, int h, uint16_t c)
  * pixel lower, a soft shadow line where the front one overlaps it. */
 static void DrawTab(int x, const char *label, bool front, bool other, uint16_t panel)
 {
-    const uint16_t rim = Rgb(1, 2, 2), face = front ? panel : other ? Mix(panel, Rgb(0, 0, 0), 3, 4) : Mix(panel, Rgb(0, 0, 0), 5, 8);
-    int y = TAB_Y + (front ? 0 : 1), h = TAB_H - (front ? 0 : 1);
+    /* The column's green in front; a darker green behind (duller still
+     * when the pack has no other side). */
+    const uint16_t rim = Rgb(1, 2, 2), dark = Rgb(10, 38, 14);
+    const uint16_t face = front ? panel : other ? dark : Mix(dark, panel, 1, 2);
+    int y = TAB_Y + (front ? 0 : 2), h = TAB_H - (front ? 0 : 2);
 
     RoundFill(x, y, TAB_W, h + 2, rim);
     RoundFill(x + 1, y + 1, TAB_W - 2, h + 1, face);
     if (front) CtrBottomDraw_Fill(x + 1, y + h, TAB_W - 2, 3, face);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, x + TAB_W / 2, y, front ? CTR_DRAW_DARK : other ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, x + TAB_W / 2, y, front ? CTR_DRAW_DARK : CTR_DRAW_WHITE);
 }
 
 static void DrawTabs(void)
@@ -2258,8 +2262,8 @@ static void DrawTabs(void)
     /* A ledge the tabs stand on, the front one drawn last so it overlaps;
      * a shadow a pixel wide along the front one's inner edge. */
     CtrBottomDraw_Fill(x0, TAB_Y + TAB_H, 2 * TAB_W, 1, Rgb(1, 2, 2));
-    DrawTab(back ? x0 : x0 + TAB_W, back ? "FRNT" : "BACK", false, other, panel);
-    DrawTab(fx, back ? "BACK" : "FRNT", true, true, panel);
+    DrawTab(back ? x0 : x0 + TAB_W, back ? "FRT" : "BCK", false, other, panel);
+    DrawTab(fx, back ? "BCK" : "FRT", true, true, panel);
     FillMix(back ? fx - 1 : fx + TAB_W, TAB_Y + 1, 1, TAB_H, Rgb(0, 0, 0), 1, 3);
 }
 
@@ -2285,13 +2289,13 @@ static void DrawRight(void)
     CtrBottomDraw_Fill(ROW_X + FRAME_W, FRAME_Y + 1, 1, FRAME_H - 2, Rgb(1, 2, 2));
     DrawTabs();
     /* The tint under the planes, its strength written on it. */
-    CtrBottomDraw_Plate(TINT_X, TINT_Y, TINT_W, BAR_H, 0, sE.pressed == P_RIGHT + B_OPACITY);
-    DrawTintCircles(TINT_X + 2, TINT_Y + 3);
+    CtrBottomDraw_Plate(TINT_X, TINT_Y, TINT_W, TINT_H, 0, sE.pressed == P_RIGHT + B_OPACITY);
+    DrawTintCircles(TINT_X + 2, TINT_Y);
     snprintf(label, sizeof(label), "%s", sOpacityNames[sE.opacity]);
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, label, TINT_X + 20, TINT_Y + 5, CTR_DRAW_DARK);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, label, TINT_X + 20, TINT_Y + 2, CTR_DRAW_DARK);
     {
         /* A per cent sign, the game's font having none. */
-        int px = TINT_X + 20 + CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, label) + 2, py = TINT_Y + 8;
+        int px = TINT_X + 20 + CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, label) + 2, py = TINT_Y + 5;
 
         for (int i = 0; i < 7; ++i) Px(px + 6 - i, py + i, INK_DARK);
         CtrBottomDraw_Fill(px, py, 2, 2, INK_DARK);
