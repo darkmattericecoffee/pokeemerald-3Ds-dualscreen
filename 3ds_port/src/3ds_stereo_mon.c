@@ -1250,92 +1250,67 @@ static void DrawDex(float sign, float slider, unsigned frame)
 
 /* ── The editor's top screen ────────────────────────────────────────── */
 
-/* A 5x7 pixel font (A-Z, 0-9 and a few signs), drawn as whole pixels at
- * `px` screen pixels each: crisp, as the bottom screen's icons are. */
-static const uint8_t sFont57[][7] = {
-    {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}, /* A */
-    {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E}, /* B */
-    {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}, /* C */
-    {0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C}, /* D */
-    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}, /* E */
-    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}, /* F */
-    {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F}, /* G */
-    {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}, /* H */
-    {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}, /* I */
-    {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C}, /* J */
-    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, /* K */
-    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}, /* L */
-    {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}, /* M */
-    {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11}, /* N */
-    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, /* O */
-    {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}, /* P */
-    {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D}, /* Q */
-    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}, /* R */
-    {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}, /* S */
-    {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}, /* T */
-    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, /* U */
-    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}, /* V */
-    {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A}, /* W */
-    {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}, /* X */
-    {0x11, 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04}, /* Y */
-    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F}, /* Z */
-    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, /* 0 */
-    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, /* 1 */
-    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}, /* 2 */
-    {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E}, /* 3 */
-    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, /* 4 */
-    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}, /* 5 */
-    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, /* 6 */
-    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, /* 7 */
-    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, /* 8 */
-    {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}, /* 9 */
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C}, /* . */
-    {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00}, /* - */
-    {0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00}, /* : */
-    {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10}, /* / */
-    {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03}, /* % */
-    {0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00}, /* + */
-    {0x0C, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00}, /* ' */
-    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04}, /* ? */
-    {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04}, /* ! */
-    {0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02}, /* < */
-    {0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08}, /* > */
+/*
+ * The help sheet: the editor's words in the game's own small font, drawn
+ * by the editor on the game side and handed over cell by cell
+ * (CtrStereoMon_HelpCell), two cells a row in a 256x128 LA4 texture
+ * (32 KiB of linear memory, made once); drawn here with a colour and the
+ * game's one-pixel shadow.
+ */
+#define HELP_TEX_W 256
+#define HELP_TEX_H 128
+static C3D_Tex sHelpTex;
+static bool sHelpAllocated, sHelpFailed;
+static uint8_t sHelpWidth[CTR_HELP_CELLS];
 
-};
-static const char sFont57Order[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:/%+'?!<>";
-#define F57_ADVANCE 6
-
-static void Text57(float x, float y, const char *text, uint32_t colour, int px)
+void CtrStereoMon_HelpCell(unsigned cell, const uint8_t *alpha, unsigned width)
 {
-    for (; *text; ++text, x += F57_ADVANCE * px)
+    uint8_t *texels;
+    unsigned cx, cy;
+
+    if (cell >= CTR_HELP_CELLS || alpha == NULL || sHelpFailed) return;
+    if (!sHelpAllocated)
     {
-        char c = *text >= 'a' && *text <= 'z' ? (char)(*text - 'a' + 'A') : *text;
-        const char *at = c == ' ' ? NULL : strchr(sFont57Order, c);
-        const uint8_t *rows;
-
-        if (at == NULL) continue;
-        rows = sFont57[at - sFont57Order];
-        for (int r = 0; r < 7; ++r)
+        if (!C3D_TexInit(&sHelpTex, HELP_TEX_W, HELP_TEX_H, GPU_LA4))
         {
-            /* Each row as runs of set pixels: fewer rectangles. */
-            int cstart = -1;
-
-            for (int cc = 0; cc <= 5; ++cc)
-            {
-                bool on = cc < 5 && ((rows[r] >> (4 - cc)) & 1);
-
-                if (on && cstart < 0) cstart = cc;
-                if (!on && cstart >= 0)
-                {
-                    C2D_DrawRectSolid(x + cstart * px, y + r * px, 0, (cc - cstart) * px, px, colour);
-                    cstart = -1;
-                }
-            }
+            sHelpFailed = true;
+            CtrLog_Write(CTR_LOG_ERROR, "stereo edit: no linear memory for the help sheet (free=%lu)",
+                         (unsigned long)linearSpaceFree());
+            return;
         }
+        C3D_TexSetFilter(&sHelpTex, GPU_NEAREST, GPU_NEAREST);
+        C3D_TexSetWrap(&sHelpTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+        memset(sHelpTex.data, 0, HELP_TEX_W * HELP_TEX_H);
+        sHelpAllocated = true;
     }
+    texels = sHelpTex.data;
+    cx = (cell % 2) * CTR_HELP_CELL_W;
+    cy = (cell / 2) * CTR_HELP_CELL_H;
+    for (unsigned y = 0; y < CTR_HELP_CELL_H; ++y)
+        for (unsigned x = 0; x < CTR_HELP_CELL_W; ++x)
+            texels[CtrVideo_Texel(cx + x, cy + y, HELP_TEX_W)] = alpha[y * CTR_HELP_CELL_W + x] ? 0xFF : 0x00;
+    sHelpWidth[cell] = (uint8_t)(width > CTR_HELP_CELL_W ? CTR_HELP_CELL_W : width);
+    C3D_TexFlush(&sHelpTex);
 }
 
-static float Width57(const char *text, int px) { return (float)strlen(text) * F57_ADVANCE * px; }
+static int HelpWidth(unsigned cell) { return cell < CTR_HELP_CELLS && sHelpAllocated ? sHelpWidth[cell] : 0; }
+
+/* A cell at (x, y) in `colour`, over the game's dark shadow a pixel down and right. */
+static void DrawHelpCell(unsigned cell, float x, float y, uint32_t colour)
+{
+    unsigned cx = (cell % 2) * CTR_HELP_CELL_W, cy = (cell / 2) * CTR_HELP_CELL_H, w = sHelpWidth[cell];
+    Tex3DS_SubTexture sub;
+    C2D_Image image = {&sHelpTex, &sub};
+    C2D_ImageTint tint;
+
+    if (cell >= CTR_HELP_CELLS || !sHelpAllocated || w == 0) return;
+    sub = (Tex3DS_SubTexture){(uint16_t)w, CTR_HELP_CELL_H, cx / (float)HELP_TEX_W, 1.0f - cy / (float)HELP_TEX_H,
+                              (cx + w) / (float)HELP_TEX_W, 1.0f - (cy + CTR_HELP_CELL_H) / (float)HELP_TEX_H};
+    C2D_PlainImageTint(&tint, C2D_Color32(30, 32, 38, 255), 1.0f);
+    C2D_DrawImageAt(image, x + 1, y + 1, 0, &tint, 1.0f, 1.0f);
+    C2D_PlainImageTint(&tint, colour, 1.0f);
+    C2D_DrawImageAt(image, x, y, 0, &tint, 1.0f, 1.0f);
+}
 
 /* A pixel-art rounded box, a 1-pixel rim, the corners cut by one pixel. */
 static void PixelBox(int x, int y, int w, int h, uint32_t rim, uint32_t face)
@@ -1356,6 +1331,7 @@ static int ButtonHeight(int kind) { return kind == BTN_TOUCH ? 20 : sButtonIcons
 static void DrawButton(int kind, int x, int y)
 {
     const uint32_t ink = C2D_Color32(248, 248, 250, 255), shadow = C2D_Color32(0, 0, 0, 64);
+    const uint32_t dark = C2D_Color32(30, 32, 38, 255);
     const CtrButtonIcon *icon = &sButtonIcons[kind];
 
     if (kind == BTN_TOUCH)
@@ -1380,50 +1356,33 @@ static void DrawButton(int kind, int x, int y)
             uint8_t v = c < icon->w ? row[c] : 0;
 
             if (v == code) continue;
-            if (code) C2D_DrawRectSolid(x + start, y + r, 0, c - start, 1, code == 1 ? ink : shadow);
+            if (code) C2D_DrawRectSolid(x + start, y + r, 0, c - start, 1, code == 1 ? ink : code == 3 ? dark : shadow);
             code = v;
             start = c;
         }
     }
 }
 
-/* A line of help: the control (two, joined by a plus), then its words
- * beside it; the right-hand column has the control at the screen's edge
- * and the words to its left. */
-typedef struct { int button, button2; const char *line1, *line2; } Help;
-#define HELP_ROW 28
-/* The second control of a pair, or this: "HOLD" after the first. */
-#define BTN_HOLD -2
+/* A line of help: the control (with HOLD after it for the picker), then
+ * its words beside it; the right-hand column has the control at the
+ * screen's edge and the words to its left. */
+typedef struct { int button; bool hold; unsigned cell; } Help;
+#define HELP_ROW 26
 
 static void DrawHelp(bool right, int y, const Help *help, unsigned count)
 {
-    const uint32_t words = C2D_Color32(215, 220, 230, 255), plus = C2D_Color32(215, 220, 230, 255);
+    const uint32_t words = C2D_Color32(225, 230, 240, 255);
 
     for (unsigned i = 0; i < count; ++i, y += HELP_ROW)
     {
         const Help *h = &help[i];
-        int w1 = ButtonWidth(h->button), w2 = h->button2 >= 0 ? ButtonWidth(h->button2) : h->button2 == BTN_HOLD ? 24 : 0;
-        int controls = w1 + (h->button2 != -1 ? 8 + w2 : 0);
-        int bx = right ? CTR_GAME_WIDTH - 6 - controls : 6, tx;
-        float n1 = Width57(h->line1, 2), n2 = h->line2 ? Width57(h->line2, 2) : 0, wide = n1 > n2 ? n1 : n2;
+        int controls = ButtonWidth(h->button) + (h->hold ? 4 + HelpWidth(CTR_HELP_HOLD) : 0);
+        int bx = right ? CTR_GAME_WIDTH - 6 - controls : 6, wide = HelpWidth(h->cell);
 
         /* The controls sit in the middle of the row's 20 pixels. */
         DrawButton(h->button, bx, y + (20 - ButtonHeight(h->button)) / 2);
-        if (h->button2 >= 0)
-        {
-            Text57(bx + w1 + 1, y + 7, "+", plus, 1);
-            DrawButton(h->button2, bx + w1 + 8, y + (20 - ButtonHeight(h->button2)) / 2);
-        }
-        else if (h->button2 == BTN_HOLD)
-            Text57(bx + w1 + 4, y + 7, "HOLD", plus, 1);
-        tx = right ? bx - 8 - (int)wide : bx + controls + 8;
-        if (h->line2)
-        {
-            Text57(right ? tx + (wide - n1) : tx, y - 5, h->line1, words, 2);
-            Text57(right ? tx + (wide - n2) : tx, y + 10, h->line2, words, 2);
-        }
-        else
-            Text57(right ? tx + (wide - n1) : tx, y + 3, h->line1, words, 2);
+        if (h->hold) DrawHelpCell(CTR_HELP_HOLD, bx + ButtonWidth(h->button) + 4, y + 3, words);
+        DrawHelpCell(h->cell, right ? bx - 8 - wide : bx + controls + 8, y + 3, words);
     }
 }
 
@@ -1439,25 +1398,23 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
 {
     static const uint16_t colours[CTR_STEREO_EDIT_PLANES] = CTR_STEREO_EDIT_COLOURS;
     static const Help left[] = {
-        {BTN_L, -1, "PLANE", NULL},
-        {BTN_L_SMALL, BTN_HOLD, "PICK", NULL},
-        {BTN_PAD, -1, "PAN", NULL},
-        {BTN_DPAD_UD, -1, "ZOOM", NULL},
-        {BTN_DPAD_LR, -1, "UNDO", "REDO"},
+        {BTN_L, false, CTR_HELP_L_PLANE},
+        {BTN_L_SMALL, true, CTR_HELP_L_PICK},
+        {BTN_PAD, false, CTR_HELP_L_PAN},
+        {BTN_DPAD_UD, false, CTR_HELP_L_ZOOM},
+        {BTN_DPAD_LR, false, CTR_HELP_L_UNDO},
     };
     static const Help right[] = {
-        {BTN_Y, -1, "ANIMATE", NULL},
-        {BTN_X, -1, "VIEW", "LAYERS"},
-        {BTN_R, -1, "FRAME", NULL},
-        {BTN_CSTICK, -1, "MON", NULL},
-        {BTN_START, -1, "SAVE", NULL},
-        {BTN_B, -1, "BACK", NULL},
+        {BTN_Y, false, CTR_HELP_R_ANIMATE},
+        {BTN_X, false, CTR_HELP_R_LAYERS},
+        {BTN_R, false, CTR_HELP_R_FRAME},
+        {BTN_CSTICK, false, CTR_HELP_R_MON},
+        {BTN_START, false, CTR_HELP_R_SAVE},
+        {BTN_B, false, CTR_HELP_R_BACK},
     };
     const unsigned groups = Groups();
     const uint32_t cyan = C2D_Color32(80, 230, 240, 255), white = C2D_Color32(240, 242, 248, 255);
-    const uint32_t dim = C2D_Color32(165, 170, 185, 255);
-    unsigned number = sEditPlane < groups ? groups - sEditPlane : 0;
-    char line[48];
+    const uint32_t dim = C2D_Color32(185, 190, 205, 255);
     int y;
 
     /* The grid at the screen's depth, a shadow under the feet. */
@@ -1483,45 +1440,28 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
         OutlineRuns(frame, sEditPlane);
         DrawOutline();
     }
-    /* The name and the frame. */
-    if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "/%03u-%s", sId, sName);
-    else snprintf(line, sizeof(line), "/%s", sName);
-    Text57(8, 6, line, white, 2);
-    if (sFrames > 1)
+    /* The name and the frame at the top left; what is being edited (the
+     * plane in its colour, the depth, who, how far) at the top right. */
+    DrawHelpCell(CTR_HELP_NAME, 8, 4, white);
+    DrawHelpCell(CTR_HELP_FRAME, 8, 18, cyan);
+    y = 4;
+    if (sEditPlane < CTR_STEREO_EDIT_PLANES)
     {
-        if (sEditAnimate) snprintf(line, sizeof(line), "ANIMATING %u/%u", frame + 1, sFrames);
-        else snprintf(line, sizeof(line), "FRAME %u OF %u", sEditFrame + 1, sFrames);
-        Text57(8, 24, line, cyan, 1);
-    }
-    /* What is being edited: the plane in its colour, the depth, who, how far. */
-    y = 6;
-    snprintf(line, sizeof(line), "PLANE %u%s", number, number == 1 ? " FRONT" : number == groups ? " BACK" : "");
-    if (number)
-    {
-        uint16_t c = colours[sEditPlane < CTR_STEREO_EDIT_PLANES ? sEditPlane : 0];
+        uint16_t c = colours[sEditPlane];
 
-        Text57(CTR_GAME_WIDTH - 8 - Width57(line, 2), y, line,
-               C2D_Color32(((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31, 255), 2);
+        DrawHelpCell(CTR_HELP_PLANE, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_PLANE), y,
+                     C2D_Color32(((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31, 255));
     }
-    y += 18;
-    snprintf(line, sizeof(line), "3D %d%%%s", CtrStereoMon_Depth(), sEditLayers ? "  LAYERS" : "");
-    Text57(CTR_GAME_WIDTH - 8 - Width57(line, 1), y, line, dim, 1);
-    y += 10;
-    if (sMeta.revision)
-    {
-        snprintf(line, sizeof(line), "R%u %s", sMeta.revision, sMeta.author[0] ? sMeta.author : "?");
-        Text57(CTR_GAME_WIDTH - 8 - Width57(line, 1), y, line, dim, 1);
-        y += 10;
-    }
-    if (sMeta.finalized || sEdited)
-    {
-        const char *text = sMeta.finalized ? "FINAL" : "EDITED";
-
-        Text57(CTR_GAME_WIDTH - 8 - Width57(text, 1), y, text,
-               sMeta.finalized ? C2D_Color32(120, 240, 120, 255) : C2D_Color32(245, 181, 69, 255), 1);
-    }
-    DrawHelp(false, 96, left, sizeof(left) / sizeof(left[0]));
-    DrawHelp(true, 64, right, sizeof(right) / sizeof(right[0]));
+    y += 14;
+    DrawHelpCell(CTR_HELP_DEPTH, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_DEPTH), y, dim);
+    y += 14;
+    DrawHelpCell(CTR_HELP_REVISION, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_REVISION), y, dim);
+    y += 14;
+    DrawHelpCell(CTR_HELP_STATE, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_STATE), y,
+                 sMeta.finalized ? C2D_Color32(120, 240, 120, 255) : C2D_Color32(245, 181, 69, 255));
+    (void)groups;
+    DrawHelp(false, 102, left, sizeof(left) / sizeof(left[0]));
+    DrawHelp(true, 76, right, sizeof(right) / sizeof(right[0]));
 }
 
 static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned frame)

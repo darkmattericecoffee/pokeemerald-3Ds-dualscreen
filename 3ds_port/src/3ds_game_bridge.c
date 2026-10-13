@@ -52,9 +52,11 @@ u16 Platform_GetKeyInput(void)
     /* The bottom screen's column takes the buttons while X has its focus;
      * its touch controls press buttons through here. */
     held = CtrBottom_FilterKeys(held) | CtrBottom_InjectedKeys();
-    /* The stereoscopic viewer's gallery has them all while it is open. */
+    /* The stereoscopic viewer's gallery has them all while it is open; the
+     * plane editor's battle presses RUN for the player. */
     if (CtrStereoMonGame_TakesKeys())
         held = 0;
+    held |= CtrStereoMonGame_InjectedKeys();
 #if defined(CTR_TEST_BATTLE) || defined(CTR_TEST_DEX) || defined(CTR_TEST_EDIT)
     /* Emulator aid (3ds_game_full.c): A tapped through the intro, the title
      * and the menu until the field is up, for a keyboard-less run (and on

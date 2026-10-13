@@ -84,9 +84,7 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define UNDO_X 36
 #define UNDO_W 22
 #define REDO_X (UNDO_X + UNDO_W + 2)
-#define FRAME_X (REDO_X + UNDO_W + 4)
-#define FRAME_W 36
-#define BATTLE_X (FRAME_X + FRAME_W + 14)
+#define BATTLE_X (REDO_X + UNDO_W + 16)
 #define BATTLE_W 28
 #define FB_X (BATTLE_X + BATTLE_W + 22)
 #define FB_W 18
@@ -109,18 +107,21 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define TOOL_H 30
 #define HAND_X 4
 #define SIZE_CX (TOOL_X + TOOL_W / 2)
-#define SIZE_TOP 40
-#define SIZE_BOTTOM 90
-#define PENCIL_Y 100
+#define SIZE_TOP 38
+#define SIZE_BOTTOM 80
+#define PENCIL_Y 104
 #define LASSO_Y (PENCIL_Y + TOOL_H + 6)
 #define SL_REACH 11
 #define KNOB_R 8
-/* The planes: a framed thumbnail each, nearest at the top. */
+/* The planes' column: the frame's button at the top, then a framed
+ * thumbnail a plane, nearest first. */
 #define ROW_X (RIGHT_X + 4)
-#define ROW_Y0 2
-#define ROW_STEP 50
+#define FRAME_Y 2
+#define FRAME_H 20
+#define ROW_Y0 (FRAME_Y + FRAME_H + 4)
+#define ROW_STEP 46
 #define ROW_FRAME 3
-#define ROW_SIDE 48
+#define ROW_SIDE 44
 #define THUMB (ROW_SIDE - 2 * ROW_FRAME)
 #define ROWS_END (ROW_Y0 + PLANES * ROW_STEP)
 /* The buttons under them, in a row: the tint, the outline and MORE. */
@@ -213,6 +214,8 @@ static struct
     bool propagate, outlineOn, layersView, animate, fromGallery;
     /* The battle is on: the top screen is the game's, the buttons too. */
     bool inBattle;
+    /* The top screen's words want drawing again (MakeHelpSheet). */
+    bool helpDirty;
     bool dirtyDraw, dirtyFile;
     /* Where picture pixel (0, 0) lies, in screen pixels from the canvas's
      * top left; the Circle Pad's movement below a pixel. */
@@ -427,6 +430,7 @@ static void Changed(void)
 {
     sE.dirtyDraw = true;
     sE.dirtyFile = true;
+    sE.helpDirty = true;
     CtrStereoMon_Recompose();
     CtrStereoBattle_LiveChanged();
 }
@@ -841,6 +845,7 @@ static void PickPlane(unsigned plane)
     char line[24];
 
     sE.layer = plane;
+    sE.helpDirty = true;
     snprintf(line, sizeof(line), "PLANE %u", PLANES - plane);
     Toast(line);
 }
@@ -852,6 +857,7 @@ static void OtherFrame(void)
 
     if (sE.frames < 2) return;
     sE.frame = (sE.frame + 1) % sE.frames;
+    sE.helpDirty = true;
     snprintf(line, sizeof(line), "FRAME %u OF %u", sE.frame + 1, sE.frames);
     Toast(line);
 }
@@ -868,6 +874,7 @@ static void Save(bool quiet)
     if (CtrStereoMon_SaveEdit())
     {
         sE.dirtyFile = false;
+        sE.helpDirty = true;
         if (!quiet) Toast("SAVED TO SD");
     }
     else
@@ -918,6 +925,7 @@ static bool Bind(void)
     CtrStereoMonGame_Name(id, sE.name, sizeof(sE.name));
     CtrStereoMon_SetEditing(true, sE.layer);
     CtrStereoBattle_SetLive(id, pl, frames);
+    sE.helpDirty = true;
     CtrLog_Write(CTR_LOG_VIDEO, "stereo edit: id %04x %s, %u planes (now %u), %u frames, mark %04x", id, sE.name,
                  planes, sE.planes, frames, sE.mark);
     return true;
@@ -1125,6 +1133,7 @@ static void DpadKeys(unsigned dpad)
 static void ToggleLayersView(void)
 {
     sE.layersView = !sE.layersView;
+    sE.helpDirty = true;
     CtrSettings_SetInt("edit_layers", sE.layersView);
     Toast(sE.layersView ? "TOP SCREEN: LAYERS" : "TOP SCREEN: COLOURS");
 }
@@ -1182,10 +1191,14 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
         if (down & (CTR_KEY_B | CTR_KEY_START)) sE.screen = S_EDIT;
         return;
     }
-    /* A short press of L: the next plane (held, it is the picker). */
+    /* A short press of L: the pencil, to draw on the plane just picked
+     * (held, L is the picker). */
     if (down & CTR_KEY_L) sE.lPicked = false;
-    if (lReleased && !sE.lPicked && lFrames < L_HOLD_FRAMES)
-        PickPlane(sE.layer == 0 ? PLANES - 1 : sE.layer - 1);
+    if (lReleased && !sE.lPicked && lFrames < L_HOLD_FRAMES && sE.tool != T_BRUSH)
+    {
+        sE.tool = T_BRUSH;
+        Toast("PENCIL");
+    }
     if (down & CTR_KEY_R) OtherFrame();
     if (down & CTR_KEY_SELECT)
     {
@@ -1199,6 +1212,7 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
     if (down & CTR_KEY_Y)
     {
         sE.animate = !sE.animate;
+        sE.helpDirty = true;
         Toast(sE.animate ? "ANIMATING" : "STILL");
     }
     /* The D-pad only: the Circle Pad pans (CtrStereoEdit_BottomFrame). */
@@ -1314,7 +1328,8 @@ static void TryBattle(void)
 {
     if (sE.inBattle)
     {
-        Toast("RUN FROM THE BATTLE TO COME BACK");
+        CtrStereoMonGame_LeaveBattle();
+        Toast("LEAVING THE BATTLE");
         return;
     }
     if (!CtrStereoMonGame_TryBattle(sE.id))
@@ -1324,7 +1339,7 @@ static void TryBattle(void)
     }
     Save(true);
     CtrStereoMon_LogEdit("battle");
-    Toast("DRAW ON. RUN FROM THE BATTLE TO COME BACK");
+    Toast("DRAW ON. TAP BATTLE AGAIN TO COME BACK");
 }
 
 /* The bar along the picture's top: a tap on one of its buttons. */
@@ -1339,12 +1354,6 @@ static bool BarAct(int x, int y)
     }
     else if (x >= UNDO_X && x < UNDO_X + UNDO_W) { sE.pressed = P_UNDO; Undo(); }
     else if (x >= REDO_X && x < REDO_X + UNDO_W) { sE.pressed = P_REDO; Redo(); }
-    else if (x >= FRAME_X && x < FRAME_X + FRAME_W)
-    {
-        sE.pressed = P_FRAME;
-        if (sE.frames > 1) OtherFrame();
-        else Toast("ONE FRAME ONLY");
-    }
     else if (x >= BATTLE_X && x < BATTLE_X + BATTLE_W) { sE.pressed = P_BATTLE; TryBattle(); }
     else if (x >= FB_X && x < FB_X + FB_W) { sE.pressed = P_FRONT; SwapSide(false); }
     else if (x >= FB_X + FB_W && x < FB_X + 2 * FB_W) { sE.pressed = P_BACK; SwapSide(true); }
@@ -1378,7 +1387,13 @@ static void TouchEdit(const CtrInput *in)
         sE.pressed = P_NONE;
         if (x >= RIGHT_X)
         {
-            if (y < ROWS_END)
+            if (y < ROW_Y0)
+            {
+                sE.pressed = P_FRAME;
+                if (sE.frames > 1) OtherFrame();
+                else Toast("ONE FRAME ONLY");
+            }
+            else if (y < ROWS_END)
             {
                 sE.rowTouch = true;
                 sE.rowStartY = y;
@@ -1550,6 +1565,7 @@ static void OptionAct(int row, bool rightHalf)
     {
     case O_DEPTH:
         CtrStereoMon_SetDepth(CtrStereoMon_Depth() + (rightHalf ? CTR_STEREO_EDIT_DEPTH_STEP : -CTR_STEREO_EDIT_DEPTH_STEP));
+        sE.helpDirty = true;
         break;
     case O_PROPAGATE: sE.propagate = !sE.propagate; CtrSettings_SetInt("edit_propagate", sE.propagate); break;
     case O_PROPAGATE_NOW:
@@ -1980,33 +1996,28 @@ static void DrawBar(void)
 {
     const bool back = (sE.id & 0xC000) != 0, other = CtrStereoMon_Counterpart(sE.id) != 0;
     const bool final = CtrStereoMon_EditMeta()->finalized;
-    char label[12];
 
     PlateIcon(DEX_X, BAR_Y, DEX_W, BAR_H, 0, sE.pressed == P_DEX, ICON_LIST, true, INK_DARK);
     PlateIcon(UNDO_X, BAR_Y, UNDO_W, BAR_H, sUndoCount ? 0 : 2, sE.pressed == P_UNDO, ICON_UNDO, false,
               sUndoCount ? INK_DARK : INK_OFF);
     PlateIcon(REDO_X, BAR_Y, UNDO_W, BAR_H, sRedoCount ? 0 : 2, sE.pressed == P_REDO, ICON_REDO, false,
               sRedoCount ? INK_DARK : INK_OFF);
-    snprintf(label, sizeof(label), "F%u/%u", sE.frame + 1, sE.frames);
-    CtrBottomDraw_Plate(FRAME_X, BAR_Y, FRAME_W, BAR_H, sE.frames > 1 ? 0 : 2, sE.pressed == P_FRAME);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, FRAME_X + FRAME_W / 2, BAR_Y + 5, sE.frames > 1 ? CTR_DRAW_DARK : CTR_DRAW_OFF);
     /* The battle: chosen while it is on. */
     PlateIcon(BATTLE_X, BAR_Y, BATTLE_W, BAR_H, sE.inBattle ? 1 : 0, sE.inBattle || sE.pressed == P_BATTLE, ICON_BATTLE, true,
               INK_DARK);
-    /* Unsaved changes: a red dot. */
-    if (sE.dirtyFile)
-    {
-        DrawDisc(BATTLE_X + BATTLE_W + 10, BAR_Y + BAR_H / 2, 4, Rgb(1, 2, 2));
-        DrawDisc(BATTLE_X + BATTLE_W + 10, BAR_Y + BAR_H / 2, 3, Rgb(31, 12, 8));
-    }
     /* The F/B switch: the side shown chosen, the other greyed when the pack has none. */
     CtrBottomDraw_Plate(FB_X, BAR_Y, FB_W, BAR_H, !back ? 1 : other ? 0 : 2, !back || sE.pressed == P_FRONT);
     CtrBottomDraw_Plate(FB_X + FB_W, BAR_Y, FB_W, BAR_H, back ? 1 : other ? 0 : 2, back || sE.pressed == P_BACK);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "F", FB_X + FB_W / 2, BAR_Y + 5, !back ? CTR_DRAW_WHITE : other ? CTR_DRAW_DARK : CTR_DRAW_OFF);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "B", FB_X + FB_W + FB_W / 2, BAR_Y + 5, back ? CTR_DRAW_WHITE : other ? CTR_DRAW_DARK : CTR_DRAW_OFF);
-    /* FINAL: a tick box alone. */
+    /* FINAL: a tick box alone; unsaved changes a red dot on its corner. */
     PlateIcon(FINAL_X, BAR_Y, FINAL_W, BAR_H, final ? 1 : 0, final || sE.pressed == P_FINAL, final ? ICON_BOX_CHECK : ICON_BOX,
               false, InkOn(final));
+    if (sE.dirtyFile)
+    {
+        DrawDisc(FINAL_X + FINAL_W - 4, BAR_Y + 4, 4, Rgb(1, 2, 2));
+        DrawDisc(FINAL_X + FINAL_W - 4, BAR_Y + 4, 3, Rgb(31, 12, 8));
+    }
 }
 
 static void DrawToast(void)
@@ -2052,9 +2063,14 @@ static void RoundFill(int x, int y, int w, int h, uint16_t c)
 static void DrawRight(void)
 {
     static const int icons[B_COUNT] = {ICON_SETTINGS, ICON_OUTLINE, ICON_MORE};
-    char label[4];
+    char label[12];
 
     CtrBottomDraw_Panel(RIGHT_X, 0, W, H);
+    /* The frame's button over the planes. */
+    snprintf(label, sizeof(label), "F%u/%u", sE.frame + 1, sE.frames);
+    CtrBottomDraw_Plate(ROW_X - 1, FRAME_Y, ROW_SIDE + 2, FRAME_H, sE.frames > 1 ? 0 : 2, sE.pressed == P_FRAME);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, ROW_X + ROW_SIDE / 2, FRAME_Y + 3,
+                              sE.frames > 1 ? CTR_DRAW_DARK : CTR_DRAW_OFF);
     for (int r = 0; r < PLANES; ++r)
     {
         unsigned plane = (unsigned)(PLANES - 1 - r);
@@ -2253,6 +2269,56 @@ static void DrawKeyboard(void)
     CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "B RUB OUT   START OK", 8, H - 15, CTR_DRAW_OFF);
 }
 
+/* The top screen's words, in the game's small font: each line drawn into
+ * this canvas with the bottom screen's font, then handed to the viewer as
+ * a cell of its help sheet (CtrStereoMon_HelpCell). The game font has no
+ * percent sign, so the depth is "3D DEPTH 50". */
+static void MakeHelpSheet(void)
+{
+    static const char *const fixed[] = {"PLANE", "PICK", "PAN", "ZOOM", "UNDO/REDO", "ANIMATE", "VIEW LAYERS",
+                                        "FRAME", "MON", "SAVE", "BACK", "HOLD"};
+    static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
+    const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();
+    char text[CTR_HELP_CELLS][40];
+    unsigned number = PLANES - sE.layer;
+
+    if ((sE.id & 0xC000) == 0) snprintf(text[CTR_HELP_NAME], 40, "No.%03u %s", sE.id, sE.name);
+    else snprintf(text[CTR_HELP_NAME], 40, "%s", sE.name);
+    if (sE.frames < 2) text[CTR_HELP_FRAME][0] = 0;
+    else if (sE.animate) snprintf(text[CTR_HELP_FRAME], 40, "ANIMATING");
+    else snprintf(text[CTR_HELP_FRAME], 40, "FRAME %u OF %u", sE.frame + 1, sE.frames);
+    snprintf(text[CTR_HELP_PLANE], 40, "PLANE %u%s", number, number == 1 ? " FRONT" : number == PLANES ? " BACK" : "");
+    snprintf(text[CTR_HELP_DEPTH], 40, "3D DEPTH %d%s", CtrStereoMon_Depth(), sE.layersView ? "  LAYERS" : "");
+    if (meta->revision) snprintf(text[CTR_HELP_REVISION], 40, "R%u %s", meta->revision, meta->author[0] ? meta->author : "?");
+    else text[CTR_HELP_REVISION][0] = 0;
+    snprintf(text[CTR_HELP_STATE], 40, "%s", meta->finalized ? "FINAL" : sE.dirtyFile || CtrStereoMon_HasEdit(sE.id) ? "EDITED" : "");
+    for (unsigned k = 0; k < sizeof(fixed) / sizeof(fixed[0]); ++k) snprintf(text[CTR_HELP_L_PLANE + k], 40, "%s", fixed[k]);
+    /* All the lines at once into the canvas, white on black. */
+    CtrBottomDraw_Begin(sCanvas);
+    CtrBottomDraw_Fill(0, 0, W, H, 0);
+    for (unsigned cell = 0; cell < CTR_HELP_CELLS; ++cell)
+        if (text[cell][0])
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, text[cell], (int)(cell % 2) * CTR_HELP_CELL_W + 1,
+                               (int)(cell / 2) * CTR_HELP_CELL_H, CTR_DRAW_WHITE);
+    CtrBottomDraw_End();
+    for (unsigned cell = 0; cell < CTR_HELP_CELLS; ++cell)
+    {
+        int x0 = (int)(cell % 2) * CTR_HELP_CELL_W, y0 = (int)(cell / 2) * CTR_HELP_CELL_H;
+        int width = text[cell][0] ? CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, text[cell]) + 2 : 0;
+
+        for (int y = 0; y < CTR_HELP_CELL_H; ++y)
+            for (int x = 0; x < CTR_HELP_CELL_W; ++x)
+            {
+                /* The letters are white; their shadow (dark) and the black are not ink. */
+                uint16_t c = sCanvas[(x0 + x) * H + (H - 1 - (y0 + y))];
+
+                alpha[y * CTR_HELP_CELL_W + x] = ((c >> 11) & 31) > 20 ? 255 : 0;
+            }
+        CtrStereoMon_HelpCell(cell, alpha, (unsigned)(width < 0 ? 0 : width));
+    }
+    sE.dirtyDraw = true;
+}
+
 static void Draw(void)
 {
     CtrBottomDraw_Begin(sCanvas);
@@ -2317,12 +2383,14 @@ static const Step sScript[] = {
     {326, 327, KEY_TAP_X(11), KEY_TAP_Y(11), 0},               /* L */
     {330, 331, 0, 0, CTR_KEY_START},                           /* OK */
     {336, 337, 0, 0, CTR_KEY_A},                               /* the first found */
+    {350, 351, ROW_X + 20, FRAME_Y + 10, 0},                   /* the other frame, by its button */
     {360, 361, FB_X + FB_W + 8, BAR_Y + 12, 0},                /* its back */
     {400, 401, FB_X + 8, BAR_Y + 12, 0},                       /* its front again */
     {600, 601, BATTLE_X + 12, BAR_Y + 12, 0},                  /* a real battle against it */
     {900, 920, 0, 0, 0},                                       /* a stroke in the battle (drawn below) */
+    {1100, 1101, BATTLE_X + 12, BAR_Y + 12, 0},                /* out of the battle */
 };
-static const uint16_t sDumpTicks[] = {30, 75, 105, 160, 172, 215, 225, 239, 265, 280, 295, 299, 310, 316, 328, 333, 398, 430, 930};
+static const uint16_t sDumpTicks[] = {30, 75, 105, 160, 172, 215, 225, 239, 265, 280, 295, 299, 310, 316, 328, 333, 398, 430, 930, 1400};
 
 static void TestDump(void)
 {
@@ -2494,6 +2562,11 @@ bool CtrStereoEdit_BottomFrame(void)
     {
         CtrStereoMon_SetEditing(true, sE.layer);
         CtrStereoMon_SetEditView(sE.frame, sE.animate, sE.outlineOn, sE.mark, sE.layersView);
+    }
+    if (sE.helpDirty && sE.pl != NULL)
+    {
+        sE.helpDirty = false;
+        MakeHelpSheet();
     }
     if (sE.toastFrames && --sE.toastFrames == 0) sE.dirtyDraw = true;
     /* The lasso's dashes run while it is drawn. */

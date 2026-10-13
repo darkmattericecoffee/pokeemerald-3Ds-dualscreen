@@ -216,6 +216,24 @@ void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16
 int CtrStereoMon_Depth(void);
 void CtrStereoMon_SetDepth(int percent);
 /*
+ * The editor's words on the top screen in the game's own small font: the
+ * editor renders each line with the bottom screen's font and hands it over
+ * as a cell of the help sheet (CTR_HELP_CELLS cells of CTR_HELP_CELL_W x
+ * CTR_HELP_CELL_H, one byte a pixel, 0 clear .. 255 ink); the viewer
+ * draws the cells by number.
+ */
+#define CTR_HELP_CELL_W 128
+#define CTR_HELP_CELL_H 14
+#define CTR_HELP_CELLS 18
+enum
+{
+    CTR_HELP_NAME, CTR_HELP_FRAME, CTR_HELP_PLANE, CTR_HELP_DEPTH, CTR_HELP_REVISION, CTR_HELP_STATE,
+    CTR_HELP_L_PLANE, CTR_HELP_L_PICK, CTR_HELP_L_PAN, CTR_HELP_L_ZOOM, CTR_HELP_L_UNDO,
+    CTR_HELP_R_ANIMATE, CTR_HELP_R_LAYERS, CTR_HELP_R_FRAME, CTR_HELP_R_MON, CTR_HELP_R_SAVE, CTR_HELP_R_BACK,
+    CTR_HELP_HOLD
+};
+void CtrStereoMon_HelpCell(unsigned cell, const uint8_t *alpha, unsigned width);
+/*
  * Who edited a picture, and how far: an edit file ends with a 32-byte
  * trailer (older files have none): "EM3DSMD1", u8 flags (bit 0 finalized),
  * u8 0, u16 revision (one more on every save), u32 seconds since 2000-01-01
@@ -343,6 +361,10 @@ bool CtrStereoMonGame_TryBattle(uint16_t id);
 /* Whether that battle is on (asked for, or being fought): the editor keeps
  * the bottom screen and the stylus, the game the buttons. */
 bool CtrStereoMonGame_TryBattleOn(void);
+/* The battle left: RUN chosen for the player and the text passed, at turbo. */
+void CtrStereoMonGame_LeaveBattle(void);
+/* Keys the editor's battle presses for the player this frame (GBA bits). */
+unsigned CtrStereoMonGame_InjectedKeys(void);
 
 /* ── Game side: the plane editor (3ds_stereo_edit.c) ──────────────────── */
 

@@ -89,6 +89,10 @@ static u16 sTryAnimWait;
 static struct Pokemon sPartyKept[PARTY_SIZE];
 static u8 sPartyKeptCount;
 static bool8 sPartySwapped;
+/* Leaving: RUN chosen and A pressed for the player, every few frames,
+ * until the field is back. */
+static bool8 sTryLeaving;
+static unsigned sTryInjected;
 
 /* LZ77 data of a game symbol (an asset stub, resolved from the game data)
  * into a buffer of `capacity` bytes; the size comes from the stream's own
@@ -562,13 +566,24 @@ static void TryBattleFrame(void)
          * stage for the picture. */
         if (!sTryMenuSeen && gBattleBufferA[B_POSITION_PLAYER_LEFT][0] == CONTROLLER_CHOOSEACTION)
             sTryMenuSeen = TRUE;
-        CtrPlatform_SetTurbo(!sTryMenuSeen);
-        if (sTryMenuSeen) TryBattleMove();
+        CtrPlatform_SetTurbo(!sTryMenuSeen || sTryLeaving);
+        if (sTryMenuSeen && !sTryLeaving) TryBattleMove();
+        sTryInjected = 0;
+        if (sTryLeaving)
+        {
+            /* On the action menu: the cursor on RUN, then A; through the
+             * text after: A every few frames. */
+            if (gBattleBufferA[B_POSITION_PLAYER_LEFT][0] == CONTROLLER_CHOOSEACTION)
+                gActionSelectionCursor[B_POSITION_PLAYER_LEFT] = 3;
+            if (gMain.vblankCounter1 % 6 == 0) sTryInjected = A_BUTTON;
+        }
     }
     if (sTryStarted && sTryInBattle && field)
     {
         /* The battle is over: the party back, the editor's top screen back. */
-        sTryStarted = sTryInBattle = FALSE;
+        CtrLog_Write(CTR_LOG_VIDEO, "stereo edit: the battle is over, back to the editor");
+        sTryStarted = sTryInBattle = sTryLeaving = FALSE;
+        sTryInjected = 0;
         CtrPlatform_SetTurbo(FALSE);
         if (sPartySwapped)
         {
@@ -585,6 +600,13 @@ static void TryBattleFrame(void)
 }
 
 bool CtrStereoMonGame_TryBattleOn(void) { return sTryPending || sTryStarted; }
+
+void CtrStereoMonGame_LeaveBattle(void)
+{
+    if (sTryStarted) sTryLeaving = TRUE;
+}
+
+unsigned CtrStereoMonGame_InjectedKeys(void) { return sTryInjected; }
 
 bool CtrStereoMonGame_TryBattle(uint16_t id)
 {
