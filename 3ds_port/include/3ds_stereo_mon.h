@@ -140,6 +140,9 @@ bool CtrStereoMon_ShowId(uint16_t id, const uint16_t *picture, unsigned frames, 
 void CtrStereoMon_Hide(void);
 /* Whether the top screen is the viewer's this frame. */
 bool CtrStereoMon_Active(void);
+/* The viewer kept (its planes editable) but not drawn: the editor's battle
+ * has the top screen. */
+void CtrStereoMon_SetDrawn(bool drawn);
 /* Whether it is the Pokédex's picture (else the gallery). */
 bool CtrStereoMon_Hologram(void);
 /* The gallery's own keys, pressed this frame (CTR_KEY_* of 3ds_input.h):
@@ -279,6 +282,11 @@ void CtrStereoBattle_ClearBattlers(void);
 /* The planes read for the battle are forgotten: the next battle reads them
  * again (the editor saved new ones). */
 void CtrStereoBattle_ForgetPlanes(void);
+/* The editor's planes of `id` (frames x 2048 bytes, the editor's buffer,
+ * read whenever LiveChanged says they changed) shown in the battle instead
+ * of the file's, so a stroke shows there as it is made; NULL ends it. */
+void CtrStereoBattle_SetLive(uint16_t id, const uint8_t *planes, unsigned frames);
+void CtrStereoBattle_LiveChanged(void);
 /* Whether the battle draws its Pokémon in 3D at all (OPTIONS' 3D BATTLE). */
 bool CtrStereoBattle_Enabled(void);
 /*
@@ -332,6 +340,9 @@ void CtrStereoMonGame_CloseGallery(void);
  * False when no battle can start here (not in the field, no party).
  */
 bool CtrStereoMonGame_TryBattle(uint16_t id);
+/* Whether that battle is on (asked for, or being fought): the editor keeps
+ * the bottom screen and the stylus, the game the buttons. */
+bool CtrStereoMonGame_TryBattleOn(void);
 
 /* ── Game side: the plane editor (3ds_stereo_edit.c) ──────────────────── */
 

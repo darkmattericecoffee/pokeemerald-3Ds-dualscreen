@@ -401,8 +401,11 @@ static unsigned Groups(void)
     return !sGallery && sGroups > DEX_GROUPS_MAX ? DEX_GROUPS_MAX : (unsigned)sGroups;
 }
 
+static bool sUndrawn;
+
 void CtrStereoMon_Hide(void) { sActive = false; }
-bool CtrStereoMon_Active(void) { return sActive; }
+bool CtrStereoMon_Active(void) { return sActive && !sUndrawn; }
+void CtrStereoMon_SetDrawn(bool drawn) { sUndrawn = !drawn; }
 bool CtrStereoMon_Hologram(void) { return sActive && !sGallery; }
 
 void CtrStereoMon_Press(unsigned keys)

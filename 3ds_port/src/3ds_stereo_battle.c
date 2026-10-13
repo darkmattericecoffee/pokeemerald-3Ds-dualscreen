@@ -106,6 +106,11 @@ typedef struct
 } Slot;
 
 static Slot sSlots[SLOTS];
+/* The editor's live planes (CtrStereoBattle_SetLive): copied into any
+ * slot's planes of that id, again whenever their version moves on. */
+static const uint8_t *sLivePlanes;
+static uint16_t sLiveId;
+static unsigned sLiveFrames, sLiveVersion, sLiveApplied;
 static uint8_t sMonPlanes[SLOTS][BUFFER_FRAMES * FRAME_BYTES];
 static uint8_t sTrainerPlanes[SLOTS][FRAME_BYTES];
 static uint8_t sBackSheets[2][BACK_FRAMES * FRAME_BYTES];
@@ -149,8 +154,15 @@ static void PlanesFor(Planes *p, uint16_t id, unsigned capacityFrames)
     p->ok = false;
     p->frames = 0;
     if (id == 0 || p->planes == NULL) return;
-    /* The SD card's edited planes first (the plane editor's), then the pack's. */
-    if (CtrStereoMon_EditPlanesFor(id, p->planes, capacityFrames * FRAME_BYTES, &p->frames))
+    /* The editor's planes as they stand, then the SD card's edited planes
+     * (the plane editor's), then the pack's. */
+    if (sLivePlanes && id == sLiveId)
+    {
+        p->frames = sLiveFrames < capacityFrames ? sLiveFrames : capacityFrames;
+        memcpy(p->planes, sLivePlanes, p->frames * FRAME_BYTES);
+        p->ok = p->frames > 0;
+    }
+    else if (CtrStereoMon_EditPlanesFor(id, p->planes, capacityFrames * FRAME_BYTES, &p->frames))
         p->ok = true;
     else if (id & 0xC000)
         p->ok = CtrStereoMon_BackPlanesFor(id, p->planes, capacityFrames * FRAME_BYTES, &p->frames);
@@ -259,6 +271,42 @@ void CtrStereoBattle_ForgetPlanes(void)
     }
 }
 
+void CtrStereoBattle_SetLive(uint16_t id, const uint8_t *planes, unsigned frames)
+{
+    sLivePlanes = planes;
+    sLiveId = planes ? id : 0;
+    sLiveFrames = frames;
+    ++sLiveVersion;
+}
+
+void CtrStereoBattle_LiveChanged(void) { ++sLiveVersion; }
+
+/* The live planes taken into every slot that shows their id, and those
+ * slots composed again. */
+static void LiveApply(void)
+{
+    if (sLiveApplied == sLiveVersion) return;
+    sLiveApplied = sLiveVersion;
+    for (unsigned i = 0; i < SLOTS; ++i)
+    {
+        Slot *s = &sSlots[i];
+        Planes *all[3] = {&s->mon, &s->trainer, &s->playerBack};
+        unsigned capacity[3] = {BUFFER_FRAMES, 1, BACK_FRAMES};
+
+        for (unsigned k = 0; k < 3; ++k)
+        {
+            Planes *p = all[k];
+            uint16_t id = p->id;
+
+            if (id == 0 || (id != sLiveId && !p->ok)) continue;
+            if (id != sLiveId) continue;
+            p->id = 0;
+            PlanesFor(p, id, capacity[k]);
+            s->composed = false;
+        }
+    }
+}
+
 /* The texture, made once; false without the linear memory for it. */
 static bool TextureReady(void)
 {
@@ -355,6 +403,7 @@ static unsigned Shown(const Slot *s, const uint8_t *vram, int *frame, const Plan
 
 unsigned CtrStereoBattle_Frame(const void *memory, bool battle, uint32_t skip[4])
 {
+    LiveApply();
     const CtrVideoMemory *mem = memory;
     unsigned found = 0, active = 0, groups, base = 0;
     int setting;
