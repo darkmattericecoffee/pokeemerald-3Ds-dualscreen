@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates 3ds_port/src/3ds_button_sprites.h: the top screen's pictures of
-the console's buttons, drawn by hand as 24x24 PNGs in
+the console's buttons, drawn by hand as 16x16 PNGs in
 tools/sprite_editor/buttons/ (the author's own).
 
     python3 tools/sprite_editor/gen_buttons.py
@@ -14,7 +14,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, "3ds_port", "src", "3ds_button_sprites.h")
-SIZE = 24
+SIZE = 16
 # Enum name, file: in the order the header lists them.
 BUTTONS = [
     ("BTN_A", "btn_a"), ("BTN_B", "btn_b"), ("BTN_X", "btn_x"), ("BTN_Y", "btn_y"), ("BTN_START", "btn_plus"),

@@ -1434,7 +1434,7 @@ static void DrawButton(int kind, int x, int y)
  * its words beside it; the right-hand column has the control at the
  * screen's edge and the words to its left. */
 typedef struct { int button; bool hold; unsigned cell; } Help;
-#define HELP_ROW 26
+#define HELP_ROW 20
 
 static void DrawHelp(bool right, int y, const Help *help, unsigned count)
 {
@@ -1446,8 +1446,8 @@ static void DrawHelp(bool right, int y, const Help *help, unsigned count)
         int controls = ButtonWidth(h->button) + (h->hold ? 4 + HelpWidth(CTR_HELP_HOLD) : 0);
         int bx = right ? CTR_GAME_WIDTH - 6 - controls : 6, wide = HelpWidth(h->cell);
 
-        /* The controls sit in the middle of the row's 20 pixels. */
-        DrawButton(h->button, bx, y + (20 - ButtonHeight(h->button)) / 2);
+        /* The controls sit in the middle of the row's 18 pixels. */
+        DrawButton(h->button, bx, y + (18 - ButtonHeight(h->button)) / 2);
         if (h->hold) DrawHelpCell(CTR_HELP_HOLD, bx + ButtonWidth(h->button) + 4, y + 3, words);
         DrawHelpCell(h->cell, right ? bx - 8 - wide : bx + controls + 8, y + 3, words);
     }
@@ -1559,20 +1559,20 @@ static void DrawControls(void)
         {BTN_B, false, CTR_HELP_R_BACK},
     };
     const uint32_t words = C2D_Color32(225, 230, 240, 255);
-    int y = CTR_GAME_HEIGHT - 24, x;
+    int y = CTR_GAME_HEIGHT - 22, x;
 
     if (!sEditControls) return;
-    DrawHelp(false, 128, left, sizeof(left) / sizeof(left[0]));
-    DrawHelp(true, 102, right, sizeof(right) / sizeof(right[0]));
+    DrawHelp(false, 134, left, sizeof(left) / sizeof(left[0]));
+    DrawHelp(true, 114, right, sizeof(right) / sizeof(right[0]));
     /* Y ANIMATE and A OUTLINE side by side at the bottom. */
     x = CTR_GAME_WIDTH / 2 - (HelpWidth(CTR_HELP_R_ANIMATE) + HelpWidth(CTR_HELP_B_OUTLINE) + 2 * BTN_SIZE + 40) / 2;
     DrawHelpCell(CTR_HELP_R_ANIMATE, x, y + 3, words);
     x += HelpWidth(CTR_HELP_R_ANIMATE) + 8;
-    DrawButton(BTN_Y, x, y - 2);
+    DrawButton(BTN_Y, x, y + 2);
     x += BTN_SIZE + 24;
     DrawHelpCell(CTR_HELP_B_OUTLINE, x, y + 3, words);
     x += HelpWidth(CTR_HELP_B_OUTLINE) + 8;
-    DrawButton(BTN_A, x, y - 2);
+    DrawButton(BTN_A, x, y + 2);
 }
 
 static void DrawEditEye(float sign, float slider, unsigned frame)
