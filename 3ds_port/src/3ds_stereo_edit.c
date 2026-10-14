@@ -43,8 +43,8 @@
  * planes here (CTR_STEREO_EDIT_PLANES): a file with more is folded into
  * them, one with fewer spread over them, when it is opened.
  *
- * Every change on one frame is carried to the others by the packer's rule
- * (the nearest pixel of the same colour) unless that is turned off in MORE.
+ * Each frame is edited by hand on its own: nothing is carried from one
+ * frame to the other (the frames differ too much for that to be right).
  * Edits are kept on the SD card per Pokémon (CtrStereoMon_SaveEdit): on
  * START, on leaving, and on switching Pokémon; each save is signed with the
  * author's name (MORE: AUTHOR) and numbered, and FINAL marks a picture
@@ -150,8 +150,6 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define UNDO_DEPTH 12
 #define LASSO_POINTS 512
 #define TOAST_FRAMES 90
-/* How far the propagation looks for a pixel of the same colour. */
-#define PROPAGATE_RADIUS 7
 /* Below this size (screen pixels) a lasso is a tap. */
 #define TAP_SLOP 6
 /* Unsaved changes go to the SD card this long after the last one. */
@@ -208,7 +206,7 @@ static const char *const sOpacityNames[] = {"MAX", "60", "30", "15"};
 static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD };
-enum { O_DEPTH, O_PROPAGATE, O_PROPAGATE_NOW, O_CONTROLS, O_AUTHOR, O_RESET, O_CLOSE, O_COUNT };
+enum { O_DEPTH, O_CONTROLS, O_AUTHOR, O_RESET, O_CLOSE, O_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
 /* Frames L is held before a press is a hold (a pick), not a step. */
@@ -232,7 +230,7 @@ static struct
     const uint16_t *pic[MAX_FRAMES];
     unsigned frame, layer;
     uint8_t tool, size, zoom, opacity, grid, view;
-    bool propagate, outlineOn, animate, fromGallery, controls;
+    bool outlineOn, animate, fromGallery, controls;
     /* The pencil held: frames so far, and its size slider open. */
     unsigned pencilHold;
     bool sizeSlider;
@@ -276,6 +274,9 @@ static struct
     /* The chooser: its list (gallery indices, filtered and ordered), the
      * cursor in it, only the edited ones, the edited ones first, the search. */
     unsigned chooseCursor;
+    /* The chooser: the entry the editor had when it opened, and the one the
+     * top screen shows now (the cursor's, as it moves). */
+    unsigned chooseOpened, previewIndex;
     bool iconsMissing;
     bool onlyEdited, editedFirst;
     char query[QUERY_MAX + 1];
@@ -490,68 +491,6 @@ static void Redo(void)
     Toast("REDONE");
 }
 
-/* ── The other frame ────────────────────────────────────────────────── */
-
-/* Every pixel of the other frame whose nearest pixel of the same colour on
- * this frame is one the stroke changed takes that pixel's plane (the
- * packer's propagation, gen_stereo_mons.py). */
-static unsigned PropagateTo(unsigned g, const uint8_t *changed)
-{
-    unsigned f = sE.frame, carried = 0;
-    const uint16_t *src = sE.pic[f], *dst = sE.pic[g];
-
-    if (g == f || g >= sE.frames || src == NULL || dst == NULL) return 0;
-    for (unsigned j = 0; j < N; ++j)
-    {
-        uint16_t c = dst[j];
-        int x = (int)(j % DIM), y = (int)(j / DIM), best = -1, bestD = 1 << 30;
-
-        if (c == 0) continue;
-        for (int r = 0; r <= PROPAGATE_RADIUS; ++r)
-        {
-            if (best >= 0 && r * r > bestD) break;
-            for (int dy = -r; dy <= r; ++dy)
-                for (int dx = -r; dx <= r; ++dx)
-                {
-                    int nx, ny, d;
-                    unsigned i;
-
-                    if (dy != -r && dy != r && dx != -r && dx != r) continue; /* the ring only */
-                    nx = x + dx;
-                    ny = y + dy;
-                    if (nx < 0 || ny < 0 || nx >= DIM || ny >= DIM) continue;
-                    i = (unsigned)(ny * DIM + nx);
-                    if (src[i] != c || GetPlane(f, i) == NONE) continue;
-                    d = dx * dx + dy * dy;
-                    if (d < bestD)
-                    {
-                        bestD = d;
-                        best = (int)i;
-                    }
-                }
-        }
-        if (best >= 0 && (changed == NULL || BitGet(changed, (unsigned)best)))
-        {
-            unsigned v = GetPlane(f, (unsigned)best);
-
-            if (GetPlane(g, j) != v)
-            {
-                PutPlane(g, j, v);
-                ++carried;
-            }
-        }
-    }
-    return carried;
-}
-
-static unsigned PropagateChanged(const uint8_t *changed)
-{
-    unsigned carried = 0;
-
-    for (unsigned g = 0; g < sE.frames; ++g) carried += PropagateTo(g, changed);
-    return carried;
-}
-
 /* ── Strokes ────────────────────────────────────────────────────────── */
 
 static void BeginStroke(const char *name)
@@ -564,13 +503,15 @@ static void BeginStroke(const char *name)
     sE.lastX = sE.lastY = -1;
 }
 
+static void ApplyErase(void);
+
 static void EndStroke(void)
 {
     char line[64];
-    unsigned carried = 0;
 
     if (!sE.stroking) return;
     sE.stroking = false;
+    if (sE.tool == T_ERASE && sE.strokeName && strcmp(sE.strokeName, "erase") == 0) ApplyErase();
     if (sE.strokeCount == 0)
     {
         /* Nothing changed: the snapshot goes. */
@@ -578,8 +519,7 @@ static void EndStroke(void)
         --sUndoCount;
         return;
     }
-    if (sE.propagate) carried = PropagateChanged(sE.changed);
-    snprintf(line, sizeof(line), "f%u %s P%u %upx +%u", sE.frame, sE.strokeName, sE.layer, sE.strokeCount, carried);
+    snprintf(line, sizeof(line), "f%u %s P%u %upx", sE.frame, sE.strokeName, sE.layer, sE.strokeCount);
     CtrStereoMon_LogEdit(line);
     Changed();
 }
@@ -594,33 +534,67 @@ static void SetPixelTo(unsigned i, unsigned plane)
 
 static void SetPixel(unsigned i) { SetPixelTo(i, sE.layer); }
 
-/* The eraser at one pixel: it goes to the plane most of its neighbours
- * (within ERASE_REACH, the nearer counting more) are on, other than its
- * own; a pixel whose neighbours are all on its plane stays. As the pixels
- * change under the stroke a stray patch is eaten from its edge inwards. */
+/* The eraser gathers the pixels under its stroke (sErase, shown lifted on
+ * the picture) and moves them all at once when the stylus lifts
+ * (ApplyErase): each goes to the plane most of the pixels around it that
+ * were NOT under the stroke are on (within ERASE_REACH, the nearer
+ * counting more); a pixel with none of those within reach waits for the
+ * pass after, once its neighbours have been placed, so a whole patch is
+ * filled in from its edge inwards. Moving them as the stroke went had the
+ * pixels hopping between planes under the stylus. */
 #define ERASE_REACH 3
+static uint8_t sErase[N / 8];
+
 static void ErasePixel(unsigned i)
 {
-    unsigned own, votes[PLANES] = {0}, best = NONE, bestVotes = 0;
-    int x = (int)(i % DIM), y = (int)(i / DIM);
+    if (!Opaque(sE.frame, i) || BitGet(sErase, i)) return;
+    BitSet(sErase, i);
+    ++sE.strokeCount;
+}
 
-    if (!Opaque(sE.frame, i)) return;
-    own = GetPlane(sE.frame, i);
-    for (int dy = -ERASE_REACH; dy <= ERASE_REACH; ++dy)
-        for (int dx = -ERASE_REACH; dx <= ERASE_REACH; ++dx)
+static void ApplyErase(void)
+{
+    static uint8_t placed[N / 8];
+    bool progress = true;
+
+    memcpy(placed, sErase, sizeof(placed));
+    sE.strokeCount = 0;
+    while (progress)
+    {
+        static uint8_t now[N / 8];
+
+        progress = false;
+        memset(now, 0, sizeof(now));
+        for (unsigned i = 0; i < N; ++i)
         {
-            int nx = x + dx, ny = y + dy, d = dx * dx + dy * dy;
-            unsigned p;
+            unsigned votes[PLANES] = {0}, best = NONE, bestVotes = 0;
+            int x = (int)(i % DIM), y = (int)(i / DIM);
 
-            if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= DIM || ny >= DIM) continue;
-            if (!Opaque(sE.frame, (unsigned)(ny * DIM + nx))) continue;
-            p = GetPlane(sE.frame, (unsigned)(ny * DIM + nx));
-            if (p == NONE || p == own || p >= PLANES) continue;
-            votes[p] += (unsigned)(2 * ERASE_REACH * ERASE_REACH + 1 - d);
+            if (!BitGet(placed, i)) continue;
+            for (int dy = -ERASE_REACH; dy <= ERASE_REACH; ++dy)
+                for (int dx = -ERASE_REACH; dx <= ERASE_REACH; ++dx)
+                {
+                    int nx = x + dx, ny = y + dy, d = dx * dx + dy * dy;
+                    unsigned j, p;
+
+                    if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= DIM || ny >= DIM) continue;
+                    j = (unsigned)(ny * DIM + nx);
+                    if (BitGet(placed, j) || !Opaque(sE.frame, j)) continue;
+                    p = GetPlane(sE.frame, j);
+                    if (p == NONE || p >= PLANES) continue;
+                    votes[p] += (unsigned)(2 * ERASE_REACH * ERASE_REACH + 1 - d);
+                }
+            for (unsigned p = 0; p < PLANES; ++p)
+                if (votes[p] > bestVotes) { bestVotes = votes[p]; best = p; }
+            if (best == NONE) continue;
+            SetPixelTo(i, best);
+            BitSet(now, i);
+            progress = true;
         }
-    for (unsigned p = 0; p < PLANES; ++p)
-        if (votes[p] > bestVotes) { bestVotes = votes[p]; best = p; }
-    if (best != NONE) SetPixelTo(i, best);
+        /* Placed this pass: they count for their neighbours in the next. */
+        for (unsigned k = 0; k < sizeof(placed); ++k) placed[k] &= (uint8_t)~now[k];
+    }
+    memset(sErase, 0, sizeof(sErase));
 }
 
 /* The brush (or the eraser) at one picture pixel: a disc `size` pixels across. */
@@ -1030,7 +1004,6 @@ void CtrStereoEdit_Open(bool fromGallery)
     sE.pressed = -1;
     sE.grabRow = -1;
     sE.slider = SLIDER_NONE;
-    sE.propagate = CtrSettings_GetInt("edit_propagate", 1) != 0;
     sE.outlineOn = CtrSettings_GetInt("edit_outline", 1) != 0;
     sE.grid = (uint8_t)CtrSettings_GetInt("edit_grid", GRID_WHITE);
     if (sE.grid > GRID_BLACK) sE.grid = GRID_OFF;
@@ -1122,8 +1095,12 @@ static void BuildList(void)
     for (unsigned pass = 0; pass < 2; ++pass)
         for (unsigned i = 0; i < count; ++i)
         {
-            bool edited = CtrStereoMon_HasEdit(CtrStereoMon_GalleryIdAt(i));
+            uint16_t id = CtrStereoMon_GalleryIdAt(i), other = CtrStereoMon_Counterpart(id);
+            bool edited = CtrStereoMon_HasEdit(id) || (other && CtrStereoMon_HasEdit(other));
 
+            /* A Pokémon is one entry: its back is reached from its front
+             * (the F/B tabs); a back with no front is listed by itself. */
+            if ((id & 0xC000) == CTR_STEREO_ID_BACK && other) continue;
             if (sE.onlyEdited && !edited) continue;
             /* Edited first: those on the first pass, the rest on the second. */
             if (sE.editedFirst && !sE.onlyEdited ? edited != (pass == 0) : pass == 1) continue;
@@ -1142,9 +1119,42 @@ static void OpenChooser(void)
     Save(true);
     sE.screen = S_CHOOSE;
     sE.chooseCursor = 0;
+    sE.chooseOpened = sE.previewIndex = index;
     BuildList();
+    /* A back being edited is listed under its front. */
+    if ((sE.id & 0xC000) == CTR_STEREO_ID_BACK && CtrStereoMon_Counterpart(sE.id))
+    {
+        int front = CtrStereoMon_GalleryIndexOf(CtrStereoMon_Counterpart(sE.id));
+
+        if (front >= 0) index = (unsigned)front;
+    }
     for (unsigned k = 0; k < sListCount; ++k)
         if (sList[k] == index) sE.chooseCursor = k;
+}
+
+/* The chooser closed without a pick: the picture it opened on comes back
+ * if another was shown meanwhile. */
+static void CloseChooser(void)
+{
+    if (sE.previewIndex != sE.chooseOpened) Choose(sE.chooseOpened);
+    else sE.screen = S_EDIT;
+    sE.dirtyDraw = true;
+}
+
+/* The top screen shows the entry under the chooser's cursor, as the
+ * gallery would (the edit so far is saved, so the viewer may be reused). */
+static void PreviewChosen(void)
+{
+    unsigned index;
+
+    if (sE.screen != S_CHOOSE || sListCount == 0) return;
+    index = sList[sE.chooseCursor];
+    if (index == sE.previewIndex) return;
+    sE.previewIndex = index;
+    sE.pl = NULL;
+    sE.id = 0;
+    CtrStereoMon_SetEditing(false, 0);
+    CtrStereoMonGame_SelectIndex(index);
 }
 
 static void OpenKeyboard(uint8_t what)
@@ -1238,7 +1248,7 @@ static void ChooseKeys(unsigned down)
 {
     unsigned count = sListCount;
 
-    if (down & (CTR_KEY_B | CTR_KEY_SELECT)) { sE.screen = S_EDIT; return; }
+    if (down & (CTR_KEY_B | CTR_KEY_SELECT)) { CloseChooser(); return; }
     if (down & CTR_KEY_Y) { OpenKeyboard(KB_SEARCH); return; }
     if (down & CTR_KEY_X)
     {
@@ -1559,6 +1569,7 @@ static void TouchEdit(const CtrInput *in)
             int px, py;
 
             BeginStroke(sE.tool == T_ERASE ? "erase" : "brush");
+            memset(sErase, 0, sizeof(sErase));
             if (PictureAt(x, y, &px, &py)) BrushLine(px, py);
         }
         sE.dirtyDraw = true;
@@ -1681,21 +1692,7 @@ static void OptionAct(int row, bool rightHalf)
         CtrStereoMon_SetDepth(CtrStereoMon_Depth() + (rightHalf ? CTR_STEREO_EDIT_DEPTH_STEP : -CTR_STEREO_EDIT_DEPTH_STEP));
         sE.helpDirty = true;
         break;
-    case O_PROPAGATE: sE.propagate = !sE.propagate; CtrSettings_SetInt("edit_propagate", sE.propagate); break;
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
-    case O_PROPAGATE_NOW:
-        if (sE.frames > 1)
-        {
-            unsigned carried;
-
-            PushUndo();
-            carried = PropagateChanged(NULL);
-            if (carried) Changed();
-            Toast(carried ? "OTHER FRAME UPDATED" : "OTHER FRAME ALREADY MATCHES");
-            CtrStereoMon_LogEdit("propagate-all");
-        }
-        sE.screen = S_EDIT;
-        break;
     case O_AUTHOR: OpenKeyboard(KB_AUTHOR); break;
     case O_RESET:
         sE.screen = S_CONFIRM_RESET;
@@ -1903,6 +1900,8 @@ static void DrawPicture(void)
                 c = Mix(Muted(sPlaneColours[p]), Grey(Rgb565Of(pic[i])), k / 2, 20);
                 c = Mix(out, c, 1, 2);
             }
+            /* Under the eraser's stroke, waiting to be placed: lifted to white. */
+            if (sE.stroking && sE.tool == T_ERASE && BitGet(sErase, i)) c = Mix(Rgb(31, 63, 31), c, (x + y) & 1 ? 3 : 2, 4);
             CanvasFill(sx, sy, s, s, c);
             if (sE.grid != GRID_OFF)
             {
@@ -2429,8 +2428,7 @@ static void DrawConfirm(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"3D DEPTH", "AUTO PROPAGATE", "PROPAGATE NOW", "SHOW CONTROLS", "AUTHOR",
-                                               "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "AUTHOR", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -2454,7 +2452,6 @@ static void DrawOptions(void)
             CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, value, OPT_X + OPT_W * 3 / 4 - 10, y + 5, CTR_DRAW_RED);
             value[0] = 0;
         }
-        else if (row == O_PROPAGATE) snprintf(value, sizeof(value), "%s", sE.propagate ? "ON" : "OFF");
         else if (row == O_CONTROLS) snprintf(value, sizeof(value), "%s", sE.controls ? "ON" : "OFF");
         else if (row == O_AUTHOR) snprintf(value, sizeof(value), "%s", CtrStereoMon_Author()[0] ? CtrStereoMon_Author() : "?");
         if (value[0])
@@ -2518,11 +2515,15 @@ static void DrawChooser(void)
         else snprintf(line, sizeof(line), "%c%03u", kind == CTR_STEREO_ID_BACK ? 'B' : kind == CTR_STEREO_ID_TRAINER ? 'T' : 'P', number);
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 3, cur ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, name, x + 36, y + 16, cur ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
-        /* Edited: a pencil; finished: a tick. */
-        if (CtrStereoMon_IsFinal(id))
-            Icon(ICON_CHECK, false, x + W / CH_COLS - 18, y + 3, Rgb(8, 58, 10));
-        else if (CtrStereoMon_HasEdit(id))
-            Icon(ICON_EDIT, false, x + W / CH_COLS - 18, y + 3, Rgb(31, 52, 8));
+        /* Edited (either side): a pencil; finished (both sides): a tick. */
+        {
+            uint16_t other = CtrStereoMon_Counterpart(id);
+
+            if (CtrStereoMon_IsFinal(id) && (!other || CtrStereoMon_IsFinal(other)))
+                Icon(ICON_CHECK, false, x + W / CH_COLS - 18, y + 3, Rgb(8, 58, 10));
+            else if (CtrStereoMon_HasEdit(id) || (other && CtrStereoMon_HasEdit(other)))
+                Icon(ICON_EDIT, false, x + W / CH_COLS - 18, y + 3, Rgb(31, 52, 8));
+        }
     }
     /* (The game font's strings take 39 characters at most.) */
     snprintf(line, sizeof(line), "%u SHOWN   PAGE %u/%u   X EDITED ONLY", count, count ? page + 1 : 1, pages);
@@ -2861,7 +2862,7 @@ bool CtrStereoEdit_BottomFrame(void)
         return true;
     }
     if (!sE.active) return true;
-    if (sE.screen == S_CHOOSE) TouchChoose(in);
+    if (sE.screen == S_CHOOSE) { TouchChoose(in); PreviewChosen(); }
     else if (sE.screen == S_KEYBOARD) TouchKeyboard(in);
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
     else if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) TouchConfirm(in);

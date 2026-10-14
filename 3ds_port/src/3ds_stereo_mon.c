@@ -296,6 +296,31 @@ bool CtrStereoMon_Has(uint16_t national)
 const CtrStereoMonHeader *CtrStereoMon_Header(void) { return sLoaded ? &sHeader : NULL; }
 const CtrStereoMonHeader *CtrStereoMon_BacksHeader(void) { return LoadFile(&sBacks) ? &sBacks.header : NULL; }
 
+/*
+ * Deoxys (national 386): the game copies the second 64x64 of both its
+ * sheets - its Speed form, Emerald's own - over the first
+ * (DuplicateDeoxysTiles), so a battle only ever shows that second frame
+ * and the front never animates. The viewer and the editor take the planes
+ * of that frame as the one frame there is; where the frame count is not
+ * ours to change (CtrStereoMon_PlanesFor, the battle's cache) the first
+ * frame is made the second's, as the game does with the tiles.
+ */
+#define DEOXYS_NATIONAL 386
+static void FormFrameOnly(uint16_t id, uint8_t *planes, uint32_t frameBytes, unsigned *frames)
+{
+    if ((id & 0x3FFF) != DEOXYS_NATIONAL || ((id & 0xC000) != 0 && (id & 0xC000) != CTR_STEREO_ID_BACK)) return;
+    if (frames == NULL || *frames < 2 || planes == NULL) return;
+    memmove(planes, planes + frameBytes, frameBytes);
+    *frames = 1;
+}
+
+static void FormFrameCopied(uint16_t id, uint8_t *planes, uint32_t frameBytes, unsigned frames)
+{
+    if ((id & 0x3FFF) != DEOXYS_NATIONAL || ((id & 0xC000) != 0 && (id & 0xC000) != CTR_STEREO_ID_BACK)) return;
+    if (frames < 2 || planes == NULL) return;
+    memcpy(planes, planes + frameBytes, frameBytes);
+}
+
 /* One entry's planes from a file into `out` (`size` bytes), with its frames. */
 static bool ReadPlanesInto(PlanesFile *pf, unsigned index, uint8_t *out, uint32_t size, unsigned *frames)
 {
@@ -319,10 +344,13 @@ static bool ReadPlanesInto(PlanesFile *pf, unsigned index, uint8_t *out, uint32_
 bool CtrStereoMon_PlanesFor(uint16_t national, uint8_t *out, uint32_t size)
 {
     int index;
+    unsigned frames = 0;
 
     if (!CtrStereoMon_Load()) return false;
     index = CtrStereoMon_Find(sIndex, sIndexBytes, &sHeader, national);
-    return index >= 0 && ReadPlanesInto(&sFront, (unsigned)index, out, size, NULL);
+    if (index < 0 || !ReadPlanesInto(&sFront, (unsigned)index, out, size, &frames)) return false;
+    FormFrameCopied(national, out, CtrStereoMon_FramesBytes(&sHeader, 1), frames);
+    return true;
 }
 
 bool CtrStereoMon_HasBack(uint16_t id)
@@ -333,10 +361,14 @@ bool CtrStereoMon_HasBack(uint16_t id)
 bool CtrStereoMon_BackPlanesFor(uint16_t id, uint8_t *out, uint32_t size, unsigned *frames)
 {
     int index;
+    unsigned n = 0;
 
     if (!LoadFile(&sBacks)) return false;
     index = CtrStereoMon_Find(sBacks.index, sBacks.indexBytes, &sBacks.header, id);
-    return index >= 0 && ReadPlanesInto(&sBacks, (unsigned)index, out, size, frames);
+    if (index < 0 || !ReadPlanesInto(&sBacks, (unsigned)index, out, size, &n)) return false;
+    FormFrameOnly(id, out, CtrStereoMon_FramesBytes(&sBacks.header, 1), &n);
+    if (frames) *frames = n;
+    return true;
 }
 
 bool CtrStereoMon_Show(uint16_t national, const uint16_t *picture, unsigned frames,
@@ -357,6 +389,7 @@ bool CtrStereoMon_ShowId(uint16_t id, const uint16_t *picture, unsigned frames, 
         CtrLog_Write(CTR_LOG_ERROR, "stereo: id %04x has no readable planes", id);
         return false;
     }
+    FormFrameOnly(id, sPlanes, CtrStereoMon_FramesBytes(&pf->header, 1), &entryFrames);
     if (frames > CTR_STEREO_MON_MAX_FRAMES) frames = CTR_STEREO_MON_MAX_FRAMES;
     memcpy(sPicture, picture, frames * sizeof(sPicture[0]));
     sFrames = frames;
@@ -592,6 +625,7 @@ static bool ReadEdit(uint16_t id, uint8_t *out, uint32_t size, unsigned *planes,
         {
             *planes = p;
             *frames = n;
+            FormFrameOnly(id, out, EDIT_FRAME_BYTES, frames);
             ok = true;
         }
     }
@@ -1787,7 +1821,7 @@ bool CtrStereoMon_NeedsFrame(float slider, bool stereo)
     /* The frame's tick, counted here when the frame is held (Draw counts
      * it otherwise), so the gallery's blink and the editor's animation keep
      * their time whether or not frames are drawn. */
-    if (!sTicked) ++sTick;
+    ++sTick;
     sTicked = true;
     if (!sDrawnValid || !sTexReady || sComposed < sToCompose) return true;
     if (slider < 0.0f) slider = 0.0f;

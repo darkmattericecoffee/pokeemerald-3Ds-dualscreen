@@ -154,6 +154,13 @@ static unsigned DecodePicture(u16 id, u16 *out)
     {
         frames = size >= 2 * FRAME_BYTES ? 2 : 1;
         DecodeTiles(tiles, frames, pal, out);
+        /* Deoxys: the game shows the second 64x64 of both sheets (its
+         * form) and never the first (DuplicateDeoxysTiles): one frame. */
+        if ((kind == 0 || kind == CTR_STEREO_ID_BACK) && number == 386 && frames == 2)
+        {
+            memmove(out, out + CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM, CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM * sizeof(*out));
+            frames = 1;
+        }
     }
     else
         CtrLog_Write(CTR_LOG_ERROR, "stereo: id %04x has no picture (%lu bytes)", id, (unsigned long)size);
