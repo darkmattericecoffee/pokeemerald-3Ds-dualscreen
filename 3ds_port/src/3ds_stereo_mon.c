@@ -1501,9 +1501,14 @@ static void DrawHelp(bool right, int y, const Help *help, unsigned count)
     for (unsigned i = 0; i < count; ++i, y += HELP_ROW)
     {
         const Help *h = &help[i];
-        int controls = ButtonWidth(h->button) + (h->hold ? 4 + HelpWidth(CTR_HELP_HOLD) : 0);
+        /* START and SELECT are the same shaded circle: their name to its left. */
+        int label = h->button == BTN_START ? CTR_HELP_WORD_START : h->button == BTN_SELECT ? CTR_HELP_WORD_SELECT : -1;
+        int labelW = label >= 0 ? HelpWidth((unsigned)label) + 3 : 0;
+        int controls = labelW + ButtonWidth(h->button) + (h->hold ? 4 + HelpWidth(CTR_HELP_HOLD) : 0);
         int bx = right ? CTR_GAME_WIDTH - 6 - controls : 6, wide = HelpWidth(h->cell);
 
+        if (label >= 0) DrawHelpCell((unsigned)label, bx, y + 3, words);
+        bx += labelW;
         /* The controls sit in the middle of the row's 18 pixels. */
         DrawButton(h->button, bx, y + (18 - ButtonHeight(h->button)) / 2);
         if (h->hold) DrawHelpCell(CTR_HELP_HOLD, bx + ButtonWidth(h->button) + 4, y + 3, words);

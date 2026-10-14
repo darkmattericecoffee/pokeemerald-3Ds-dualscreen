@@ -1929,12 +1929,13 @@ static void DrawPicture(void)
 
                 c = Mix(sPlaneColours[p], 0, l > 320 ? 320 : l, 320);
                 if (p != sE.layer) c = Mix(out, c, 1, 4);
+                else c = Mix(Rgb(31, 63, 31), c, 1, 6);
             }
             else if (p == sE.layer)
             {
                 /* The plane edited: its colour at full strength, lifted. */
                 c = Mix(sPlaneColours[p], Rgb565Of(pic[i]), k, 20);
-                c = Mix(Rgb(31, 63, 31), c, 1, 8);
+                c = Mix(Rgb(31, 63, 31), c, 1, 4);
             }
             else
             {
@@ -2636,7 +2637,7 @@ static void DrawKeyboard(void)
 static void MakeHelpSheet(void)
 {
     static const char *const fixed[] = {"NEXT/PICK PLANE", "OUTLINE", "PAN", "ZOOM", "UNDO/REDO", "ANIMATE", "VIEW",
-                                        "FRAME", "SWITCH PKMN", "BATTLE", "BACK", "", "POKEDEX"};
+                                        "FRAME", "SWITCH PKMN", "BATTLE", "BACK", "POKEDEX", "HOLD", "START", "SELECT"};
     static const char *const views[V_COUNT] = {"", "  LAYERS", "  BATTLE"};
     static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
     const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();

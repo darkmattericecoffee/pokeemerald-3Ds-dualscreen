@@ -238,14 +238,16 @@ void CtrStereoMon_SetDepth(int percent);
  */
 #define CTR_HELP_CELL_W 128
 #define CTR_HELP_CELL_H 14
-#define CTR_HELP_CELLS 19
+#define CTR_HELP_CELLS 21
 enum
 {
     CTR_HELP_NAME, CTR_HELP_FRAME, CTR_HELP_PLANE, CTR_HELP_DEPTH, CTR_HELP_REVISION, CTR_HELP_STATE,
     CTR_HELP_L_PLANE, CTR_HELP_B_OUTLINE, CTR_HELP_L_PAN, CTR_HELP_L_ZOOM, CTR_HELP_L_UNDO,
     CTR_HELP_R_ANIMATE, CTR_HELP_R_LAYERS, CTR_HELP_R_FRAME, CTR_HELP_R_MON, CTR_HELP_R_SAVE, CTR_HELP_R_BACK,
     CTR_HELP_R_DEX,
-    CTR_HELP_HOLD
+    CTR_HELP_HOLD,
+    /* The words beside the shaded START and SELECT pictures. */
+    CTR_HELP_WORD_START, CTR_HELP_WORD_SELECT
 };
 void CtrStereoMon_HelpCell(unsigned cell, const uint8_t *alpha, unsigned width);
 /*
