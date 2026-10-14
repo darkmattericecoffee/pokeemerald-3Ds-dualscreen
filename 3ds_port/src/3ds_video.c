@@ -6153,7 +6153,11 @@ static void Compose(void)
 bool CtrVideo_Init(void)
 {
     const char *step = "C3D_Init command buffer";
-    sC3d = C3D_Init(0x100000);
+    /* 512 KiB, down from 1 MiB: a frame's fullest use is 4% of 1 MiB (the
+     * stats line's cmdbuf=, Azahar: the field, the voxel battle with the
+     * slider up), so the half given back to the linear heap - full in a
+     * battle on hardware - still leaves twelve times the headroom. */
+    sC3d = C3D_Init(0x80000);
     if (!sC3d) goto fail;
     step = "C2D_Init geometry buffers";
     sC2d = C2D_Init(MAX_DRAWS);
