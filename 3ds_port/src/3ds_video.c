@@ -8632,7 +8632,11 @@ static void StereoSurfaceManage(void)
     bool wanted = sStereoWanted && !sTransitionRequested;
 
     sStereoWanted = false;
-    if (sStereoTarget && sVramAsked)
+    /* In a battle the surface stays: the ask is a neighbouring map's atlas
+     * coming into the stage's view, and giving the surface up for it put
+     * the battle flat for seconds (the hardware log: 241 and 953 frames) -
+     * the surface, once released, found no 256 KiB block to come back to. */
+    if (sStereoTarget && sVramAsked && !sBattle && !sBattleWorld)
     {
         /* The field's atlas comes first: without it there is no world. */
         StereoSurfaceRelease();

@@ -168,7 +168,7 @@ static void SlotsInit(void)
  * (Planes, id) and goes on; the sprite is drawn flat until the planes are
  * in. Without the thread (no memory for its stack) the read is done here.
  */
-typedef struct { Planes *p; uint16_t id; unsigned capacity; } Request;
+typedef struct { Planes *p; uint16_t id; unsigned capacity; uint64_t at; } Request;
 #define REQUESTS 16
 static Request sRequests[REQUESTS];
 static unsigned sRequestHead, sRequestTail;    /* the game thread adds at the tail */
@@ -219,7 +219,8 @@ static void Reader(void *arg)
             if (any) r = sRequests[sRequestHead++ % REQUESTS];
             CtrLock_Unlock(&sRequestLock);
             if (!any) break;
-            PlanesRead(r.p, r.id, r.capacity);
+            /* NULL: the game thread took it back (PlanesFor). */
+            if (r.p) PlanesRead(r.p, r.id, r.capacity);
         }
     }
 }
@@ -239,9 +240,49 @@ static bool ReaderReady(void)
 /* The planes of `id` into `p` (a front's from the viewer's file, anything
  * else from the backs file), once per id; a read already on its way is
  * left to finish before another id is asked for. */
+/* A request the thread has not taken within a second (it never got the
+ * core, or is starved): taken back and read here, and the thread given up
+ * on. One the thread holds is left to finish. */
+#define READ_WAIT_TICKS (SYSCLOCK_ARM11 / 1)
+static bool TakeBack(Planes *p)
+{
+    bool taken = false;
+
+    CtrLock_Lock(&sRequestLock);
+    for (unsigned i = sRequestHead; i != sRequestTail; ++i)
+    {
+        Request *r = &sRequests[i % REQUESTS];
+
+        if (r->p == p)
+        {
+            if (svcGetSystemTick() - r->at > READ_WAIT_TICKS)
+            {
+                r->p = NULL;
+                p->pending = false;
+                taken = true;
+            }
+            break;
+        }
+    }
+    CtrLock_Unlock(&sRequestLock);
+    if (taken)
+    {
+        if (sReaderState > 0)
+            CtrLog_Write(CTR_LOG_ERROR, "stereo battle: the planes reader thread never took a request; reading inline from now on");
+        sReaderState = -1;
+    }
+    return taken;
+}
+
 static void PlanesFor(Planes *p, uint16_t id, unsigned capacityFrames)
 {
-    if (p->pending) return;
+    if (p->pending)
+    {
+        if (!TakeBack(p)) return;
+        /* Taken back: the read it was waiting for, here. */
+        PlanesRead(p, p->id, capacityFrames);
+        return;
+    }
     if (p->id == id && (p->ok || p->failed || id == 0)) return;
     p->id = id;
     p->ok = false;
@@ -265,7 +306,7 @@ static void PlanesFor(Planes *p, uint16_t id, unsigned capacityFrames)
         queued = sRequestTail - sRequestHead < REQUESTS;
         if (queued)
         {
-            sRequests[sRequestTail++ % REQUESTS] = (Request){p, id, capacityFrames};
+            sRequests[sRequestTail++ % REQUESTS] = (Request){p, id, capacityFrames, svcGetSystemTick()};
             p->pending = true;
         }
         CtrLock_Unlock(&sRequestLock);
