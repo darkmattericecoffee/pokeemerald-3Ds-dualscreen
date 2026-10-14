@@ -135,6 +135,13 @@ static bool sTexAllocated, sTexFailed;
 static Tex3DS_SubTexture sTiles[TEX_TILES];
 static unsigned sLogged;
 
+/* The texture made at boot, while the linear heap still has a run of
+ * 128 KiB: made at a battle's start it failed on hardware once the voxel
+ * world and the viewer's texture had taken the heap (the battle then had
+ * no planes at all). */
+static bool TextureReady(void);
+void CtrStereoBattle_Reserve(void) { TextureReady(); }
+
 bool CtrStereoBattle_Enabled(void)
 {
     return CtrSettings_GetInt(ENABLED_KEY, 1) != 0;

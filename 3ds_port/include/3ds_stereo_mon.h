@@ -324,6 +324,8 @@ void CtrStereoBattle_SetLive(uint16_t id, const uint8_t *planes, unsigned frames
 void CtrStereoBattle_LiveChanged(void);
 /* Whether the battle draws its Pokémon in 3D at all (OPTIONS' 3D BATTLE). */
 bool CtrStereoBattle_Enabled(void);
+/* Its texture made at boot (3ds_video.c CtrVideo_Init). */
+void CtrStereoBattle_Reserve(void);
 /*
  * For the compositor (3ds_video.c), inside the Citro3D frame before anything
  * is drawn: finds this frame's Pokémon in OAM and composes their planes.

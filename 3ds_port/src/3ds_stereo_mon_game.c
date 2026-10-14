@@ -528,6 +528,9 @@ static void TryBattleMove(void)
     }
     sTryAnimWait = (u16)(90 + Random() % 150);
     if (gBattleSpritesDataPtr == NULL) return;
+    /* Only while the fight menu waits: launched over a move's own animation
+     * the idle animation fought it for the sprite (a jump and a turn). */
+    if (gBattleBufferA[B_POSITION_PLAYER_LEFT][0] != CONTROLLER_CHOOSEACTION) return;
     for (unsigned k = 0; k < 2; ++k)
     {
         u8 battler = GetBattlerAtPosition(positions[k]);
@@ -619,7 +622,18 @@ static void TryBattleFrame(void)
             /* On the action menu: the cursor on RUN, then A; through the
              * text after: A every few frames. */
             if (gBattleBufferA[B_POSITION_PLAYER_LEFT][0] == CONTROLLER_CHOOSEACTION)
-                gActionSelectionCursor[B_POSITION_PLAYER_LEFT] = 3;
+            {
+                if (gBattleTypeFlags & BATTLE_TYPE_TRAINER)
+                {
+                    /* No running from a trainer: the turn is played with the
+                     * outcome already "ran", so it ends as soon as it begins
+                     * (RunTurnActionsFunctions), with the trainer unbeaten. */
+                    gBattleOutcome = B_OUTCOME_RAN;
+                    gActionSelectionCursor[B_POSITION_PLAYER_LEFT] = 0;
+                }
+                else
+                    gActionSelectionCursor[B_POSITION_PLAYER_LEFT] = 3;
+            }
             if (gMain.vblankCounter1 % 6 == 0) sTryInjected = A_BUTTON;
         }
     }

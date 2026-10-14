@@ -6172,6 +6172,7 @@ bool CtrVideo_Init(void)
     C2D_Prepare();
     Flat2D();
     FastInit();
+    CtrStereoBattle_Reserve();
     LeavesLoad();
     /* The intro's margins are made now, before the voxel world takes its
      * share of linear memory: made on the scene's first frame they could
