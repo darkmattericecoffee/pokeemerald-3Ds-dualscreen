@@ -57,6 +57,7 @@ void __wrap_GX_BindQueue(gxCmdQueue_s *queue)
 extern u32 __ctru_linear_heap, __ctru_linear_heap_size;
 static bool sGpuEarly;
 static uint64_t sGpuEarlyStart;
+static float sCmdBufPeak;
 
 static uint64_t sFlushTicks;
 static unsigned sFlushes;
@@ -10989,19 +10990,27 @@ void CtrVideo_Present(void)
     if (sStats.frames % 600 == 0)
     {
         CtrLog_Write(CTR_LOG_VIDEO, "frames=%lu fps=%.1f cpu=%.2fms bg=%.2fms obj=%.2fms gpu=%.2fms "
-                     "3d=%lupx%s x%lu quads=%lu cells=%lu sprites=%lu errors=%lu cache=%u linear=%lu vram=%lu",
+                     "3d=%lupx%s x%lu quads=%lu cells=%lu sprites=%lu errors=%lu cache=%u linear=%lu vram=%lu cmdbuf=%.0f%%",
                      (unsigned long)sStats.frames, sStats.fps, sStats.cpuMs,
                      sBgTicks * 1000.0 / SYSCLOCK_ARM11, sObjTicks * 1000.0 / SYSCLOCK_ARM11,
                      sStats.gpuMs, (unsigned long)sStats.stereo,
                      sStats.stereo ? (sPlanes ? "/planes" : "/eyes") : "", (unsigned long)sPlanes,
                      (unsigned long)sStats.tiles, (unsigned long)sStats.cells,
                      (unsigned long)sStats.sprites, (unsigned long)sStats.errors, sUsed,
-                     (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree());
+                     (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree(), sCmdBufPeak * 100.0f);
+        sCmdBufPeak = 0.0f;
 #if CTR_VOXEL_ENABLED
         if (voxel || sBattleWorld)
         {
             const CtrVoxelStats *stats = CtrVoxel_GetStats();
             CtrLog_Write(CTR_LOG_VIDEO,
+        {
+            /* The command buffer (C3D_Init, 1 MiB of linear memory): its
+             * fullest frame, for the memory budget. */
+            float used = C3D_GetCmdBufUsage();
+
+            if (used > sCmdBufPeak) sCmdBufPeak = used;
+        }
                          "VOXEL chunks=%u/%u missing=%u pending=%u builds=%u atlas=%u verts=%u "
                          "mesh=%.2fms peak=%.2fms update=%.2fms peak=%.2fms dropped=%u "
                          "anim=%u/%u refl=%u drafts=%u/%u",
