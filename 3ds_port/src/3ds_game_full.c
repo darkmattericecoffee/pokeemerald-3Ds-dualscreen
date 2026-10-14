@@ -875,7 +875,10 @@ void CtrGame_WaitFrame(void)
             gNoOfApproachingTrainers = 0;
             BattleSetup_StartTrainerBattle();
 #else
-            CreateScriptedWildMon(CTR_TEST_SPECIES, 5, 0);
+#ifndef CTR_TEST_LEVEL
+#define CTR_TEST_LEVEL 5
+#endif
+            CreateScriptedWildMon(CTR_TEST_SPECIES, CTR_TEST_LEVEL, 0);
             BattleSetup_StartScriptedWildBattle();
 #endif
         }

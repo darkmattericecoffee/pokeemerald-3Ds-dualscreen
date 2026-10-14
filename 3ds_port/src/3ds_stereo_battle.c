@@ -442,6 +442,7 @@ void CtrStereoBattle_SetSlot(unsigned position, unsigned tileNum, const uint8_t 
 void CtrStereoBattle_ClearBattlers(void)
 {
     SlotsInit();
+    sLogged = 0;    /* a few lines per battle, not per session */
     for (unsigned i = 0; i < SLOTS; ++i)
     {
         sSlots[i].set = false;
