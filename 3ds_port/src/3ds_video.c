@@ -134,6 +134,42 @@ static void FlushLinear(void)
 
 Result __real_GX_ProcessCommandList(u32 *buf0a, u32 buf0s, u8 flags);
 Result __wrap_GX_ProcessCommandList(u32 *buf0a, u32 buf0s, u8 flags)
+/*
+ * A render target made in VRAM holds whatever the VRAM held before - on
+ * hardware the atlas or surface that was there last; Azahar hands out
+ * zeroes. The battle's sprite slots once came out as an old atlas where the
+ * info boxes should be, and a surface is only ever drawn into where it is
+ * used, so each is cleared whole once, in the next frame (the targets are
+ * made between frames, where no command list is open).
+ */
+#define MADE_CLEARS 8
+static C3D_RenderTarget *sMadeClears[MADE_CLEARS];
+static unsigned sMadeClearCount;
+
+static void ClearWhenMade(C3D_RenderTarget *target)
+{
+    if (target == NULL) return;
+    for (unsigned i = 0; i < sMadeClearCount; ++i)
+        if (sMadeClears[i] == target) return;
+    if (sMadeClearCount < MADE_CLEARS) sMadeClears[sMadeClearCount++] = target;
+}
+
+/* A target released before its clear: forgotten. */
+static void ClearWhenMadeForget(C3D_RenderTarget *target)
+{
+    for (unsigned i = 0; i < sMadeClearCount; ++i)
+        if (sMadeClears[i] == target) sMadeClears[i] = sMadeClears[--sMadeClearCount];
+}
+
+/* Right after C3D_FrameBegin: the fills go into the queue before anything
+ * the frame draws. */
+static void ClearsRun(void)
+{
+    for (unsigned i = 0; i < sMadeClearCount; ++i)
+        C3D_RenderTargetClear(sMadeClears[i], C3D_CLEAR_ALL, 0, 0);
+    sMadeClearCount = 0;
+}
+
 {
     if (sGpuEarly) FlushLinear();
     return __real_GX_ProcessCommandList(buf0a, buf0s, flags);
@@ -3668,7 +3704,7 @@ static void LayerRelease(unsigned bg)
 {
     LayerTexture *layer = &sLayers[bg];
 
-    if (layer->target) C3D_RenderTargetDelete(layer->target);
+    if (layer->target) { ClearWhenMadeForget(layer->target); C3D_RenderTargetDelete(layer->target); }
     if (layer->tex.data) C3D_TexDelete(&layer->tex);
     memset(layer, 0, sizeof(*layer));
 }
@@ -3695,7 +3731,10 @@ static bool LayerCreate(unsigned bg, unsigned width, unsigned height)
         && (layer->target = C3D_RenderTargetCreateFromTex(&layer->tex, GPU_TEXFACE_2D, 0, -1)))
         return true;
     LayerRelease(bg);
+    {
+        ClearWhenMade(layer->target);
     return false;
+    }
 }
 
 static void LayersPrepare(void)
@@ -5772,7 +5811,7 @@ static float sObjWinEyeShift;
 /* Outside the frame, like the battle's other surfaces (SlotsPrepare). */
 static void ObjWindowRelease(void)
 {
-    if (sObjWinTarget) C3D_RenderTargetDelete(sObjWinTarget);
+    if (sObjWinTarget) { ClearWhenMadeForget(sObjWinTarget); C3D_RenderTargetDelete(sObjWinTarget); }
     if (sObjWinTex.data) C3D_TexDelete(&sObjWinTex);
     sObjWinTarget = NULL;
     memset(&sObjWinTex, 0, sizeof(sObjWinTex));
@@ -5803,7 +5842,10 @@ static void ObjWindowPrepare(void)
             && (sObjWinTarget = C3D_RenderTargetCreateFromTex(&sObjWinTex, GPU_TEXFACE_2D, 0, -1)))
             break;
         ObjWindowRelease();
+        {
+            ClearWhenMade(sObjWinTarget);
     }
+        }
     sObjWinFailed = sObjWinTarget == NULL;
     if (large && (!sObjWinTarget || sObjWinTex.width < OBJWIN_SIZE_LARGE))
     {
@@ -6224,7 +6266,7 @@ static bool sVramAsked;
 static void SceneRelease(void)
 {
     sSceneCached = false;
-    if (sScene) C3D_RenderTargetDelete(sScene);
+    if (sScene) { ClearWhenMadeForget(sScene); C3D_RenderTargetDelete(sScene); }
     if (sSceneTex.data) C3D_TexDelete(&sSceneTex);
     sScene = NULL;
     memset(&sSceneTex, 0, sizeof(sSceneTex));
@@ -6245,7 +6287,10 @@ static void ScenePrepare(void)
             && (sScene = C3D_RenderTargetCreateFromTex(&sSceneTex, GPU_TEXFACE_2D, 0, -1)))
             break;
         SceneRelease();
+        {
+            ClearWhenMade(sScene);
         /* The overworld's atlases of other maps are what a 2D screen gets
+        }
          * back first, as for the depth planes (BandsReady). */
 #if CTR_VOXEL_ENABLED
         if (attempt == 0 && CtrVoxel_ReleaseIdleVram() == 0) break;
@@ -6974,7 +7019,7 @@ static bool sBottomFailed;
 
 static void BottomRelease(void)
 {
-    if (sBottom) C3D_RenderTargetDelete(sBottom);
+    if (sBottom) { ClearWhenMadeForget(sBottom); C3D_RenderTargetDelete(sBottom); }
     sBottom = NULL;
 }
 
@@ -7001,6 +7046,7 @@ static bool BottomReady(bool wanted)
 #endif
     if (!sBottom)
     {
+    ClearWhenMade(sBottom);
         if (!sBottomFailed)
             CtrLog_Write(CTR_LOG_ERROR, "VIDEO: no VRAM for the bottom screen surface (free=%lu)",
                          (unsigned long)vramSpaceFree());
@@ -7411,7 +7457,7 @@ static unsigned sMonCellCount;
 /* Outside the frame, beside the scene surface (ScenePrepare). */
 static void SlotsRelease(void)
 {
-    if (sSlotTarget) C3D_RenderTargetDelete(sSlotTarget);
+    if (sSlotTarget) { ClearWhenMadeForget(sSlotTarget); C3D_RenderTargetDelete(sSlotTarget); }
     if (sSlotTex.data) C3D_TexDelete(&sSlotTex);
     sSlotTarget = NULL;
     memset(&sSlotTex, 0, sizeof(sSlotTex));
@@ -7451,7 +7497,10 @@ static void SlotsPrepare(void)
             && (sSlotTarget = C3D_RenderTargetCreateFromTex(&sSlotTex, GPU_TEXFACE_2D, 0, -1)))
             break;
         SlotsRelease();
+        {
+            ClearWhenMade(sSlotTarget);
 #if CTR_VOXEL_ENABLED
+        }
         if (attempt == 0) CtrVoxel_ReleaseIdleVram();
 #endif
     }
@@ -8622,7 +8671,7 @@ static bool sStereoWanted;
 
 static void StereoSurfaceRelease(void)
 {
-    if (sStereoTarget) C3D_RenderTargetDelete(sStereoTarget);
+    if (sStereoTarget) { ClearWhenMadeForget(sStereoTarget); C3D_RenderTargetDelete(sStereoTarget); }
     if (sStereoTex.data) C3D_TexDelete(&sStereoTex);
     sStereoTarget = NULL;
     memset(&sStereoTex, 0, sizeof(sStereoTex));
@@ -8669,7 +8718,10 @@ static void StereoSurfaceManage(void)
                 && (sStereoTarget = C3D_RenderTargetCreateFromTex(&sStereoTex, GPU_TEXFACE_2D, 0, -1)))
                 break;
             StereoSurfaceRelease();
+            {
+                ClearWhenMade(sStereoTarget);
             if (attempt == 0) CtrVoxel_ReleaseIdleVram();
+            }
         }
         if (sStereoTarget)
         {
@@ -9733,7 +9785,7 @@ static void BandsRelease(void)
 {
     for (unsigned i = 0; i < CTR_BANDS; ++i)
     {
-        if (sBand[i]) C3D_RenderTargetDelete(sBand[i]);
+        if (sBand[i]) { ClearWhenMadeForget(sBand[i]); C3D_RenderTargetDelete(sBand[i]); }
         if (sBandTex[i].data) C3D_TexDelete(&sBandTex[i]);
         sBand[i] = NULL;
         memset(&sBandTex[i], 0, sizeof(sBandTex[i]));
@@ -9774,6 +9826,7 @@ static void BandsShrink(void)
 
     C3D_RenderTargetDelete(sBand[last]);
     C3D_TexDelete(&sBandTex[last]);
+    ClearWhenMadeForget(sBand[last]);
     sBand[last] = NULL;
     memset(&sBandTex[last], 0, sizeof(sBandTex[last]));
     --sBandCount;
@@ -9855,6 +9908,7 @@ static bool BandsCreate(void)
         if (!sBand[i]) goto fail;
         sBandCount = i + 1;
     }
+        ClearWhenMade(sBand[i]);
     return true;
 fail:
     /* Two planes still give the interface its depth (see BandsShrink). */
@@ -9862,7 +9916,7 @@ fail:
     {
         unsigned i = sBandCount;
 
-        if (sBand[i]) C3D_RenderTargetDelete(sBand[i]);
+        if (sBand[i]) { ClearWhenMadeForget(sBand[i]); C3D_RenderTargetDelete(sBand[i]); }
         if (sBandTex[i].data) C3D_TexDelete(&sBandTex[i]);
         sBand[i] = NULL;
         memset(&sBandTex[i], 0, sizeof(sBandTex[i]));
@@ -10503,6 +10557,7 @@ void CtrVideo_Present(void)
             uint32_t frame = sStats.frames;
 
             fwrite(&frame, 4, 1, dump);
+    ClearsRun();
             fwrite(sTop->frameBuf.colorBuf, 4, 240 * 400, dump);
             if (sStereo && sTopRight) fwrite(sTopRight->frameBuf.colorBuf, 4, 240 * 400, dump);
             else { static uint32_t zero[240 * 400]; fwrite(zero, 4, 240 * 400, dump); }
