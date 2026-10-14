@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "3ds_platform.h"
+#include "3ds_input.h"
 #include "3ds_daynight.h"
 #include "3ds_gpumem.h"
 #include "3ds_video.h"
@@ -56,8 +57,8 @@ void __wrap_GX_BindQueue(gxCmdQueue_s *queue)
  */
 extern u32 __ctru_linear_heap, __ctru_linear_heap_size;
 static bool sGpuEarly;
-static uint64_t sGpuEarlyStart;
 static float sCmdBufPeak;
+static uint64_t sGpuEarlyStart;
 
 static uint64_t sFlushTicks;
 static unsigned sFlushes;
@@ -133,8 +134,6 @@ static void FlushLinear(void)
     ++sFlushes;
 }
 
-Result __real_GX_ProcessCommandList(u32 *buf0a, u32 buf0s, u8 flags);
-Result __wrap_GX_ProcessCommandList(u32 *buf0a, u32 buf0s, u8 flags)
 /*
  * A render target made in VRAM holds whatever the VRAM held before - on
  * hardware the atlas or surface that was there last; Azahar hands out
@@ -171,6 +170,8 @@ static void ClearsRun(void)
     sMadeClearCount = 0;
 }
 
+Result __real_GX_ProcessCommandList(u32 *buf0a, u32 buf0s, u8 flags);
+Result __wrap_GX_ProcessCommandList(u32 *buf0a, u32 buf0s, u8 flags)
 {
     if (sGpuEarly) FlushLinear();
     return __real_GX_ProcessCommandList(buf0a, buf0s, flags);
@@ -3730,12 +3731,12 @@ static bool LayerCreate(unsigned bg, unsigned width, unsigned height)
 
     if (C3D_TexInitVRAM(&layer->tex, width, height, GPU_RGBA5551)
         && (layer->target = C3D_RenderTargetCreateFromTex(&layer->tex, GPU_TEXFACE_2D, 0, -1)))
-        return true;
-    LayerRelease(bg);
     {
         ClearWhenMade(layer->target);
-    return false;
+        return true;
     }
+    LayerRelease(bg);
+    return false;
 }
 
 static void LayersPrepare(void)
@@ -5841,12 +5842,12 @@ static void ObjWindowPrepare(void)
     {
         if (C3D_TexInitVRAM(&sObjWinTex, size, size, GPU_RGBA8)
             && (sObjWinTarget = C3D_RenderTargetCreateFromTex(&sObjWinTex, GPU_TEXFACE_2D, 0, -1)))
-            break;
-        ObjWindowRelease();
         {
             ClearWhenMade(sObjWinTarget);
-    }
+            break;
         }
+        ObjWindowRelease();
+    }
     sObjWinFailed = sObjWinTarget == NULL;
     if (large && (!sObjWinTarget || sObjWinTex.width < OBJWIN_SIZE_LARGE))
     {
@@ -6286,12 +6287,12 @@ static void ScenePrepare(void)
     {
         if (C3D_TexInitVRAM(&sSceneTex, SCENE_W, SCENE_H, GPU_RGBA5551)
             && (sScene = C3D_RenderTargetCreateFromTex(&sSceneTex, GPU_TEXFACE_2D, 0, -1)))
-            break;
-        SceneRelease();
         {
             ClearWhenMade(sScene);
-        /* The overworld's atlases of other maps are what a 2D screen gets
+            break;
         }
+        SceneRelease();
+        /* The overworld's atlases of other maps are what a 2D screen gets
          * back first, as for the depth planes (BandsReady). */
 #if CTR_VOXEL_ENABLED
         if (attempt == 0 && CtrVoxel_ReleaseIdleVram() == 0) break;
@@ -7045,9 +7046,9 @@ static bool BottomReady(bool wanted)
     if (!sBottom && CtrVoxel_ReleaseIdleVram() > 0)
         sBottom = C3D_RenderTargetCreate(BOTTOM_SIZE, BOTTOM_WIDTH, GPU_RB_RGB565, -1);
 #endif
+    ClearWhenMade(sBottom);
     if (!sBottom)
     {
-    ClearWhenMade(sBottom);
         if (!sBottomFailed)
             CtrLog_Write(CTR_LOG_ERROR, "VIDEO: no VRAM for the bottom screen surface (free=%lu)",
                          (unsigned long)vramSpaceFree());
@@ -7496,12 +7497,12 @@ static void SlotsPrepare(void)
 
         if (C3D_TexInitVRAM(&sSlotTex, width, SCENE_H, GPU_RGBA5551)
             && (sSlotTarget = C3D_RenderTargetCreateFromTex(&sSlotTex, GPU_TEXFACE_2D, 0, -1)))
-            break;
-        SlotsRelease();
         {
             ClearWhenMade(sSlotTarget);
-#if CTR_VOXEL_ENABLED
+            break;
         }
+        SlotsRelease();
+#if CTR_VOXEL_ENABLED
         if (attempt == 0) CtrVoxel_ReleaseIdleVram();
 #endif
     }
@@ -8717,12 +8718,12 @@ static void StereoSurfaceManage(void)
         {
             if (C3D_TexInitVRAM(&sStereoTex, 512, 256, attempt < 2 ? GPU_RGBA8 : GPU_RGB565)
                 && (sStereoTarget = C3D_RenderTargetCreateFromTex(&sStereoTex, GPU_TEXFACE_2D, 0, -1)))
-                break;
-            StereoSurfaceRelease();
             {
                 ClearWhenMade(sStereoTarget);
-            if (attempt == 0) CtrVoxel_ReleaseIdleVram();
+                break;
             }
+            StereoSurfaceRelease();
+            if (attempt == 0) CtrVoxel_ReleaseIdleVram();
         }
         if (sStereoTarget)
         {
@@ -9825,9 +9826,9 @@ static void BandsShrink(void)
 {
     unsigned last = sBandCount - 1;
 
+    ClearWhenMadeForget(sBand[last]);
     C3D_RenderTargetDelete(sBand[last]);
     C3D_TexDelete(&sBandTex[last]);
-    ClearWhenMadeForget(sBand[last]);
     sBand[last] = NULL;
     memset(&sBandTex[last], 0, sizeof(sBandTex[last]));
     --sBandCount;
@@ -9907,9 +9908,9 @@ static bool BandsCreate(void)
          * per plane per frame is memory traffic this path exists to avoid. */
         sBand[i] = C3D_RenderTargetCreateFromTex(&sBandTex[i], GPU_TEXFACE_2D, 0, -1);
         if (!sBand[i]) goto fail;
+        ClearWhenMade(sBand[i]);
         sBandCount = i + 1;
     }
-        ClearWhenMade(sBand[i]);
     return true;
 fail:
     /* Two planes still give the interface its depth (see BandsShrink). */
@@ -10268,6 +10269,53 @@ void CtrVideo_HoldTop(bool hold)
     sHoldTop = hold;
 }
 
+/*
+ * What the screen and the battle's surfaces hold, to the SD card on L+R+
+ * SELECT, for a picture Azahar does not show (the hardware's stale VRAM, its
+ * caches): sdmc:/3ds/emerald3ds/dump.raw gets, per press, the last frame's
+ * two eyes and every battle surface that exists, each as a record - a tag,
+ * the frame, width, height, bytes a texel, then the texels as the GPU laid
+ * them out (8x8 tiles, Morton order). Read with scripts/dump_frames.py. The
+ * GPU finished the last frame at FrameBegin, so the surfaces are complete.
+ */
+static void DumpRecord(FILE *file, char tag, const void *data, unsigned w, unsigned h, unsigned bytes)
+{
+    uint32_t head[4] = {(uint32_t)tag, sStats.frames, w | h << 16, bytes};
+
+    if (data == NULL) return;
+    fwrite(head, sizeof(head), 1, file);
+    fwrite(data, (size_t)w * h * bytes, 1, file);
+}
+
+static unsigned TexBytes(const C3D_Tex *tex)
+{
+    return tex->fmt == GPU_RGBA8 ? 4 : tex->fmt == GPU_RGB8 ? 3 : 2;
+}
+
+static void DumpOnKey(void)
+{
+    const CtrInput *input = CtrInput_Get();
+    FILE *file;
+
+    if ((input->physicalHeld & (CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT)) != (CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT)
+        || !(input->physicalDown & CTR_KEY_SELECT))
+        return;
+    file = fopen("sdmc:/3ds/emerald3ds/dump.raw", "ab");
+    if (!file) return;
+    DumpRecord(file, 'L', sTop ? sTop->frameBuf.colorBuf : NULL, 240, 400, 4);
+    if (sStereo && sTopRight) DumpRecord(file, 'R', sTopRight->frameBuf.colorBuf, 240, 400, 4);
+    DumpRecord(file, 'G', sSurface.data, 512, 256, TexBytes(&sSurface));
+    if (sScene) DumpRecord(file, 'S', sSceneTex.data, SCENE_W, SCENE_H, TexBytes(&sSceneTex));
+    if (sSlotTarget) DumpRecord(file, 'T', sSlotTex.data, sSlotTex.width, sSlotTex.height, TexBytes(&sSlotTex));
+    if (sStereoTarget) DumpRecord(file, 'W', sStereoTex.data, 512, 256, TexBytes(&sStereoTex));
+    if (sObjWinTarget) DumpRecord(file, 'O', sObjWinTex.data, sObjWinTex.width, sObjWinTex.height, TexBytes(&sObjWinTex));
+    fclose(file);
+    CtrLog_Write(CTR_LOG_VIDEO, "DUMP frame %lu to dump.raw: eyes%s, surfaces%s%s%s%s (battle=%d world=%d slider=%.2f)",
+                 (unsigned long)sStats.frames, sStereo && sTopRight ? " L+R" : " L", sScene ? " scene" : "",
+                 sSlotTarget ? " slots" : "", sStereoTarget ? " world" : "", sObjWinTarget ? " objwin" : "",
+                 (int)sBattle, (int)sBattleWorld, (double)osGet3DSliderState());
+}
+
 #ifdef CTR_FRAME_DUMP
 #define CTR_DUMP_SLIDER CtrDumpSlider()
 /* Measurement builds: the 3D slider from sdmc:/3ds/emerald3ds/slider.txt. */
@@ -10509,6 +10557,7 @@ void CtrVideo_Present(void)
     if (!sBattle) sLayersReleaseTried = false;
     uint64_t waitStart = svcGetSystemTick();
     if (!C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) return;
+    ClearsRun();
     sUploadCommands = 0;
     sRenderReserve = sBattle ? 28u : 24u;
     Flat2D();
@@ -10531,6 +10580,7 @@ void CtrVideo_Present(void)
     /* The battle's Pokémon drawn as planes: found in OAM and composed now,
      * with the last frame's GPU work done (FrameBegin waited for it). */
     sMonCount = CtrStereoBattle_Frame(&sMemory, sBattle && !sTransition, sObjSkip);
+    DumpOnKey();
 #ifdef CTR_FRAME_DUMP
     /* The GPU has finished the last frame: its screens, raw, at fixed frames. */
 #ifdef CTR_DUMP_OBJWIN
@@ -10558,7 +10608,6 @@ void CtrVideo_Present(void)
             uint32_t frame = sStats.frames;
 
             fwrite(&frame, 4, 1, dump);
-    ClearsRun();
             fwrite(sTop->frameBuf.colorBuf, 4, 240 * 400, dump);
             if (sStereo && sTopRight) fwrite(sTopRight->frameBuf.colorBuf, 4, 240 * 400, dump);
             else { static uint32_t zero[240 * 400]; fwrite(zero, 4, 240 * 400, dump); }
@@ -10954,6 +11003,13 @@ void CtrVideo_Present(void)
             sEarlyFrames = 0;
             sStereoSplit[0] = sStereoSplit[1] = 0;
         }
+        {
+            /* The command buffer (C3D_Init, 1 MiB of linear memory): its
+             * fullest frame, for the memory budget. */
+            float used = C3D_GetCmdBufUsage();
+
+            if (used > sCmdBufPeak) sCmdBufPeak = used;
+        }
         C3D_FrameEnd(running ? GX_CMDLIST_FLUSH : 0);
         sGpuEarly = false;
     }
@@ -11004,13 +11060,6 @@ void CtrVideo_Present(void)
         {
             const CtrVoxelStats *stats = CtrVoxel_GetStats();
             CtrLog_Write(CTR_LOG_VIDEO,
-        {
-            /* The command buffer (C3D_Init, 1 MiB of linear memory): its
-             * fullest frame, for the memory budget. */
-            float used = C3D_GetCmdBufUsage();
-
-            if (used > sCmdBufPeak) sCmdBufPeak = used;
-        }
                          "VOXEL chunks=%u/%u missing=%u pending=%u builds=%u atlas=%u verts=%u "
                          "mesh=%.2fms peak=%.2fms update=%.2fms peak=%.2fms dropped=%u "
                          "anim=%u/%u refl=%u drafts=%u/%u",
