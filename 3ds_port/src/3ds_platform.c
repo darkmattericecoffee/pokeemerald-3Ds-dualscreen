@@ -79,12 +79,12 @@ bool CtrPlatform_Init(void)
 {
     /* A New 3DS runs at 804 MHz with its L2 cache; an Old 3DS ignores this. */
     osSetSpeedupEnable(true);
-    /* RGB565 screens, not gfxInitDefault's BGR8: the frame buffers live in
-     * the linear heap (two a screen, the top's sized for both eyes), 1.5 MiB
-     * at 3 bytes a pixel and 1 MiB at 2 - the 8 MiB heap is full in a
-     * battle (the HD info boxes failed their 32 KiB). The GBA's own colours
-     * are 15 bits, and the bottom screen was 565 already (CtrLog_Init). */
-    gfxInit(GSP_RGB565_OES, GSP_RGB565_OES, false);
+    /* The bottom screen at RGB565 from the start: its frame buffers live in
+     * the linear heap, and gfxInitDefault made them BGR8 (450 KiB) before
+     * CtrLog_Init turned the screen to 565, which never shrinks them. The
+     * top screen stays BGR8: at 565 the top screen came out garbled on a
+     * New 3DS from the first frame (Azahar showed it fine). */
+    gfxInit(GSP_BGR8_OES, GSP_RGB565_OES, false);
     /* A New 3DS runs the application core at 804 MHz with its L2 cache when
      * asked; an Old 3DS ignores this. */
     osSetSpeedupEnable(true);
