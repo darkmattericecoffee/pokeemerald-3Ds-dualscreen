@@ -140,7 +140,13 @@ static unsigned sLogged;
  * world and the viewer's texture had taken the heap (the battle then had
  * no planes at all). */
 static bool TextureReady(void);
-void CtrStereoBattle_Reserve(void) { TextureReady(); }
+void CtrStereoBattle_Reserve(void)
+{
+    TextureReady();
+    /* The two files' indexes read now, not on a battle's first frame. */
+    CtrStereoMon_Load();
+    CtrStereoMon_BacksHeader();
+}
 
 bool CtrStereoBattle_Enabled(void)
 {

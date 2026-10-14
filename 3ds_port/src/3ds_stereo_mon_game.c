@@ -359,11 +359,12 @@ static void Show(u16 id, bool8 gallery)
     {
         u16 kind = id & 0xC000, mate = CtrStereoMon_Counterpart(id);
 
-        /* A Pokémon's battle backdrop, and the other side of it for the
-         * editor's battle view. */
-        if (kind == 0 || kind == CTR_STEREO_ID_BACK) Backdrop(NationalPokedexNumToSpecies(id & 0x3FFF));
-        if (mate && (frames = DecodePicture(mate, picture[0])) != 0) CtrStereoMon_SetCompanion(picture[0], frames);
-        else CtrStereoMon_SetCompanion(NULL, 0);
+        /* A Pokémon's battle backdrop for the Pokédex's window. The editor's
+         * mock battle view, with the other side of the picture, is gone
+         * (START plays the real battle): its textures are not made. */
+        if (!gallery && (kind == 0 || kind == CTR_STEREO_ID_BACK)) Backdrop(NationalPokedexNumToSpecies(id & 0x3FFF));
+        (void)mate;
+        CtrStereoMon_SetCompanion(NULL, 0);
         CtrLog_Write(CTR_LOG_VIDEO, "stereo: id %04x %s, %u frames (%s)", id, name, frames, gallery ? "gallery" : "pokedex");
     }
 }

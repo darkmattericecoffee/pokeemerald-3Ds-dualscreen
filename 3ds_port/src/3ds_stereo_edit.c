@@ -160,7 +160,8 @@ enum { B_OPACITY, B_GRID, B_COUNT };
 /* The pressed button's number: the tools', the right's, the bars'. */
 enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B, P_BATTLE };
 /* What the top screen shows: the colours, the planes tinted, the battle. */
-enum { V_COLOURS, V_LAYERS, V_BATTLE, V_COUNT };
+/* The mock battle view is gone: START plays the real battle. */
+enum { V_COLOURS, V_LAYERS, V_COUNT };
 enum { SLIDER_NONE = -1, SLIDER_ZOOM, SLIDER_SIZE };
 enum { GRID_OFF, GRID_WHITE, GRID_BLACK };
 /* The chooser: its bar (the search, ALL/EDITED, the order, the pages),
@@ -1237,7 +1238,7 @@ static void DpadKeys(unsigned dpad)
 
 static void CycleView(void)
 {
-    static const char *const names[V_COUNT] = {"TOP SCREEN: COLOURS", "TOP SCREEN: LAYERS", "TOP SCREEN: BATTLE"};
+    static const char *const names[V_COUNT] = {"TOP SCREEN: COLOURS", "TOP SCREEN: LAYERS"};
 
     sE.view = (uint8_t)((sE.view + 1) % V_COUNT);
     sE.helpDirty = true;
@@ -2638,7 +2639,7 @@ static void MakeHelpSheet(void)
 {
     static const char *const fixed[] = {"NEXT/PICK PLANE", "OUTLINE", "PAN", "ZOOM", "UNDO/REDO", "ANIMATE", "VIEW",
                                         "FRAME", "SWITCH PKMN", "BATTLE", "BACK", "POKEDEX", "HOLD", "START", "SELECT"};
-    static const char *const views[V_COUNT] = {"", "  LAYERS", "  BATTLE"};
+    static const char *const views[V_COUNT] = {"", "  LAYERS"};
     static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
     const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();
     char text[CTR_HELP_CELLS][40];

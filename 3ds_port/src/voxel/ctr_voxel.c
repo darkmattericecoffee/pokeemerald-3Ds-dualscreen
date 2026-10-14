@@ -5306,7 +5306,11 @@ bool CtrVoxel_Update(void)
     sStatus = sAtlasCapacityBlocked ? "capacity"
             : sWarmupUntil != 0 && sStats.chunksMissing != 0 ? "loading"
             : sDrawCount != 0 ? "on" : "nomesh";
-    return sDrawCount != 0 && !sAtlasCapacityBlocked
+    /* In a battle a blocked atlas is a neighbouring map's, coming into the
+     * stage's view: the stage stands on the current map's, so the world
+     * stays. (The compositor keeps its stereo surface through the battle
+     * rather than give it up for that atlas: 3ds_video.c.) */
+    return sDrawCount != 0 && (!sAtlasCapacityBlocked || sBattle.on)
         && !(sWarmupUntil != 0 && sStats.chunksMissing != 0);
 }
 
