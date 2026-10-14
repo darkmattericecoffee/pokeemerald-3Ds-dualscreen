@@ -10298,12 +10298,16 @@ static unsigned TexBytes(const C3D_Tex *tex)
 
 static void DumpOnKey(void)
 {
+    static bool sLatched;
     const CtrInput *input = CtrInput_Get();
+    const unsigned chord = CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT;
     FILE *file;
 
-    if ((input->physicalHeld & (CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT)) != (CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT)
-        || !(input->physicalDown & CTR_KEY_SELECT))
-        return;
+    /* The chord held, once until it is let go: the key's down edge is
+     * scanned by the game's frame, which this does not see every time. */
+    if ((input->physicalHeld & chord) != chord) { sLatched = false; return; }
+    if (sLatched) return;
+    sLatched = true;
     file = fopen("sdmc:/3ds/emerald3ds/dump.raw", "ab");
     if (!file) return;
     DumpRecord(file, 'L', sTop ? sTop->frameBuf.colorBuf : NULL, 240, 400, 4);
