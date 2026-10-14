@@ -28,6 +28,8 @@
 #include "field_effect.h"
 #include "constants/field_effects.h"
 #include "battle_pyramid.h"
+#include "rtc.h"
+#include "constants/map_types.h"
 #include "sprite.h"
 #include "pokemon.h"
 #include "random.h"
@@ -45,6 +47,7 @@
 #ifdef CTR_TEST_DEX
 #include "pokedex.h"
 #endif
+#include "librfu.h"
 #include "port_platform.h"
 #include "port_log.h"
 #include "port_prof.h"
@@ -217,7 +220,7 @@ static void SampleAudioStats(void)
  * frames keep whatever the last callback said, so a scene change does not
  * flash the next frame at the other scale.
  */
-#define CTR_STAGE_CALLBACKS 24
+#define CTR_STAGE_CALLBACKS 48
 typedef struct
 {
     IntrCallback callbacks[CTR_STAGE_CALLBACKS];
@@ -235,6 +238,13 @@ static StageSet sStage = {.name = "GBA stage"}, sCentred = {.name = "GBA centred
 static StageSet sBattle = {.name = "GBA battle"};
 /* The battle transitions (ctr_gba_transition.h), over the field. */
 static StageSet sTransition = {.name = "GBA transition"};
+/* A transition drawn over the field's own VBlank callback (UpdateStage). */
+static bool sFieldTransition;
+
+static bool TransitionOn(void)
+{
+    return sTransition.on || sFieldTransition;
+}
 
 static void RememberCallback(StageSet *set, IntrCallback callback, unsigned screen)
 {
@@ -251,6 +261,13 @@ static void RememberCallback(StageSet *set, IntrCallback callback, unsigned scre
 void CtrStage_SetVBlankCallback(IntrCallback callback)
 {
     RememberCallback(&sStage, callback, 0);
+    SetVBlankCallback(callback);
+}
+
+/* A stage whose every layer fades into the margins (ctr_gba_stage.h). */
+void CtrStageFaded_SetVBlankCallback(IntrCallback callback)
+{
+    RememberCallback(&sStage, callback, 1);
     SetVBlankCallback(callback);
 }
 
@@ -305,6 +322,20 @@ void CtrCentredShop_SetVBlankCallback(IntrCallback callback)
     SetCentredCallback(callback, CTR_CENTRED_SHOP);
 }
 
+void CtrCentredBlender_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, CTR_CENTRED_BLENDER);
+}
+
+/* trade.c: the trade menu's VBlank callback; the trade's is the other. */
+IntrCallback CtrTrade_MenuVBlankCallback(void);
+
+void CtrCentredTrade_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, callback == CtrTrade_MenuVBlankCallback() ? CTR_CENTRED_TRADE_MENU
+                                                                           : CTR_CENTRED_TRADE);
+}
+
 /* The bag from the field goes left of the column, from anywhere else over the
  * whole bottom screen. */
 void CtrCentredBag_SetVBlankCallback(IntrCallback callback)
@@ -321,9 +352,8 @@ void CtrCentredParty_SetVBlankCallback(IntrCallback callback)
                                      ? CTR_CENTRED_PARTY : CTR_CENTRED_PARTY_WHOLE);
 }
 
-/* The Pokédex's own callback. The page it shows for a mon just caught puts
- * back the battle's, which stays the battle's. */
 IntrCallback CtrPokedex_VBlankCallback(void);
+bool8 CtrPokedex_IsCaughtMonPage(void);
 
 void CtrCentredPokedex_SetVBlankCallback(IntrCallback callback)
 {
@@ -366,6 +396,7 @@ static void UpdateSet(StageSet *set, IntrCallback callback)
 static void UpdateStage(void)
 {
     IntrCallback callback = gMain.vblankCallback;
+    bool caughtMonPage = CtrPokedex_IsCaughtMonPage();
 
     if (callback)
     {
@@ -374,10 +405,26 @@ static void UpdateStage(void)
         UpdateSet(&sBattle, callback);
         UpdateSet(&sTransition, callback);
     }
-    CtrVideo_SetStage(sStage.on);
-    CtrVideo_SetCentred(sCentred.on ? sCentred.screen : CTR_CENTRED_NONE);
-    CtrVideo_SetBattle(sBattle.on);
-    CtrVideo_SetTransition(sTransition.on);
+    /* A transition that keeps the field's VBlank callback - the Poké Balls
+     * trail, the grid squares, the spiral, the Frontier's squares and
+     * circles - draws only BG0 and its sprites over the field, which then
+     * runs as CB2_OverworldBasic: only BattleTransition_StartOnField sets
+     * that. Shown as a transition too, or its GBA picture covers a 240x160
+     * part of the wide field. */
+    {
+        bool field = !sTransition.on && gMain.callback2 == CB2_OverworldBasic;
+
+        if (field != sFieldTransition)
+            CtrLog_Write(CTR_LOG_VIDEO, "GBA transition over the field's callback %s at frame %lu",
+                         field ? "on" : "off", (unsigned long)sFrames);
+        sFieldTransition = field;
+    }
+    CtrVideo_SetStage(!caughtMonPage && sStage.on);
+    CtrVideo_SetStageFaded(!caughtMonPage && sStage.on && sStage.screen == 1);
+    CtrVideo_SetCentred(caughtMonPage ? CTR_CENTRED_POKEDEX_CAUGHT
+                                    : sCentred.on ? sCentred.screen : CTR_CENTRED_NONE);
+    CtrVideo_SetBattle(!caughtMonPage && sBattle.on);
+    CtrVideo_SetTransition(!caughtMonPage && TransitionOn());
 }
 
 /*
@@ -426,7 +473,7 @@ static void CaptureLineRegisters(void)
     bool hblank = REG_IME && (REG_IE & INTR_FLAG_HBLANK) && (REG_DISPSTAT & DISPSTAT_HBLANK_INTR)
                && gIntrTable[INTR_INDEX_HBLANK];
 
-    if (!sTransition.on)
+    if (!TransitionOn())
     {
         CtrVideo_SetLineRegisters(NULL, 0);
         return;
@@ -527,6 +574,8 @@ void CtrGame_VBlank(void)
      */
     if (REG_IME && (REG_IE & INTR_FLAG_VBLANK) && gIntrTable[INTR_INDEX_VBLANK])
         gIntrTable[INTR_INDEX_VBLANK]();
+    /* The emulated Wireless Adapter's "interrupts" (3ds_rfu_adapter.c). */
+    PortRfu_Frame();
     CtrEmu_EndVBlank();
     PORT_PROF_END(vblank, PORT_PROF_VBLANK);
     UpdateStage();
@@ -558,6 +607,40 @@ bool CtrGame_IsOverworld(void)
     if (gMapHeader.mapLayout == NULL || gSaveBlock1Ptr == NULL)
         return false;
     return gMain.callback2 == CB2_Overworld || gMain.callback2 == CB2_OverworldBasic;
+}
+
+bool CtrGame_IsOutdoor(void)
+{
+    if (gMapHeader.mapLayout == NULL)
+        return false;
+    switch (gMapHeader.mapType)
+    {
+    case MAP_TYPE_TOWN:
+    case MAP_TYPE_CITY:
+    case MAP_TYPE_ROUTE:
+    case MAP_TYPE_OCEAN_ROUTE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool CtrGame_LocalTimeSeconds(unsigned *seconds)
+{
+    struct SiiRtcInfo rtc;
+    struct Time local;
+
+    if (gSaveBlock2Ptr == NULL || gMapHeader.mapLayout == NULL)
+        return false;
+    if (RtcGetErrorStatus() & RTC_ERR_FLAG_MASK)
+        return false;
+    RtcGetInfo(&rtc);
+    RtcCalcTimeDifference(&rtc, &local, &gSaveBlock2Ptr->localTimeOffset);
+    if (local.hours < 0 || local.hours >= 24 || local.minutes < 0 || local.minutes >= 60
+     || local.seconds < 0 || local.seconds >= 60)
+        return false;
+    *seconds = local.hours * 3600u + local.minutes * 60u + local.seconds;
+    return true;
 }
 
 /* The poison step's effect is running (see DrawPoisonVeil in 3ds_video.c). */

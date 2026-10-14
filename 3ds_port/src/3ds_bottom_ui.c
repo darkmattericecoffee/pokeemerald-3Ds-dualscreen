@@ -52,6 +52,8 @@
 
 #include "global.h"
 #include "3ds_locale.h"
+#include "3ds_daynight.h"
+#include "3ds_encounters.h"
 #include "3ds_locale_text.h"
 #include "main.h"
 #include "money.h"
@@ -141,6 +143,9 @@ bool8 CtrStorage_IsOpen(void);
 int CtrTitleScreen_RayquazaBg(void);
 void CtrStorage_Tap(s16 x, s16 y);
 void CtrSummary_Tap(s16 x, s16 y);
+/* trade.c: the trade menu is up (on the whole screen); it takes taps as the
+ * party menu does (CtrMenu_PostTap). */
+bool8 CtrTrade_IsOpen(void);
 /* item_menu.c: the bag's touches, in pixels of its picture. */
 enum { BAG_TOUCH_DOWN, BAG_TOUCH_MOVE, BAG_TOUCH_UP, BAG_TOUCH_CANCEL };
 void CtrBag_Touch(u8 phase, s16 x, s16 y);
@@ -1855,6 +1860,12 @@ static bool8 RunSmoothJob(void)
 static float sRedrawLabelMs;
 static uint64_t sRedrawStart;
 static bool8 sRefineLabels;
+/* This redraw has built some of a label. Each redraw builds at least one
+ * slice, however long its plates took: on an Old 3DS the move menu's took
+ * the whole 2 ms before its first label, every label stayed flat, and the
+ * menu was drawn again every frame for as long as it was open (12 ms a
+ * frame, 30 fps). */
+static bool8 sRedrawLabelWorked;
 /* Labels found built, and built or left flat, since the last report. */
 static u32 sLabelHits, sLabelMisses;
 #define REDRAW_LABEL_MS 2.0f
@@ -1924,8 +1935,10 @@ static void DrawSmoothStr(const Font *font, const u8 *str, int x, int y, int k, 
          * into a cache kept beyond the frame, which would keep it flat. */
         bool8 timed = sRedrawLabelMs > 0.0f && sBuildBudget == 0xFF && sDst == sCanvas;
 
+        bool8 late = timed && CtrPlatform_TickMs(CtrPlatform_Ticks() - sRedrawStart) >= sRedrawLabelMs;
+
         ++sLabelMisses;
-        if (timed && CtrPlatform_TickMs(CtrPlatform_Ticks() - sRedrawStart) >= sRedrawLabelMs)
+        if (late && sRedrawLabelWorked)
         {
             DrawFlatStr(font, str, x, y, k, fg, outline);
             sRefineLabels = TRUE;
@@ -1959,8 +1972,10 @@ static void DrawSmoothStr(const Font *font, const u8 *str, int x, int y, int k, 
             uint64_t sliceStart = sSliceStart;
             bool8 done;
 
+            /* Past the redraw's time, still this one slice of its own. */
             sSliceMs = sRedrawLabelMs;
-            sSliceStart = sRedrawStart;
+            sSliceStart = late ? CtrPlatform_Ticks() : sRedrawStart;
+            sRedrawLabelWorked = TRUE;
             done = RunSmoothJob();
             sSliceMs = slice;
             sSliceStart = sliceStart;
@@ -2435,6 +2450,8 @@ typedef struct
     u16 heldItem;
     /* Region map. */
     u8 mapsec, cursorX, cursorY, pickMapsec, pickX, pickY;
+    u8 clockShown, clockValid, clockRate, clockPhase;
+    u16 clockMinute;
     /* Bag: which of the game's is on show, BAG_VIEW_*. */
     u8 bagView;
     /* Trainer card. */
@@ -2928,7 +2945,10 @@ static void FastForward(void)
  */
 bool8 CtrBattleMenu_Active(void)
 {
-    return sRes.ready && !(gBattleTypeFlags & (BATTLE_TYPE_LINK | BATTLE_TYPE_RECORDED));
+    /* Link battles too (local wireless): the player's choices go through the
+     * same controller. Drawn on the top screen, the menu ran into the wide
+     * text box. Not for a recorded battle played back: nobody chooses. */
+    return sRes.ready && !(gBattleTypeFlags & BATTLE_TYPE_RECORDED);
 }
 
 void CtrBattleMenu_Begin(void)
@@ -3437,6 +3457,19 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
             s->pickMapsec = sPickMapsec;
             s->pickX = sPickX;
             s->pickY = sPickY;
+            s->clockShown = !s->inBattle && CtrSettings_GetInt("show_clock", 0) == 1;
+            if (s->clockShown)
+            {
+                unsigned seconds, rate;
+
+                s->clockValid = CtrDayNight_Time(&seconds, &rate);
+                if (s->clockValid)
+                {
+                    s->clockMinute = seconds / 60;
+                    s->clockRate = rate;
+                    s->clockPhase = CtrEncounters_Phase(seconds);
+                }
+            }
             break;
         case SCR_POKEMON:
             /* The game's party menu is drawn by the compositor. */
@@ -3528,7 +3561,7 @@ enum { PLATE_NORMAL, PLATE_CHOSEN, PLATE_PRESSED, PLATE_OFF };
 static void DrawColumnButton(const ViewState *s, int i, u8 state)
 {
     const u8 *labels[SCR_COUNT] = {
-        Ascii(CTR_TEXT("MAP", "MAPA", "CARTE")), gText_MenuPokemon, gText_MenuBag, s->name, gText_MenuPokedex, gText_MenuPokenav,
+        Ascii(CTR_TEXT("MAP", "MAPA", "CARTE", "MAPPA")), gText_MenuPokemon, gText_MenuBag, s->name, gText_MenuPokedex, gText_MenuPokenav,
         gText_MenuSave, gText_MenuOption,
     };
     const Icon *icon = &sRes.column[i];
@@ -3852,7 +3885,7 @@ static void DrawPanel(const ViewState *s, int y, const u8 *hint)
         DrawPanelMessage(s->text, y, ht - 4, FALSE);
         DrawLabelButton(0, H - 32, 7, 4, up, s->pressed == HIT_UP, TRUE, HIT_UP);
         DrawLabelButton(56, H - 32, 7, 4, down, s->pressed == HIT_DOWN, TRUE, HIT_DOWN);
-        DrawLabelButton(112, H - 32, 8, 4, Ascii(CTR_TEXT("OK", "VALE", "OK")), s->pressed == HIT_OK, TRUE, HIT_OK);
+        DrawLabelButton(112, H - 32, 8, 4, Ascii(CTR_TEXT("OK", "VALE", "OK", "OK")), s->pressed == HIT_OK, TRUE, HIT_OK);
         DrawLabelButton(176, H - 32, 8, 4, gText_Cancel2, s->pressed == HIT_CANCEL, TRUE, HIT_CANCEL);
         break;
     }
@@ -3893,9 +3926,9 @@ static void DrawParty(const ViewState *s)
 
 static void DrawSummary(const ViewState *s)
 {
-    static const char *const statNames[6] = {CTR_TEXT("HP", "PS", "PV"), CTR_TEXT("ATTACK", "ATAQUE", "ATTAQUE"), CTR_TEXT("DEFENSE", "DEFENSA", "DÉFENSE"),
-                                             CTR_TEXT("SP. ATK", "AT. ESP.", "ATQ. SP."), CTR_TEXT("SP. DEF", "DEF. ESP.", "DÉF. SP."),
-                                             CTR_TEXT("SPEED", "VELOC.", "VITESSE")};
+    static const char *const statNames[6] = {CTR_TEXT("HP", "PS", "PV", "PS"), CTR_TEXT("ATTACK", "ATAQUE", "ATTAQUE", "ATTACCO"), CTR_TEXT("DEFENSE", "DEFENSA", "DÉFENSE", "DIFESA"),
+                                             CTR_TEXT("SP. ATK", "AT. ESP.", "ATQ. SP.", "ATT. SP."), CTR_TEXT("SP. DEF", "DEF. ESP.", "DÉF. SP.", "DIF. SP."),
+                                             CTR_TEXT("SPEED", "VELOC.", "VITESSE", "VELOCITA")};
     const MonView *m = &s->party[s->summary];
     u8 text[24];
 
@@ -4077,15 +4110,47 @@ static void BuildMapCache(void)
 static void DrawRegionName(const ViewState *s)
 {
     u8 name[32];
+    int height = s->clockShown ? 17 : NAME_H;
     bool8 picked = s->pickMapsec != MAPSEC_NONE;
     u8 mapsec = picked ? s->pickMapsec : s->mapsec;
 
     if (mapsec == MAPSEC_NONE)
         return;
     GetMapName(name, mapsec, 0);
-    DrawPlate(NAME_X, NAME_Y, NAME_W, NAME_H, picked ? &sLook.chosen : &sLook.plate, 0, FALSE);
-    DrawStrIn(&sNormal, name, NAME_X + 1, NAME_X + NAME_W - 1, NAME_Y + 1, NAME_Y + NAME_H - 2,
+    DrawPlate(NAME_X, NAME_Y, NAME_W, height, picked ? &sLook.chosen : &sLook.plate, 0, FALSE);
+    DrawStrIn(s->clockShown ? &sSmall : &sNormal, name, NAME_X + 1, NAME_X + NAME_W - 1, NAME_Y + 1, NAME_Y + height - 2,
               picked ? TXT_WHITE : TXT_DARK, picked ? sLook.chosenShadow : TXT_LIGHT);
+}
+
+static void DrawMapClock(const ViewState *s)
+{
+    static const char *const phases[] = {
+        CTR_TEXT("MORNING", "MAÑANA", "MATIN", "MATTINA"), CTR_TEXT("DAY", "DÍA", "JOUR", "GIORNO"),
+        CTR_TEXT("EVENING", "TARDE", "SOIR", "SERA"), CTR_TEXT("NIGHT", "NOCHE", "NUIT", "NOTTE")
+    };
+    char time[8], speed[8];
+    int top = NAME_Y + 18, bottom = NAME_Y + NAME_H;
+
+    if (!s->clockShown)
+        return;
+    DrawPlate(NAME_X, top, NAME_W, bottom - top, &sLook.plate, 0, FALSE);
+    if (s->clockValid)
+    {
+        snprintf(time, sizeof(time), "%02u:%02u", s->clockMinute / 60u, s->clockMinute % 60u);
+        snprintf(speed, sizeof(speed), "%uX", s->clockRate);
+    }
+    else
+    {
+        strcpy(time, "--:--");
+        strcpy(speed, "--");
+    }
+    DrawStrIn(&sSmall, Ascii(time), NAME_X + 4, NAME_X + 65, top, bottom, TXT_DARK, TXT_LIGHT);
+    unsigned phase = s->clockPhase == CTR_TIME_NIGHT ? 3u
+                   : s->clockPhase == CTR_TIME_MORNING ? 0u
+                   : s->clockMinute >= 16u * 60u ? 2u : 1u;
+    DrawStrIn(&sSmall, Ascii(s->clockValid ? phases[phase] : "--"),
+              NAME_X + 66, NAME_X + 168, top, bottom, TXT_DARK, TXT_LIGHT);
+    DrawStrIn(&sSmall, Ascii(speed), NAME_X + 169, NAME_X + NAME_W - 4, top, bottom, TXT_DARK, TXT_LIGHT);
 }
 
 /* The player's mark and a picked cell's cursor, inside the window. */
@@ -4108,6 +4173,7 @@ static void DrawRegionMap(const ViewState *s)
     DrawMapMarks(s);
     AddHit(MAP_WIN_X0, MAP_WIN_Y0, MAP_WIN_X1 - MAP_WIN_X0, MAP_WIN_Y1 - MAP_WIN_Y0, HIT_MAP);
     DrawRegionName(s);
+    DrawMapClock(s);
 }
 
 /* The section under a tapped map cell, as the region map's cursor finds it. */
@@ -4340,7 +4406,7 @@ static void DrawSave(const ViewState *s)
     DrawStr(&sNormal, s->text, 18, 52, TXT_WHITE, TXT_DARK);
     if (s->saveStep == SAVE_DONE)
     {
-        DrawLabelButton(64, 136, 14, 5, Ascii(CTR_TEXT("OK", "VALE", "OK")), s->pressed == HIT_OK, TRUE, HIT_OK);
+        DrawLabelButton(64, 136, 14, 5, Ascii(CTR_TEXT("OK", "VALE", "OK", "OK")), s->pressed == HIT_OK, TRUE, HIT_OK);
         return;
     }
     DrawLabelButton(8, 136, 13, 6, gText_Yes, s->pressed == HIT_YES, s->canSave, HIT_YES);
@@ -4658,18 +4724,45 @@ static void DrawTab(int x, int y, int w, int h, const PlateLook *p, bool8 presse
 
 static void DrawOptionTabs(const ViewState *s)
 {
-    static const char *const names[CTR_EXTRAS_PAGES] = {CTR_TEXT("SETTINGS", "SETTINGS", "RÉGLAGES"), CTR_TEXT("ENHANCEMENTS", "ENHANCEMENTS", "AMÉLIOR."), CTR_TEXT("CHEATS", "CHEATS", "ASTUCES")};
+    static const char *const names[CTR_EXTRAS_PAGES] = {CTR_TEXT("SETTINGS", "AJUSTES", "RÉGLAGES", "OPZIONI"), CTR_TEXT("ENHANCEMENTS", "MEJORAS", "AMÉLIOR.", "MIGLIORIE"), CTR_TEXT("CHEATS", "TRUCOS", "ASTUCES", "TRUCCHI")};
     u8 pages[CTR_EXTRAS_PAGES], count = 0;
-    int capTop, capBottom, cap;
+    int capTop, capBottom, cap, widths[CTR_EXTRAS_PAGES], need = 0, x = 4;
+    bool8 fit = TRUE;
 
     for (unsigned page = 0; page < CTR_EXTRAS_PAGES; ++page)
         if (page == CTR_EXTRAS_OPTIONS || CtrExtras_PageUsed(page))
             pages[count++] = page;
     CapRows(&sSmall, &capTop, &capBottom);
     cap = capBottom - capTop;
+    /*
+     * Equal tabs, as long as every label fits its own; otherwise each takes
+     * what its widest label needs ("ENHANCEMENTS 2/2"), and what is left is
+     * shared out evenly. Measured on the longest label a tab can show, so
+     * the tabs stay put as its screens turn.
+     */
     for (unsigned i = 0; i < count; ++i)
     {
-        int x0 = 4 + i * 232 / count, x1 = 4 + (i + 1) * 232 / count - 4;
+        char label[24];
+
+        if (PageSubs(pages[i]) > 1)
+            snprintf(label, sizeof(label), "%s %u/%u", names[pages[i]], PageSubs(pages[i]), PageSubs(pages[i]));
+        else
+            snprintf(label, sizeof(label), "%s", names[pages[i]]);
+        widths[i] = StrWidth(&sSmall, Ascii(label)) + 6;
+        need += widths[i];
+        if (widths[i] > 232 / count - 4)
+            fit = FALSE;
+    }
+    for (unsigned i = 0; !fit && i < count; ++i)
+    {
+        int share = 232 - 4 * (int)count - need;
+
+        widths[i] += share / (int)count + (i + 1 == count ? share % (int)count : 0);
+    }
+    for (unsigned i = 0; i < count; x += widths[i] + 4, ++i)
+    {
+        int x0 = fit ? 4 + (int)(i * 232 / count) : x;
+        int x1 = fit ? 4 + (int)((i + 1) * 232 / count) - 4 : x + widths[i];
         bool8 chosen = s->optPage == pages[i], pressed = s->pressed == HIT_PAGE + pages[i];
         int line = TAB_Y + 1 + (TAB_H - 4 - cap) / 2 + pressed;
 
@@ -4698,9 +4791,9 @@ static void OptionNames(const u8 *names[OPTION_ROWS])
 {
     const u8 *const table[OPTION_ROWS] = {
         gText_TextSpeed, gText_BattleScene, gText_BattleStyle, gText_Sound,
-        gText_ButtonMode, gText_Frame, Ascii(CTR_TEXT("SHOW FPS", "MOSTRAR FPS", "AFFICH. FPS")), Ascii("VOXEL 3D"),
-        Ascii(CTR_TEXT("3D ANGLE", "ANGULO 3D", "ANGLE 3D")), Ascii(CTR_TEXT("3D ZOOM", "ZOOM 3D", "ZOOM 3D")),
-        Ascii(CTR_TEXT("3D BLUR", "DESENFOQUE 3D", "FLOU 3D")), Ascii(CTR_TEXT("3D BATTLE", "COMBATE 3D", "COMBAT 3D"))};
+        gText_ButtonMode, gText_Frame, Ascii(CTR_TEXT("SHOW FPS", "MOSTRAR FPS", "AFFICH. FPS", "MOSTRA FPS")), Ascii("VOXEL 3D"),
+        Ascii(CTR_TEXT("3D ANGLE", "ANGULO 3D", "ANGLE 3D", "ANGOLO 3D")), Ascii(CTR_TEXT("3D ZOOM", "ZOOM 3D", "ZOOM 3D", "ZOOM 3D")),
+        Ascii(CTR_TEXT("3D BLUR", "DESENFOQUE 3D", "FLOU 3D", "SFOC. 3D")), Ascii(CTR_TEXT("3D BATTLE", "COMBATE 3D", "COMBAT 3D", "BATTAGLIA 3D"))};
 
     memcpy(names, table, sizeof(table));
 }
@@ -5386,11 +5479,11 @@ static void MoveBody(const ViewState *s, int i)
     PpColours(s->moves4.currentPp[i], s->moves4.maxPp[i], &fg, &sh);
     DrawStrRight(&sNormal, text, x + MOVE_W - 12, oy + 32, fg, sh);
     {
-        int tx = DrawStr(&sSmall, Ascii(CTR_TEXT("POW ", "POT. ", "PUISS. ")), x + 12, oy + 56, TXT_DARK, TXT_LIGHT);
+        int tx = DrawStr(&sSmall, Ascii(CTR_TEXT("POW ", "POT. ", "PUISS. ", "POT. ")), x + 12, oy + 56, TXT_DARK, TXT_LIGHT);
 
         DrawStr(&sSmall, data->power > 1 ? Number(data->power, 3, STR_CONV_MODE_LEFT_ALIGN) : Ascii("---"), tx,
                 oy + 56, TXT_DARK, TXT_LIGHT);
-        StringCopy(text, Ascii(CTR_TEXT("ACC ", "PREC. ", "PRÉC. ")));
+        StringCopy(text, Ascii(CTR_TEXT("ACC ", "PREC. ", "PRÉC. ", "PREC. ")));
         StringAppend(text, data->accuracy ? Number(data->accuracy, 3, STR_CONV_MODE_LEFT_ALIGN) : Ascii("---"));
         DrawStrRight(&sSmall, text, x + MOVE_W - 12, oy + 56, TXT_DARK, TXT_LIGHT);
     }
@@ -6258,6 +6351,24 @@ static bool8 DirtyRect(const ViewState *now, const ViewState *shown, Rect *r)
 {
     static ViewState probe;
     bool8 battle = now->mode >= MODE_BATTLE_INFO;
+
+    if (now->mode == MODE_FIELD && shown->mode == MODE_FIELD
+     && now->screen == SCR_MAP && shown->screen == SCR_MAP)
+    {
+        probe = *now;
+        probe.clockShown = shown->clockShown;
+        probe.clockValid = shown->clockValid;
+        probe.clockRate = shown->clockRate;
+        probe.clockPhase = shown->clockPhase;
+        probe.clockMinute = shown->clockMinute;
+        if (memcmp(&probe, shown, sizeof(probe)) != 0)
+            return FALSE;
+        r->x0 = NAME_X;
+        r->y0 = NAME_Y;
+        r->x1 = NAME_X + NAME_W;
+        r->y1 = NAME_Y + NAME_H;
+        return TRUE;
+    }
 
     if (now->mode != shown->mode || (now->mode != MODE_FIELD && !battle) || shown->screen != now->screen
      || (now->mode == MODE_FIELD && now->screen != SCR_OPTION))
@@ -7445,9 +7556,12 @@ static u8 ProcessTouch(u8 mode)
         {
             int x = sTouch.lastX - (W - 240) / 2, y = sTouch.lastY - (H - 160) / 2;
 
-            /* Or a summary opened from them, the same way. */
+            /* Or a summary opened from them, the same way. So does the
+             * trade menu. */
             if (!sTouch.dragged && CtrStorage_IsOpen())
                 CtrStorage_Tap(x, y);
+            else if (!sTouch.dragged && CtrTrade_IsOpen())
+                CtrMenu_PostTap(x, y);
             else if (!sTouch.dragged)
                 CtrSummary_Tap(x, y);
             return HIT_NONE;
@@ -7847,6 +7961,7 @@ static bool8 MoveMapCursor(const ViewState *from, const ViewState *to)
                    NAME_H * sizeof(u16));
         ResolveFonts();
         DrawRegionName(to);
+        DrawMapClock(to);
         CtrBottom_BlitRect(sCanvas, NAME_X, NAME_Y, NAME_X + NAME_W, NAME_Y + NAME_H);
     }
     for (int k = 0; k < 2; ++k)
@@ -8086,6 +8201,7 @@ void CtrBottom_Frame(void)
         sRedrawStart = start;
         sRedrawLabelMs = REDRAW_LABEL_MS;
         sRefineLabels = FALSE;
+        sRedrawLabelWorked = FALSE;
         Render(&sShown);
         sRedrawLabelMs = 0.0f;
         /* A label left flat: drawn again next frame, built a bit further. */

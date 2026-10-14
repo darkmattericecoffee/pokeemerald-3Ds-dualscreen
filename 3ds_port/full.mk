@@ -77,6 +77,10 @@ BACKEND_SRCS += src/3ds_extras.c
 BACKEND_SRCS += src/3ds_stereo_mon_game.c
 # The plane editor, the viewer's bottom screen (include/3ds_stereo_mon.h).
 BACKEND_SRCS += src/3ds_stereo_edit.c
+# Local wireless play: the emulated Wireless Adapter the game's link code
+# talks to (its radio is src/3ds_local.c).
+BACKEND_SRCS += src/3ds_rfu_adapter.c
+BACKEND_SRCS += src/3ds_encounter_tables.c
 # The frame profiler times the engine's own routines through linker wrappers.
 BACKEND_SRCS += src/3ds_prof_wrap.c
 PROF_WRAPPED := RunTasks AnimateSprites BuildOamBuffer ProcessDma3Requests \
@@ -172,24 +176,37 @@ build/root/%.o: $(ROOT)/%.c Makefile full.mk
 		| "$(CC)" $(FULLFLAGS) $(FULLCFLAGS) -x c -c -o $(CURDIR)/$@ -
 
 # Screens staged as one whole GBA picture: GBA geometry, and their VBlank
-# callbacks reported to the bridge (compat/ctr_gba_stage.h).
-CTR_GBA_STAGE_SRCS := intro title_screen credits intro_credits_graphics
+# callbacks reported to the bridge (compat/ctr_gba_stage.h). The cable car too:
+# built wide, its scene sat in a corner of the screen with black around it.
+CTR_GBA_STAGE_SRCS := intro title_screen credits intro_credits_graphics cable_car
 CTR_GBA_STAGE_OBJS := $(patsubst %,build/root/src/%.o,$(CTR_GBA_STAGE_SRCS))
+# Its scenery scrolls, but its margins fade like the intro's.
+build/root/src/cable_car.o: FULLCFLAGS += -DCTR_STAGE_FADED
 $(CTR_GBA_STAGE_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE -include $(abspath compat/ctr_gba_stage.h)
 $(CTR_GBA_STAGE_OBJS): compat/ctr_gba_stage.h $(ROOT)/include/gba/defines.h
 # GBA screens shown centred, margins only from layers that wrap on the GBA
 # (compat/ctr_gba_centred.h).
 CTR_GBA_CENTRED_SRCS := region_map field_region_map main_menu naming_screen wallclock \
-	pokemon_summary_screen starter_choose shop
+	pokemon_summary_screen starter_choose shop link berry_blender pokemon_jump dodrio_berry_picking \
+	contest contest_util
 CTR_GBA_CENTRED_OBJS := $(patsubst %,build/root/src/%.o,$(CTR_GBA_CENTRED_SRCS))
 $(CTR_GBA_CENTRED_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE -include $(abspath compat/ctr_gba_centred.h)
 $(CTR_GBA_CENTRED_OBJS): compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
+# link.c: the communication error screen, whose text windows are as wide as
+# the screen (wider than its layer at 400 pixels: they wrapped and overlapped).
+# berry_blender.c: the Berry Blender, its bowl turned about the middle of the
+# screen (DISPLAY_WIDTH / 2), which at 400 pixels sent it round in circles.
+# pokemon_jump.c, dodrio_berry_picking.c: the wireless minigames, GBA screens
+# drawn in the top left corner of the wide one.
+# contest.c, contest_util.c: a contest and its results, the same; the
+# contest also slid its panels off by DISPLAY_WIDTH and DISPLAY_HEIGHT.
 # Which centred screen each of those is, for how its margins are filled.
 build/root/src/main_menu.o: FULLCFLAGS += -DCTR_CENTRED_MAIN_MENU
 build/root/src/naming_screen.o: FULLCFLAGS += -DCTR_CENTRED_NAMING
 build/root/src/wallclock.o: FULLCFLAGS += -DCTR_CENTRED_CLOCK
 build/root/src/starter_choose.o: FULLCFLAGS += -DCTR_CENTRED_STARTER
 build/root/src/shop.o: FULLCFLAGS += -DCTR_CENTRED_SHOP
+build/root/src/berry_blender.o: FULLCFLAGS += -DCTR_CENTRED_BLENDER
 # On the bottom screen, as the PC's boxes it is mostly opened from.
 build/root/src/pokemon_summary_screen.o: FULLCFLAGS += -DCTR_CENTRED_SUMMARY
 # The PokéNav: every screen of it laid out for the GBA screen, shown whole on
@@ -209,6 +226,11 @@ build/root/src/pokemon_storage_system.o: compat/ctr_gba_centred.h $(ROOT)/includ
 build/root/src/item_menu.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CENTRED_BAG \
 	-include $(abspath compat/ctr_gba_centred.h)
 build/root/src/item_menu.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
+# A trade, its menu and the trade itself, laid out for the GBA screen and
+# shown over the whole bottom screen.
+build/root/src/trade.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CENTRED_TRADE \
+	-include $(abspath compat/ctr_gba_centred.h)
+build/root/src/trade.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
 # The party menu as the game draws it, on the bottom screen: left of the
 # column from the field, over the whole screen from a battle, a contest or a
 # facility.
@@ -229,14 +251,16 @@ build/root/src/pokedex.o: compat/ctr_gba_centred.h
 # out to the whole top screen by the compositor (compat/ctr_gba_battle.h).
 # The evolution scene is the battle's: its text box, its backgrounds and the
 # mon at the middle of a 240x160 screen. Built as a wide screen it was drawn
-# off the left of the top screen, half of the mon on a black screen.
+# off the left of the top screen, half of the mon on a black screen. The egg
+# hatching is laid out the same way, and built wide it was drawn the same:
+# its text box and backgrounds repeated across a black screen.
 CTR_GBA_BATTLE_SRCS := battle_main battle_bg battle_intro battle_interface battle_gfx_sfx_util \
 	battle_controllers battle_controller_player battle_controller_opponent \
 	battle_controller_link_opponent battle_controller_link_partner battle_controller_player_partner \
 	battle_controller_recorded_opponent battle_controller_recorded_player battle_controller_safari \
 	battle_controller_wally battle_message battle_script_commands battle_util battle_util2 \
 	battle_tv battle_arena battle_palace battle_ai_script_commands battle_ai_switch_items \
-	pokeball reshow_battle_screen evolution_scene evolution_graphics \
+	pokeball reshow_battle_screen evolution_scene evolution_graphics egg_hatch \
 	$(patsubst $(ROOT)/src/%.c,%,$(wildcard $(ROOT)/src/battle_anim*.c))
 CTR_GBA_BATTLE_OBJS := $(patsubst %,build/root/src/%.o,$(CTR_GBA_BATTLE_SRCS))
 $(CTR_GBA_BATTLE_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE -include $(abspath compat/ctr_gba_battle.h)
@@ -403,6 +427,9 @@ map-includes:
 VOXEL_GFX_SOURCES := $(wildcard $(ROOT)/data/tilesets/primary/*/tiles.png $(ROOT)/data/tilesets/secondary/*/tiles.png)
 VOXEL_GFX_SOURCES += $(wildcard $(ROOT)/data/tilesets/primary/*/palettes/*.pal $(ROOT)/data/tilesets/secondary/*/palettes/*.pal)
 VOXEL_GFX_SOURCES += $(wildcard $(ROOT)/graphics/intro/scene_1/bg.png)
+# The tileset animations a model's texels follow (voxel_building_specs.py
+# FOUNTAIN_ANIM: Rustboro's fountain).
+VOXEL_GFX_SOURCES += $(wildcard $(ROOT)/data/tilesets/secondary/rustboro/anim/fountain/*.png)
 VOXEL_GFX_OUTPUTS := $(patsubst %.png,%.4bpp,$(filter %.png,$(VOXEL_GFX_SOURCES)))
 VOXEL_GFX_OUTPUTS += $(patsubst %.pal,%.gbapal,$(filter %.pal,$(VOXEL_GFX_SOURCES)))
 ifneq ($(strip $(VOXEL_GFX_OUTPUTS)),)
@@ -438,11 +465,16 @@ romfs/voxel/trees.rgba5551: scripts/gen_voxel_trees.py \
 # in the GBA's projection and refuses to write one that differs from its art
 # by a single pixel, so a spec that stops matching fails the build here
 # (--verify: the release builder only exports, checked by the CRC of this
-# file). verify-voxel-buildings runs the proofs alone, even when the file is
+# file). So does a room's interior lint (scripts/voxel_defect_scan.py on its
+# pieces): a fault the allowlist (assets/voxel/interior_lint_allow.toml) does
+# not accept with its reason, or an entry in it that finds no fault any more,
+# in any room - see build/buildings/interior_lint.txt.
+# verify-voxel-buildings runs the proofs alone, even when the file is
 # up to date: the release build asks for it.
-romfs/voxel/buildings.bin: scripts/gen_voxel_buildings.py scripts/voxel_building.py \
-		scripts/voxel_building_specs.py scripts/dump_region_art.py scripts/voxel_props.py \
+romfs/voxel/buildings.bin: scripts/gen_voxel_buildings.py scripts/voxel_building.py scripts/voxel_night.py \
+		scripts/voxel_building_specs.py scripts/voxel_bridge.py scripts/dump_region_art.py scripts/voxel_props.py \
 		scripts/voxel_relief_fixes.py assets/voxel/relief_fixes.json \
+		scripts/voxel_defect_scan.py assets/voxel/interior_lint_allow.toml \
 		$(ROOT)/data/layouts/layouts.json
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_voxel_buildings.py --verify --output $@
@@ -530,6 +562,7 @@ verify-voxel-trees: build/voxel_tree_test.exe
 	./build/voxel_tree_test.exe
 
 build/voxel_tree_test.exe: tests/voxel_tree_test.c src/voxel/voxel_tree.c \
+		tests/voxel_tileset_fixture.h \
 		src/voxel/voxel_mesh_builder.c src/voxel/voxel_sign.c \
 		src/voxel/voxel_tree.h src/voxel/voxel_mesh_builder.h \
 		src/voxel/voxel_world.h src/voxel/voxel_atlas.h src/voxel/voxel_regions.h \
@@ -550,6 +583,7 @@ verify-voxel-lighting: build/voxel_lighting_on_test.exe build/voxel_lighting_off
 LIGHTING_TEST_SRCS := tests/voxel_lighting_test.c src/voxel/voxel_lighting.c src/voxel/voxel_sign.c \
 	src/voxel/voxel_mesh_builder.c src/voxel/voxel_tree.c src/voxel/voxel_relief.c
 LIGHTING_TEST_HEADERS := src/voxel/voxel_lighting.h src/voxel/voxel_mesh_builder.h \
+	tests/voxel_tileset_fixture.h \
 	src/voxel/voxel_world.h src/voxel/voxel_regions.h src/voxel/voxel_atlas.h src/voxel/voxel_tree.h \
 	src/voxel/voxel_building.h
 build/voxel_lighting_on_test.exe: $(LIGHTING_TEST_SRCS) $(LIGHTING_TEST_HEADERS)
@@ -582,7 +616,7 @@ build/voxel_sign_test.exe: tests/voxel_sign_test.c src/voxel/voxel_sign.c src/vo
 	@mkdir -p $(@D)
 	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Iinclude -Isrc/voxel \
 		-DVOXEL_HOST_FILES -DSIGN_MASK_PATH='"romfs/voxel/signposts.bin"' \
-		tests/voxel_sign_test.c src/voxel/voxel_sign.c -o $@
+		tests/voxel_sign_test.c src/voxel/voxel_sign.c -lm -o $@
 
 # The mountains' geometry against what the projection allows, every drawn
 # group (scripts/voxel_relief_check.py), compared with the run before.
@@ -594,7 +628,7 @@ check-voxel-relief:
 .PHONY: verify-voxel-relief
 verify: verify-voxel-relief
 verify-voxel-relief: build/voxel_relief_test.exe romfs/voxel/relief.bin
-	./build/voxel_relief_test.exe $$("$(PYTHON)" -c "import json; l = json.load(open('$(ROOT)/data/layouts/layouts.json'))['layouts']; ids = [e['id'] for e in l]; print(ids.index('LAYOUT_ROUTE101') + 1, ids.index('LAYOUT_ROUTE116') + 1)")
+	./build/voxel_relief_test.exe $$("$(PYTHON)" -c "import json; l = json.load(open('$(ROOT)/data/layouts/layouts.json'))['layouts']; ids = [e['id'] for e in l]; print(ids.index('LAYOUT_ROUTE101') + 1, ids.index('LAYOUT_ROUTE116') + 1, ids.index('LAYOUT_RUSTURF_TUNNEL') + 1)")
 
 build/voxel_relief_test.exe: tests/voxel_relief_test.c src/voxel/voxel_relief.c src/voxel/voxel_relief.h
 	@mkdir -p $(@D)
@@ -632,6 +666,36 @@ verify-bottom-map:
 verify: verify-voxel-regions
 verify-voxel-regions: romfs/voxel/regions.bin
 	"$(PYTHON)" -B tests/voxel_regions_test.py --cc "$(HOSTCC)"
+
+# The buildings' animated texels (Rustboro's fountain plays its jet), composed
+# by voxel_building.c from BG VRAM at each frame of the game's animation.
+.PHONY: verify-voxel-building-anim
+verify: verify-voxel-building-anim
+verify-voxel-building-anim: romfs/voxel/buildings.bin
+	"$(PYTHON)" -B tests/voxel_building_anim_test.py --cc "$(HOSTCC)"
+
+# A room's pieces judged by what the 45-degree proof cannot see
+# (scripts/voxel_defect_scan.py on gen_voxel_buildings' room facts): every
+# fault found in Littleroot's rooms, made on purpose on synthetic pieces, is
+# reported by its own kind, and the same piece made right by none; the
+# allowlist of faults accepted (assets/voxel/interior_lint_allow.toml) read
+# with a reason for each, and the verdict that fails the build on the rest,
+# and on an entry in it that finds no fault; and the parts that make them right (casings,
+# tables on legs, tops flat against a wall, pieces cut by their outlines,
+# frames seen through, domes) still exact at 45 degrees.
+.PHONY: verify-voxel-interior-lint
+verify: verify-voxel-interior-lint
+verify-voxel-interior-lint:
+	"$(PYTHON)" -B tests/voxel_interior_lint_test.py
+	"$(PYTHON)" -B tests/voxel_interior_parts_test.py
+
+.PHONY: verify-pokedex-capture verify-voxel-dewford
+verify: verify-pokedex-capture verify-voxel-dewford
+verify-pokedex-capture:
+	"$(PYTHON)" -B tests/pokedex_capture_test.py --tree "$(ROOT)" --cc "$(HOSTCC)" --sanitize
+
+verify-voxel-dewford:
+	"$(PYTHON)" -B tests/voxel_dewford_test.py --tree "$(ROOT)"
 
 # What the console builds of every map, checked by the engine's own code over
 # the shipped data (scripts/voxel_engine_view.py check, tests/voxel_scene_dump.c):

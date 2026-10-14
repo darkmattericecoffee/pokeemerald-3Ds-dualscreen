@@ -112,6 +112,11 @@ void CtrVideo_MarkVoxelWeatherOam(unsigned first, unsigned end);
  * compositor repeats it over the whole view (src/sprite.c). */
 void CtrVideo_ClearFogOam(void);
 void CtrVideo_MarkFogOam(unsigned first, unsigned end);
+/* Weather the GBA lays over its 240x160 screen, carried over the whole view:
+ * one picture on a 64-pixel lattice (ash, the sandstorm), or particles that
+ * wrap round the screen (rain, snow, sand swirls, bubbles). Cleared with the
+ * fog's (CtrVideo_ClearFogOam). */
+void CtrVideo_MarkWeatherOam(unsigned first, unsigned end, bool lattice);
 void CtrVideo_NotifyTilesetAnimWrite(const void *dest, unsigned bytes);
 /*
  * A write the game made through its BIOS copies (3ds_prof_wrap.c): VRAM,
@@ -134,6 +139,9 @@ void CtrVideo_RequestPlaneRelease(void);
  * screen with the space around it filled from its own art. See docs/ARCHITECTURE.md.
  */
 void CtrVideo_SetStage(bool stage);
+/* Every layer of the stage fades into the margins, scrolling or not (the
+ * cable car). */
+void CtrVideo_SetStageFaded(bool faded);
 /* Whether a field move's banner is up: BG0 then wraps across the whole
  * screen instead of being the text band (src/field_effect.c). */
 void CtrVideo_SetFieldBanner(bool banner);
@@ -193,9 +201,21 @@ enum
      * and of the people in it (shop.c): the top screen keeps the world.
      */
     CTR_CENTRED_SHOP,
+    /*
+     * A trade, over the whole bottom screen while the top keeps the room it
+     * started from (the Trade Center, the Union Room, the person met):
+     * the menu of both parties on its blue stripes, then the trade itself.
+     */
+    CTR_CENTRED_TRADE_MENU,
+    CTR_CENTRED_TRADE,
+    /* The Berry Blender: its bowl, an affine layer, kept to the picture. */
+    CTR_CENTRED_BLENDER,
+    CTR_CENTRED_POKEDEX_CAUGHT,
     CTR_CENTRED_SCREENS
 };
 void CtrVideo_SetCentred(unsigned screen);
+/* The HOME button was pressed while it is not allowed: a sign for a moment. */
+void CtrVideo_ShowNoHome(void);
 /*
  * The window edges an HBlank DMA writes line by line (the PokéNav's glow
  * behind its chosen option, its condition graph): values holds WIN0H for each
@@ -273,4 +293,8 @@ uint16_t CtrVideo_RGBA5551(uint16_t color);
 unsigned CtrVideo_ObjTile(unsigned base, unsigned x, unsigned y,
                           unsigned width, bool color256, bool mapping1d);
 int32_t CtrVideo_AffineReference(uint32_t value);
+/* A battle is on (its transition included): OPTIONS' REAL-TIME PACING is
+ * for the field, where the voxel world costs the frame (3ds_platform.c). */
+bool CtrVideo_InBattle(void);
+
 #endif

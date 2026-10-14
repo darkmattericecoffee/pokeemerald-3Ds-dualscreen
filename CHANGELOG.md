@@ -2,8 +2,81 @@
 
 ## Unreleased
 
+- Local wireless play between 3DS systems nearby, by @eathanpage (pull
+  request #76): the Union Room, the Direct Corner's Trade Center and
+  Colosseum, the Berry Blender, the wireless minigames, link contests and the
+  Battle Tower's link multi battle, two to four players, through an emulated
+  Wireless Adapter over 3DS local wireless. Only identical builds link (so
+  builds in different languages don't, for now); HOME is refused during a
+  session. Its patch is 0055-local-wireless.
+
+- Day/night, city lights and the berry clock, by @jesus0m (pull request
+  #57), all off by default. The windows' glow and the lamps take memory
+  only while they light: the masks share the voxel page arena and the lamps'
+  buffers are freed shortly after the last one goes out, so with day/night
+  off nothing is reserved. Known limit: at 120X the sun moves every 7.5
+  seconds and each step relights the voxel world, which an Old 3DS shows as
+  frame drops; at 1X it runs smoothly.
+
+- Dewford exterior models and the bounded window-mask pool
+  have user-reported physical-3DS acceptance. Follow-up fixes give the caught-mon
+  Pokédex its own clipped, scroll-isolated bottom-screen layout and recover the
+  gym-side sign from its original two-cell artwork. The user confirms the final
+  preview on a physical 3DS and authorizes publication on October 12, 2026.
+
+- User-tested refinement: brighter, cool-blue outdoor
+  nights with a moonlit ambient blend capped at 6%, eased with the existing clock.
+  Reuse the 2D/voxel texture stages without extra draw calls or assets; keep warm
+  window/lamp emission, neutral interiors/UI and complete black/white fades.
+- Local staging packs now select their ROM fingerprint from the compiled game
+  language, rather than marking Spanish data as English. An explicitly supplied
+  ROM must match that language; synthetic tests cover both profiles and rejection.
+- City lighting (user-reported 3DS acceptance): extend authored voxel
+  glass masks to shared Pokémon Centers, marts and gyms, Rustboro apartment
+  blocks and Devon; correct Littleroot east-house window coordinates.
+  Original Rustboro lamps emit warm glass and bounded floor-only light pools,
+  cached with the visible map state and faded by the existing shared clock.
+  Unmodelled buildings and classic 2D windows remain outside local emission.
+- CI: remove Python 3.12-only f-string expressions from asset-table generation
+  so the Python 3.11 build container can bootstrap. Add URI/offset regression
+  tests in that container and update voxel fixtures for tileset-aware tree APIs,
+  atlas dimensions and clock updates. Package CI's engine-only ZIP under the
+  existing allowed `payload/` layout without weakening publication checks.
+- Experimental follow-up: berry growth shares clock acceleration, with
+  fractional bonus-minute carry, continuous speed changes and save-bound clock
+  persistence. Sleep/offline time stays at 1X; daily RTC events remain original.
+- Correct Spanish clock accents, add display-only EVENING / TARDE and
+  translate modern party EXP text; the wild and foe prefixes stay as the
+  Spanish ROM writes them.
+- Experimental follow-up: clock-driven voxel sun and cast shadows, with
+  15-game-minute direction updates through the existing chunk budget,
+  retained caster caches, and no additional shadow rendering pass.
+- Experimental follow-up: two-hour eased visual transitions and authored
+  amber window emission on shared exterior voxel houses (including Petalburg),
+  disabled with day/night and excluded from interiors. No new encounter bands.
+- Opt-in ORIGINAL / TIMED grass encounters on eleven Hoenn routes, shared
+  by random encounters, Sweet Scent and new visible wild spawns, with original
+  levels/rates and unchanged water, caves, facilities and special encounters.
+- Optional bottom MAP footer showing effective HH:MM, time band and clock
+  rate, independently of lighting, localized in Spanish and partial-redrawn.
+
+- Optional outdoor morning, day, sunset and night lighting in classic 2D and
+  voxel mode, disabled by default and configurable from ENHANCEMENTS.
+- Independent clock speeds from 1X to 120X, without accelerating
+  Emerald's daily RTC events or modifying the GBA save format.
+- Spanish labels for the touch-screen settings tabs, enhancements, cheats,
+  option values and give-items menu; English labels and saved settings stay
+  unchanged.
+
 New and improved:
 
+- Italian: the game in Italian from your own Pokémon Versione Smeraldo (Italy) ROM.
+  The texts and graphics are staged from that ROM by `tools/localize_italian.py`
+  (449 source files, 19 349 edits, 104 graphics, 55 credits pages, the four Trainer
+  Hill floors), with the metric Pokédex units and decimal comma, the wider invalid-move
+  type table, the Italian ending tilemap and the port menus in Italian.
+- Italian build: `tools/bootstrap.py --make --italian-rom` builds it, next to the
+  Spanish and French ones.
 - French: the game in French from your own Pokémon Émeraude (France) ROM.
   The web and Windows builders accept it and pick the language from the ROM;
   every release carries the French executable (`Emerald3DS-fr.3dsx` for Quick
@@ -21,12 +94,82 @@ New and improved:
   and default phrase IDs from the user's ROM; preserve two-column phrase
   tables, nine-column naming rows and column positions, and 22-byte type names.
   The native Pokédex uses a decimal comma and French measurement alignment.
+- ENHANCEMENTS: four new options, all off by default, by @Deunnis (pull
+  request #49). IVS AND EVS: A (or a tap on the stats) on the summary's
+  SKILLS page shows the Pokémon's IVs, then its EVs. REPEL PROMPT: when a
+  Repel wears off and the Bag still has one, "Use another REPEL?". INFINITE
+  TMS: a TM is kept after teaching, like an HM. RUN INDOORS: the Running
+  Shoes work in houses, Centers, gyms and caves. HMS WITHOUT MOVE now covers
+  Fly and Flash too: HM02 and HM05 used from the Bag offer to use the move,
+  and cancelling the Fly map goes back to the Bag; the new texts are in
+  Spanish in the Spanish game (pull request #52).
+- 3D BLUR has a strength, by @Deunnis (pull request #55): OFF or 10% to 100%
+  in steps of 10 (tap the left half to lower it, the right half to raise it)
+  instead of on and off. An old `voxel_blur=1` reads as 100%.
+- Building from source: the build fails when a song header has a pointer
+  missing from the relocation table, as `se_rain` had in 0.3.0's Spanish
+  build (the rain crash of issues #40, #44 and #46), by @Deunnis (pull
+  request #53).
+
+- OPTIONS > ENHANCEMENTS has REAL-TIME PACING (off by default): the sound
+  engine mixes on the DSP's clock instead of once per shown frame, so a
+  frame the console takes too long over (a town loading, a busy scene in 3D)
+  no longer makes the music click; and the game keeps real time, running a
+  hidden frame when it has fallen a frame behind the display, so only the
+  picture skips a step. The FPS counter shows pictures/game frames a second.
+  In the field only: a battle keeps the GBA's timing. Without a DSP (an
+  emulator without its firmware) the engine still runs once per frame.
 
 Fixed:
+- The battle intro could hang with the player's trainer sliding up the
+  screen for ever: the HD interface's lift of the trainer (down with the
+  text box) left an odd y2 on the sprite when the slide across ended first,
+  and the game's vertical slide, two pixels a frame, never reached 0. The
+  lift is kept even.
 
 - Battles: with the speed multiplier at x2 and above, a Pokémon sent out of
   its Poké Ball (yours or a trainer's) made no cry. The game cleared the cry
   before the sound engine had started it.
+- Saves: a save backed up from a cartridge or exported from mGBA (the 128 KiB
+  flash image followed by the clock's bytes) was refused, which left only
+  NEW GAME; it is read now, by @Deunnis (pull request #47, issue #33).
+- Battles: move backgrounds (Confusion's, Solar Beam's, the impact one...)
+  covered only part of the wide screen, with leftover scenery beside them;
+  they fill it now, by @Deunnis (pull request #54, issue #51).
+- The Pokédex page of a Pokémon just caught was laid out as the battle,
+  zoomed and cut off; it is shown whole, by @Deunnis (pull request #50,
+  issue #29).
+- Voxel: the potted plant in the small houses left pixels of its outline on
+  the floor, by @Deunnis (pull request #48, issue #23).
+- Battle transitions: the Poké Balls rolling across the screen (trainers on
+  routes) and the other transitions that draw only their own layer over the
+  field were a GBA-sized box in a corner of the screen; they fill it now, at
+  the battle's scale.
+- Pokémon Centers: the balls on the healing machine and the flash of its
+  monitor were drawn 8 pixels too high, above the tray and the screen.
+- Hatching an egg: the scene was drawn as a wide screen, its text box and
+  backgrounds repeated across a black screen, and the spotlight under the
+  Pokémon was noise. The trade animation's GBA had the same noise.
+- The cable car: the ride sat in a corner of the screen with black around
+  it; it fills the screen, the scene mirrored into its edges and faded
+  like the intro's.
+- Weather: the rain, the volcanic ash, the sandstorm and the underwater
+  bubbles fell over a GBA-sized part in the middle of the screen; they cover
+  all of it now, as the fog already did, the cable car's ash included.
+- People on the map could be drawn over the whole screen for a frame as
+  they or the player moved (the old lady in Route 111's rest house): they
+  were taken for the fog.
+- Battles: after opening the bag or the party in a battle, a stat change
+  (Growl, Defense Curl and the like) covered the whole screen with its
+  pattern instead of only the Pokémon.
+- Voxel mode: Rustboro's and Mauville's streets no longer stand up in low
+  blocks here and there (Rustboro's main road among them). Their paving is
+  the same tile as the middle of the white curbs round lawns and landings,
+  and was raised as curb.
+- Voxel mode: Rustboro's fountain is built again from its drawing: the rim
+  stands over the water, the dish sits on a stem in the middle, and its walls
+  are solid all round (one side was a dark slab and another see-through). Its
+  jet plays the game's animation, as on the GBA.
 
 ## 0.3.1 — 2026-10-10
 

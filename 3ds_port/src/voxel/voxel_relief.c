@@ -5,7 +5,8 @@
  * Layout (little endian):
  *   "VXL4", u16 layouts, u16 side (5)
  *   layouts x 14: u16 layout id, u16 cells, u16 width, u16 height (bit 15:
- *                 drawn; bit 14: heights in units of 2 pixels), u32 offset,
+ *                 drawn; bit 14: heights in units of 2 pixels; bits 10-13:
+ *                 the belt's courses, see VoxelRelief_Belt), u32 offset,
  *                 s16 base (pixels: the level the whole map stands at)
  *   cells x (2 + 25): u8 x, u8 y, int8 heights[25] (row major, over the base)
  *
@@ -54,6 +55,7 @@ typedef struct
     uint16_t layoutId, width, height, count;
     int16_t base;          /* pixels */
     bool drawn;            /* the relief is all of this map's terrain */
+    uint8_t belt;          /* courses the border stands, as drawn (0: as ever) */
     const uint8_t *cells;  /* into sBlob: x, y and the stored heights */
     int16_t *heights;      /* GRID per cell, pixels */
     /* A drawn map's surface where it stands, for the sun to be stopped by:
@@ -166,8 +168,9 @@ bool VoxelRelief_Init(void)
         l->width = (uint16_t)U16(row + 4);
         unsigned unit = (U16(row + 6) & 0x4000) ? 2 : 1;
 
-        l->height = (uint16_t)(U16(row + 6) & 0x3FFF);
+        l->height = (uint16_t)(U16(row + 6) & 0x03FF);
         l->drawn = (U16(row + 6) & 0x8000) != 0;
+        l->belt = (uint8_t)((U16(row + 6) >> 10) & 0x0F);
         l->cells = sBlob + offset;
         l->count = (uint16_t)cells;
         if (offset + (uint32_t)cells * CELL_BYTES > (uint32_t)size)
@@ -256,6 +259,127 @@ bool VoxelRelief_CutVariant(unsigned i, unsigned *layout, unsigned *metatile,
     *metatile = U16(v + 2);
     *rows = v + 4;
     return true;
+}
+
+static const int8_t kCutDir[8][2] = { { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 },
+                                      { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } };
+
+/* The rock's eight sides (its hull: a*i + b*j <= c over its pixels), and
+ * whether it is that hull: a polygon. */
+static bool CutHull(const uint8_t *rows, int c[8])
+{
+    int rock = 0;
+
+    for (int k = 0; k < 8; ++k)
+        c[k] = INT16_MIN;
+    for (int j = 0; j < 16; ++j)
+    {
+        unsigned bits = (unsigned)rows[2 * j] | ((unsigned)rows[2 * j + 1] << 8);
+
+        for (int i = 0; i < 16; ++i)
+            if (!((bits >> i) & 1u))
+            {
+                ++rock;
+                for (int k = 0; k < 8; ++k)
+                    if (kCutDir[k][0] * i + kCutDir[k][1] * j > c[k])
+                        c[k] = kCutDir[k][0] * i + kCutDir[k][1] * j;
+            }
+    }
+    if (rock == 0 || rock == 256)
+        return false;
+    for (int j = 0; j < 16; ++j)
+    {
+        unsigned bits = (unsigned)rows[2 * j] | ((unsigned)rows[2 * j + 1] << 8);
+
+        for (int i = 0; i < 16; ++i)
+        {
+            bool in = true;
+
+            for (int k = 0; k < 8 && in; ++k)
+                in = kCutDir[k][0] * i + kCutDir[k][1] * j <= c[k];
+            if (in == (((bits >> i) & 1u) != 0))
+                return false;
+        }
+    }
+    return true;
+}
+
+void VoxelRelief_CutDiagonals(const uint8_t *rows, VoxelCutDiagonals *out)
+{
+    int c[8];
+
+    out->count = 0;
+    if (rows == NULL || !CutHull(rows, c))
+        return;
+    for (int k = 4; k < 8; ++k)
+    {
+        /* its value at the corner of the rock's rectangle (its horizontal
+         * and vertical sides): a side that clips nothing more is none */
+        int a = kCutDir[k][0], b = kCutDir[k][1];
+        int corner = a * (a > 0 ? c[3] : -c[2]) + b * (b > 0 ? c[1] : -c[0]);
+
+        if (c[k] >= corner)
+            continue;
+        out->a[out->count] = (int8_t)a;
+        out->b[out->count] = (int8_t)b;
+        /* through the outer corners of the rock's pixels along it */
+        out->c[out->count] = (int16_t)(c[k] + (a > 0) + (b > 0));
+        ++out->count;
+    }
+}
+
+void VoxelRelief_CutClear(const uint8_t *rows, uint16_t clear[16])
+{
+    VoxelCutDiagonals d;
+    int c[8];
+
+    for (int j = 0; j < 16; ++j)
+        clear[j] = (uint16_t)((unsigned)rows[2 * j] | ((unsigned)rows[2 * j + 1] << 8));
+    VoxelRelief_CutDiagonals(rows, &d);
+    if (d.count == 0)
+        return;
+    CutHull(rows, c);
+    for (int j = 0; j < 16; ++j)
+        for (int i = 0; i < 16; ++i)
+        {
+            bool in = true;
+
+            if (!((clear[j] >> i) & 1u))
+                continue;
+            /* a background pixel the polygon (its sides through the outer
+             * corners of the rock's pixels) takes in part of: drawn */
+            for (int k = 0; k < 8 && in; ++k)
+            {
+                int a = kCutDir[k][0], b = kCutDir[k][1];
+                int least = a * (a > 0 ? i : i + 1) + b * (b > 0 ? j : j + 1);
+
+                in = least < c[k] + (a > 0) + (b > 0);
+            }
+            if (in)
+                clear[j] &= (uint16_t)~(1u << i);
+        }
+}
+
+int VoxelRelief_CutFringe(const uint8_t *rows, const uint16_t clear[16], int x, int y)
+{
+    static const int8_t kAround[8][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1},
+                                         {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+    unsigned row = (unsigned)rows[2 * y] | ((unsigned)rows[2 * y + 1] << 8);
+
+    if (!((row >> x) & 1u) || ((clear[y] >> x) & 1u))
+        return -1;
+    for (int k = 0; k < 8; ++k)
+    {
+        int nx = x + kAround[k][0], ny = y + kAround[k][1];
+        unsigned nrow;
+
+        if (nx < 0 || nx > 15 || ny < 0 || ny > 15)
+            continue;
+        nrow = (unsigned)rows[2 * ny] | ((unsigned)rows[2 * ny + 1] << 8);
+        if (!((nrow >> nx) & 1u))
+            return ny * 16 + nx;
+    }
+    return -1;
 }
 
 int VoxelRelief_Cut(const VoxelMapInstance *inst, int x, int y, float *foot, int *ground,
@@ -370,6 +494,12 @@ bool VoxelRelief_IsDrawn(const VoxelMapInstance *inst)
 {
     const ReliefLayout *l = LayoutOf(inst);
     return l != NULL && l->drawn;
+}
+
+unsigned VoxelRelief_Belt(const VoxelMapInstance *inst)
+{
+    const ReliefLayout *l = LayoutOf(inst);
+    return l != NULL ? l->belt : 0u;
 }
 
 bool VoxelRelief_IsSlope(const int16_t *grid)

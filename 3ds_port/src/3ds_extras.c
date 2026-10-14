@@ -8,6 +8,7 @@
 #include "3ds_locale.h"
 #include "3ds_extras.h"
 #include "3ds_platform.h"
+#include "3ds_daynight.h"
 #include "event_data.h"
 #include "pokedex.h"
 #include "pokemon.h"
@@ -20,15 +21,20 @@
 #include "constants/items.h"
 #include "constants/songs.h"
 
-const char *const gCtrExtrasOffOn[2] = {CTR_TEXT("OFF", "OFF", "NON"), CTR_TEXT("ON", "ON", "OUI")};
+const char *const gCtrExtrasOffOn[2] = {CTR_TEXT("OFF", "NO", "NON", "NO"), CTR_TEXT("ON", "SI", "OUI", "SI")};
 
-static const char *const sVisibleWild[] = {CTR_TEXT("OFF", "OFF", "NON"), CTR_TEXT("FEW", "FEW", "PEU"), CTR_TEXT("SOME", "SOME", "MOYEN"), CTR_TEXT("MANY", "MANY", "BEAUCOUP")};
-static const char *const sEncounterRate[] = {CTR_TEXT("NORMAL", "NORMAL", "NORMAL"), CTR_TEXT("OFF", "OFF", "NON"), "1/4", "1/2", "2X"};
-static const char *const sShinyOdds[] = {"1/8192", "1/4096", "1/1024", "1/256", "1/64", CTR_TEXT("ALWAYS", "ALWAYS", "TOUJOURS")};
+static const char *const sDayNight[] = {CTR_TEXT("OFF", "NO", "NON", "NO"), "AUTO"};
+static const char *const sClockSpeeds[] = {"1X", "6X", "12X", "24X", "60X", "120X"};
+static const char *const sTimedEncounters[] = {CTR_TEXT("ORIGINAL", "ORIGINAL", "ORIGINAL", "ORIGINALE"),
+                                               CTR_TEXT("TIMED", "POR HORARIO", "PAR HORAIRE", "PER ORARIO")};
+
+static const char *const sVisibleWild[] = {CTR_TEXT("OFF", "NO", "NON", "NO"), CTR_TEXT("FEW", "POCOS", "PEU", "POCHE"), CTR_TEXT("SOME", "ALGUNOS", "MOYEN", "ALCUNE"), CTR_TEXT("MANY", "MUCHOS", "BEAUCOUP", "MOLTE")};
+static const char *const sEncounterRate[] = {CTR_TEXT("NORMAL", "NORMAL", "NORMAL", "NORMALE"), CTR_TEXT("OFF", "NO", "NON", "NO"), "1/4", "1/2", "2X"};
+static const char *const sShinyOdds[] = {"1/8192", "1/4096", "1/1024", "1/256", "1/64", CTR_TEXT("ALWAYS", "SIEMPRE", "TOUJOURS", "SEMPRE")};
 /* The voxel world per eye with the 3D slider (3ds_video.c): AUTO is on a
  * New 3DS only (the second pass costs an Old 3DS the frame), and how deep
  * the slider's full travel goes, in percent of the renderer's depth. */
-static const char *const sVoxelStereo[] = {CTR_TEXT("AUTO", "AUTO", "AUTO"), CTR_TEXT("ON", "ON", "OUI"), CTR_TEXT("OFF", "OFF", "NON")};
+static const char *const sVoxelStereo[] = {CTR_TEXT("AUTO", "AUTO", "AUTO", "AUTO"), CTR_TEXT("ON", "SI", "OUI", "SI"), CTR_TEXT("OFF", "NO", "NON", "NO")};
 static const char *const sVoxelDepths[] = {"25%", "50%", "75%", "100%", "125%", "150%", "200%"};
 /* The 3D battle's depths, in screen pixels per eye at the slider's top
  * (3ds_video.c BATTLE_BACK_DEPTH, BATTLE_SPRITE_DEPTH; 3ds_stereo_battle.c
@@ -39,7 +45,7 @@ static const char *const sVoxelDepths[] = {"25%", "50%", "75%", "100%", "125%", 
 static const char *const sBattleBacks[] = {"2PX", "3PX", "4PX", "6PX", "8PX", "12PX"};
 static const char *const sBattleMons[] = {"0PX", "1PX", "2PX", "3PX", "4PX"};
 static const char *const sPlaneSpreads[] = {"1PX", "2PX", "3PX", "4PX", "6PX", "8PX"};
-static const char *const sPlanePivots[] = {CTR_TEXT("BEHIND", "DETRÁS", "DERRIÈRE"), CTR_TEXT("AROUND", "ALREDEDOR", "AUTOUR"), CTR_TEXT("IN FRONT", "DELANTE", "DEVANT")};
+static const char *const sPlanePivots[] = {CTR_TEXT("BEHIND", "DETRÁS", "DERRIÈRE", "DIETRO"), CTR_TEXT("AROUND", "ALREDEDOR", "AUTOUR", "INTORNO"), CTR_TEXT("IN FRONT", "DELANTE", "DEVANT", "DAVANTI")};
 /*
  * Pokedex (CHEATS): the Hoenn Pokedex complete, the National Pokedex
  * unlocked, or complete (and unlocked): every Pokemon seen and caught. OPTIONS
@@ -72,13 +78,13 @@ static void CompleteNationalDex(void)
     PlaySE(SE_SUCCESS);
 }
 
-static const char *const sDexDone[] = {CTR_TEXT("TAP TO SET", "TAP TO SET", "ACTIVER")};
+static const char *const sDexDone[] = {CTR_TEXT("TAP TO SET", "TOCA PARA ACTIVAR", "ACTIVER", "ATTIVA")};
 /*
  * Give items (CHEATS): a pocket, an item of it, a count, and GIVE puts them in
  * the bag (OPTIONS is only open in the field). The item steps through the
  * pocket's items in the game's order, skipping unused ids.
  */
-static const char *const sGivePockets[] = {CTR_TEXT("ITEMS", "ITEMS", "OBJETS"), CTR_TEXT("POKE BALLS", "POKE BALLS", "POKÉ BALLS"), CTR_TEXT("TMS & HMS", "TMS & HMS", "CT ET CS"), CTR_TEXT("BERRIES", "BERRIES", "BAIES"), CTR_TEXT("KEY ITEMS", "KEY ITEMS", "OBJ. RARES")};
+static const char *const sGivePockets[] = {CTR_TEXT("ITEMS", "OBJETOS", "OBJETS", "OGGETTI"), CTR_TEXT("POKE BALLS", "POKé BALLS", "POKÉ BALLS", "POKé BALL"), CTR_TEXT("TMS & HMS", "MT Y MO", "CT ET CS", "MT E MN"), CTR_TEXT("BERRIES", "BAYAS", "BAIES", "BACCHE"), CTR_TEXT("KEY ITEMS", "OBJ. CLAVE", "OBJ. RARES", "STRUMENTI")};
 static const char *const sGiveCounts[] = {"1", "5", "10", "50", "99"};
 static const u8 sGiveCountValues[] = {1, 5, 10, 50, 99};
 
@@ -156,9 +162,9 @@ static void GiveItemsNow(void)
         PlaySE(SE_FAILURE);
 }
 
-static const char *const sGiveText[] = {CTR_TEXT("TAP TO GIVE", "TAP TO GIVE", "DONNER")};
-static const char *const sGiveOpenText[] = {CTR_TEXT("TAP TO OPEN", "TAP TO OPEN", "OUVRIR")};
-static const char *const sGiveBackText[] = {CTR_TEXT("BACK TO CHEATS", "BACK TO CHEATS", "RETOUR")};
+static const char *const sGiveText[] = {CTR_TEXT("TAP TO GIVE", "TOCA PARA DAR", "DONNER", "DAI")};
+static const char *const sGiveOpenText[] = {CTR_TEXT("TAP TO OPEN", "TOCA PARA ABRIR", "OUVRIR", "APRI")};
+static const char *const sGiveBackText[] = {CTR_TEXT("BACK TO CHEATS", "VOLVER A TRUCOS", "RETOUR", "INDIETRO")};
 
 /* The cells have a screen of their own, opened from the first. */
 static void GiveOpen(void)
@@ -203,49 +209,58 @@ static void OpenStereoEditor(void)
 const CtrExtra gCtrExtras[] =
 {
     /* Features add their lines here. */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D WORLD", "MUNDO 3D", "MONDE 3D"), "voxel_stereo", 3, 0, sVoxelStereo, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D DEPTH", "PROFUNDIDAD 3D", "PROFONDEUR 3D"), "voxel_depth", 7, 3, sVoxelDepths, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D WORLD", "MUNDO 3D", "MONDE 3D", "MONDO 3D"), "voxel_stereo", 3, 0, sVoxelStereo, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D DEPTH", "PROFUNDIDAD 3D", "PROFONDEUR 3D", "PROFOND. 3D"), "voxel_depth", 7, 3, sVoxelDepths, NULL, NULL, NULL},
     /* The battle's Pokémon as their depth planes (3ds_stereo_battle.c);
      * the key is read natively, so its fallback is ON there too. */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D BATTLE MONS", "POKÉMON 3D", "POKÉMON 3D"), "battle_mon_3d", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D BATTLE MONS", "POKÉMON 3D", "POKÉMON 3D", "POKÉMON 3D"), "battle_mon_3d", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
     /* The 3D battle's depths, read natively each frame (fallbacks there too). */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE BACK", "FONDO COMBATE", "FOND COMBAT"), "battle_back_depth", 6, 2, sBattleBacks, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE MONS", "POKÉMON COMBATE", "POKÉMON COMBAT"), "battle_mon_depth", 5, 2, sBattleMons, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("MON PLANES", "PLANOS POKÉMON", "PLANS POKÉMON"), "battle_plane_spread", 6, 2, sPlaneSpreads, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("PLANES SIT", "POSICIÓN PLANOS", "POSITION PLANS"), "battle_plane_pivot", 3, 1, sPlanePivots, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("SPEED", "SPEED", "VITESSE"), "speed", 0, 0, NULL, NULL, SpeedStep, SpeedText},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("EXP FOR CATCHING", "EXP FOR CATCHING", "EXP. CAPTURE"), "exp_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PARTY EXP SHARE", "PARTY EXP SHARE", "MULTI EXP."), "exp_share", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("TRADE EVO LV. 40", "TRADE EVO LV. 40", "ÉVOL. NIV. 40"), "trade_evo", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("HMS WITHOUT MOVE", "HMS WITHOUT MOVE", "CS SANS CAP."), "field_hms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("VISIBLE WILD", "VISIBLE WILD", "SAUVAGES"), "visible_wild", 4, 0, sVisibleWild, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("IVS AND EVS", "IVS AND EVS", "IV ET EV"), "ivs_evs", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("REPEL PROMPT", "REPEL PROMPT", "RAPPEL REPOUSSE"), "repel_prompt", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("INFINITE TMS", "INFINITE TMS", "CT INFINIES"), "infinite_tms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("RUN INDOORS", "RUN INDOORS", "COURSE INTÉR."), "run_indoors", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE BACK", "FONDO COMBATE", "FOND COMBAT", "SFONDO LOTTA"), "battle_back_depth", 6, 2, sBattleBacks, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE MONS", "POKÉMON COMBATE", "POKÉMON COMBAT", "POKÉMON LOTTA"), "battle_mon_depth", 5, 2, sBattleMons, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("MON PLANES", "PLANOS POKÉMON", "PLANS POKÉMON", "PIANI POKÉMON"), "battle_plane_spread", 6, 2, sPlaneSpreads, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("PLANES SIT", "POSICIÓN PLANOS", "POSITION PLANS", "POSIZ. PIANI"), "battle_plane_pivot", 3, 1, sPlanePivots, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("SPEED", "VELOC. JUEGO", "VITESSE", "VELOCITA"), "speed", 0, 0, NULL, NULL, SpeedStep, SpeedText},
+    /* The game and the music keep real time on a slow frame; the sound
+     * engine mixes on the DSP's clock (3ds_platform.c, 3ds_audio.c). */
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("REAL-TIME PACING", "RITMO REAL", "RYTHME RÉEL", "RITMO REALE"), "audio_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("EXP FOR CATCHING", "EXP AL CAPTURAR", "EXP. CAPTURE", "ESP. CATTURA"), "exp_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PARTY EXP SHARE", "EXP TODO EQUIPO", "MULTI EXP.", "CONDIV. ESP."), "exp_share", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("TRADE EVO LV. 40", "EVOL. INTERC. N40", "ÉVOL. NIV. 40", "SCAMBIO LIV. 40"), "trade_evo", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("HMS WITHOUT MOVE", "MO SIN APRENDER", "CS SANS CAP.", "MN SENZA MOSSA"), "field_hms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("VISIBLE WILD", "SALVAJES VISIBLES", "SAUVAGES", "SELVATICI"), "visible_wild", 4, 0, sVisibleWild, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("IVS AND EVS", "IV Y EV", "IV ET EV", "IV ED EV"), "ivs_evs", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("REPEL PROMPT", "AVISO REPELENTE", "RAPPEL REPOUSSE", "AVVISO REPELL."), "repel_prompt", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("INFINITE TMS", "MT INFINITAS", "CT INFINIES", "MT INFINITE"), "infinite_tms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("RUN INDOORS", "CORRER DENTRO", "COURSE INTÉR.", "CORRI DENTRO"), "run_indoors", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
     /* Moves physical or special by their own category, as from Gen IV on
      * (pokemon.c, MoveSplitEnabled). */
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PHYS/SPEC SPLIT", "PHYS/SPEC SPLIT", "PHYS./SPÉC."), "move_split", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    /* On ENHANCEMENTS' second screen: the first one is full. */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("3D SPRITE EDITOR", "EDITOR 3D", "ÉDITEUR 3D"), "stereo_edit", 0, 0, sStereoEditText, OpenStereoEditor, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("WILD ENCOUNTERS", "WILD ENCOUNTERS", "RENCONTRES"), "encounter_rate", 5, 0, sEncounterRate, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("SHINY ODDS", "SHINY ODDS", "CHROMATIQUES"), "shiny_odds", 6, 0, sShinyOdds, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PHYS/SPEC SPLIT", "FISICO / ESPECIAL", "PHYS./SPÉC.", "FIS./SPEC."), "move_split", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("WILD ENCOUNTERS", "ENC. SALVAJES", "RENCONTRES", "INCONTRI"), "encounter_rate", 5, 0, sEncounterRate, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("SHINY ODDS", "PROB. VARIOCOLOR", "CHROMATIQUES", "PROB. SHINY"), "shiny_odds", 6, 0, sShinyOdds, NULL, NULL, NULL},
     /* Only wild Pokémon with depth planes, to try the 3D battle anywhere
      * (CtrStereoMonGame_WildSpecies). */
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("3D WILD ONLY", "SOLO SALVAJES 3D", "SAUVAGES 3D"), "wild_3d", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("ALWAYS CATCH", "ALWAYS CATCH", "CAPTURE SÛRE"), "always_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("INSTANT VICTORY", "INSTANT VICTORY", "VICTOIRE IMM."), "instant_victory", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("FAST EGGS", "FAST EGGS", "OEUFS RAPIDES"), "fast_eggs", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("INFINITE MONEY", "INFINITE MONEY", "ARGENT INFINI"), "infinite_money", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("HOENN DEX FULL", "HOENN DEX FULL", "DEX HOENN PLEIN"), "dex_hoenn", 0, 0, sDexDone, CompleteHoennDex, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("NATIONAL DEX ON", "NATIONAL DEX ON", "DEX NAT. ACTIF"), "dex_national_on", 0, 0, sDexDone, UnlockNationalDex, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("NATIONAL DEX FULL", "NATIONAL DEX FULL", "DEX NAT. PLEIN"), "dex_national", 0, 0, sDexDone, CompleteNationalDex, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("GIVE ITEMS", "GIVE ITEMS", "DONNER OBJETS"), "give_open", 0, 0, sGiveOpenText, GiveOpen, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE ITEMS", "GIVE ITEMS", "DONNER OBJETS"), "give_back", 0, 0, sGiveBackText, GiveBack, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("POCKET", "POCKET", "POCHE"), "give_pocket", 5, 0, sGivePockets, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("ITEM", "ITEM", "OBJET"), "give_item", 0, 0, NULL, NULL, GiveItemStep, GiveItemText},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("HOW MANY", "HOW MANY", "QUANTITÉ"), "give_count", 5, 0, sGiveCounts, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE", "GIVE", "DONNER"), "give_now", 0, 0, sGiveText, GiveItemsNow, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("3D WILD ONLY", "SOLO SALVAJES 3D", "SAUVAGES 3D", "SOLO SELV. 3D"), "wild_3d", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("ALWAYS CATCH", "CAPTURA SEGURA", "CAPTURE SÛRE", "PRESA SICURA"), "always_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("INSTANT VICTORY", "VICTORIA INSTANT.", "VICTOIRE IMM.", "VITT. IMM."), "instant_victory", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("FAST EGGS", "HUEVOS RAPIDOS", "OEUFS RAPIDES", "UOVA VELOCI"), "fast_eggs", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("INFINITE MONEY", "DINERO INFINITO", "ARGENT INFINI", "SOLDI INFINITI"), "infinite_money", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("HOENN DEX FULL", "DEX HOENN LLENA", "DEX HOENN PLEIN", "DEX HOENN PIENO"), "dex_hoenn", 0, 0, sDexDone, CompleteHoennDex, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("NATIONAL DEX ON", "DEX NACIONAL ACT.", "DEX NAT. ACTIF", "DEX NAZ. ATTIVO"), "dex_national_on", 0, 0, sDexDone, UnlockNationalDex, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("NATIONAL DEX FULL", "DEX NACIONAL LLENA", "DEX NAT. PLEIN", "DEX NAZ. PIENO"), "dex_national", 0, 0, sDexDone, CompleteNationalDex, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("GIVE ITEMS", "DAR OBJETOS", "DONNER OBJETS", "DAI OGGETTI"), "give_open", 0, 0, sGiveOpenText, GiveOpen, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE ITEMS", "DAR OBJETOS", "DONNER OBJETS", "DAI OGGETTI"), "give_back", 0, 0, sGiveBackText, GiveBack, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("POCKET", "BOLSILLO", "POCHE", "TASCA"), "give_pocket", 5, 0, sGivePockets, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("ITEM", "OBJETO", "OBJET", "OGGETTO"), "give_item", 0, 0, NULL, NULL, GiveItemStep, GiveItemText},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("HOW MANY", "CANTIDAD", "QUANTITÉ", "QUANTI"), "give_count", 5, 0, sGiveCounts, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE", "DAR", "DONNER", "DAI"), "give_now", 0, 0, sGiveText, GiveItemsNow, NULL, NULL},
+    /* The clock (3ds_daynight.c): outdoor light by the hour, its speed, the
+     * wild Pokémon of the hour (3ds_encounters.c) and the bottom screen's
+     * clock. ENHANCEMENTS is full, twelve cells a screen: its second. */
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("DAY / NIGHT", "DIA / NOCHE", "JOUR / NUIT", "GIORNO / NOTTE"), "day_night", 2, 0, sDayNight, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("CLOCK SPEED", "VELOC. RELOJ", "VITESSE HORLOGE", "VELOC. OROLOGIO"), "clock_speed", CTR_DAYNIGHT_SPEED_COUNT, 0, sClockSpeeds, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("WILD POKEMON", "POKéMON SALV.", "POKÉMON SAUV.", "POKéMON SELV."), "timed_encounters", 2, 0, sTimedEncounters, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SHOW CLOCK", "VER RELOJ", "VOIR HORLOGE", "MOSTRA OROLOGIO"), "show_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("3D SPRITE EDITOR", "EDITOR 3D", "ÉDITEUR 3D", "EDITOR 3D"), "stereo_edit", 0, 0, sStereoEditText, OpenStereoEditor, NULL, NULL},
     {0},
 };
 
