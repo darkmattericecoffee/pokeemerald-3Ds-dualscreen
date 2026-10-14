@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates 3ds_port/src/3ds_edit_sprites.h: the plane editor's colour tool
-sprites (the pencil, the bucket, the hand, the magnifier), drawn by hand as
+sprites (the pencil, the eraser, the bucket, the hand, the magnifier), drawn by hand as
 16x16 PNGs in tools/sprite_editor/sprites/.
 
     python3 tools/sprite_editor/gen_sprites.py
@@ -20,7 +20,7 @@ OUT = os.path.join(ROOT, "3ds_port", "src", "3ds_edit_sprites.h")
 SIZE = 16
 CLEAR = 0xF81F
 # Enum name, file: in the order the header lists them.
-SPRITES = [("SPRITE_PENCIL", "pencil"), ("SPRITE_BUCKET", "bucket"), ("SPRITE_HAND", "hand"), ("SPRITE_ZOOM", "zoom"), ("SPRITE_LASSO", "lasso"), ("SPRITE_SAVE", "save")]
+SPRITES = [("SPRITE_PENCIL", "pencil"), ("SPRITE_ERASER", "eraser"), ("SPRITE_BUCKET", "bucket"), ("SPRITE_HAND", "hand"), ("SPRITE_ZOOM", "zoom"), ("SPRITE_LASSO", "lasso"), ("SPRITE_SAVE", "save")]
 
 
 def load_png(path):

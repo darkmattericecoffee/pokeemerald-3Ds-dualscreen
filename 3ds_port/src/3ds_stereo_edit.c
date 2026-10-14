@@ -17,9 +17,12 @@
  * with the brush size over them while the pencil is in hand. A tool
  * paints planes, never pixels: the picture is the game's, a plane number
  * is all a pixel has, so painting a pixel into one plane takes it out of
- * the other and there is no eraser.
+ * the other; the eraser moves pixels to the plane of their neighbours.
  *
  *  PENCIL  the pixels under the stylus join the plane being edited.
+ *  ERASER  the pixels under the stylus leave their plane for the one most
+ *          of their neighbours are on: stray pixels of another plane go
+ *          back into the plane around them.
  *  LASSO   a tap: the colour cell under the stylus joins the plane (same
  *          colour, bounded by the outline and transparency, with the outline
  *          that touches it); a loop: every pixel inside it does.
@@ -110,8 +113,9 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define TOOL_X 4
 #define TOOL_W 30
 #define TOOL_H 30
-#define TOOL_STEP 36
-#define TOOL_Y0 ((BAR_Y + BAR_H + BOT_Y) / 2 - ((T_COUNT - 1) * TOOL_STEP - (TOOL_STEP - TOOL_H)) / 2)
+#define TOOL_STEP 34
+/* The tools above the hand (every one but PAN), centred in the height. */
+#define TOOL_Y0 ((BAR_Y + BAR_H + BOT_Y) / 2 - ((T_COUNT - 2) * TOOL_STEP - (TOOL_STEP - TOOL_H)) / 2)
 #define SIZE_X0 (TOOL_X + TOOL_W + 14)
 #define SIZE_X1 (SIZE_X0 + 72)
 #define SIZE_HOLD_FRAMES 18
@@ -153,7 +157,7 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 /* Unsaved changes go to the SD card this long after the last one. */
 #define AUTOSAVE_FRAMES 90
 
-enum { T_BRUSH, T_LASSO, T_FILL, T_PAN, T_COUNT };
+enum { T_BRUSH, T_ERASE, T_LASSO, T_FILL, T_PAN, T_COUNT };
 enum { B_OPACITY, B_GRID, B_COUNT };
 /* The pressed button's number: the tools', the right's, the bars'. */
 enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B };
@@ -194,8 +198,10 @@ enum { GRID_OFF, GRID_WHITE, GRID_BLACK };
 static const uint8_t sZooms[] = {3, 4, 5, 6, 8, 10};
 #define ZOOMS ((int)(sizeof(sZooms) / sizeof(sZooms[0])))
 #define SIZES 4
-static const uint8_t sOpacities[] = {15, 10, 6, 3};
-static const char *const sOpacityNames[] = {"75", "50", "30", "15"};
+/* MAX is the plane's colour outright, shaded by the pixel's brightness
+ * alone (DrawPicture): the Pokémon's own colours cannot blend in. */
+static const uint8_t sOpacities[] = {20, 12, 6, 3};
+static const char *const sOpacityNames[] = {"MAX", "60", "30", "15"};
 #define OPACITIES ((int)(sizeof(sOpacities) / sizeof(sOpacities[0])))
 /* The planes' colours, far to near (3ds_stereo_mon.h): the same for every
  * Pokémon, and the top screen's VIEW LAYERS uses them too. */
@@ -578,15 +584,46 @@ static void EndStroke(void)
     Changed();
 }
 
-static void SetPixel(unsigned i)
+static void SetPixelTo(unsigned i, unsigned plane)
 {
-    if (!Opaque(sE.frame, i) || GetPlane(sE.frame, i) == sE.layer) return;
-    PutPlane(sE.frame, i, sE.layer);
+    if (!Opaque(sE.frame, i) || GetPlane(sE.frame, i) == plane) return;
+    PutPlane(sE.frame, i, plane);
     BitSet(sE.changed, i);
     ++sE.strokeCount;
 }
 
-/* The brush at one picture pixel: a disc `size` pixels across. */
+static void SetPixel(unsigned i) { SetPixelTo(i, sE.layer); }
+
+/* The eraser at one pixel: it goes to the plane most of its neighbours
+ * (within ERASE_REACH, the nearer counting more) are on, other than its
+ * own; a pixel whose neighbours are all on its plane stays. As the pixels
+ * change under the stroke a stray patch is eaten from its edge inwards. */
+#define ERASE_REACH 3
+static void ErasePixel(unsigned i)
+{
+    unsigned own, votes[PLANES] = {0}, best = NONE, bestVotes = 0;
+    int x = (int)(i % DIM), y = (int)(i / DIM);
+
+    if (!Opaque(sE.frame, i)) return;
+    own = GetPlane(sE.frame, i);
+    for (int dy = -ERASE_REACH; dy <= ERASE_REACH; ++dy)
+        for (int dx = -ERASE_REACH; dx <= ERASE_REACH; ++dx)
+        {
+            int nx = x + dx, ny = y + dy, d = dx * dx + dy * dy;
+            unsigned p;
+
+            if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= DIM || ny >= DIM) continue;
+            if (!Opaque(sE.frame, (unsigned)(ny * DIM + nx))) continue;
+            p = GetPlane(sE.frame, (unsigned)(ny * DIM + nx));
+            if (p == NONE || p == own || p >= PLANES) continue;
+            votes[p] += (unsigned)(2 * ERASE_REACH * ERASE_REACH + 1 - d);
+        }
+    for (unsigned p = 0; p < PLANES; ++p)
+        if (votes[p] > bestVotes) { bestVotes = votes[p]; best = p; }
+    if (best != NONE) SetPixelTo(i, best);
+}
+
+/* The brush (or the eraser) at one picture pixel: a disc `size` pixels across. */
 static void BrushAt(int x, int y)
 {
     int r = (int)sE.size - 1;
@@ -597,7 +634,8 @@ static void BrushAt(int x, int y)
             int px = x + dx, py = y + dy;
 
             if (px < 0 || py < 0 || px >= DIM || py >= DIM || dx * dx + dy * dy > r * r + r) continue;
-            SetPixel((unsigned)(py * DIM + px));
+            if (sE.tool == T_ERASE) ErasePixel((unsigned)(py * DIM + px));
+            else SetPixel((unsigned)(py * DIM + px));
         }
 }
 
@@ -1328,7 +1366,8 @@ static int ToolAt(int x, int y)
         int bx, by;
 
         ToolButton(t, &bx, &by);
-        if (x >= bx && x < bx + TOOL_W && y >= by && y < by + TOOL_H) return t;
+        /* The pencil's reach takes in the size handle beside it. */
+        if (x >= bx && x < bx + TOOL_W + (t == T_BRUSH ? 9 : 0) && y >= by && y < by + TOOL_H) return t;
     }
     return -1;
 }
@@ -1519,7 +1558,7 @@ static void TouchEdit(const CtrInput *in)
         {
             int px, py;
 
-            BeginStroke("brush");
+            BeginStroke(sE.tool == T_ERASE ? "erase" : "brush");
             if (PictureAt(x, y, &px, &py)) BrushLine(px, py);
         }
         sE.dirtyDraw = true;
@@ -1588,8 +1627,9 @@ static void TouchEdit(const CtrInput *in)
             }
             else
                 sE.lastX = sE.lastY = -1;
-            /* The top screen follows the stroke as it goes. */
-            if (sE.strokeCount && sE.tick % 8 == 0) CtrStereoMon_Recompose();
+            /* The top screen follows once the stylus lifts (EndStroke ->
+             * Changed): composing the stack again mid-stroke restarted the
+             * whole texture each time, lagging both screens. */
         }
     }
     if (in->touchUp || (!in->touchActive && sE.touching))
@@ -1841,6 +1881,16 @@ static void DrawPicture(void)
             if (sx + s <= CAN_X || sx >= RIGHT_X) continue;
             if (pic[i] == 0) c = ((x >> 2) + (y >> 2)) & 1 ? bg0 : bg1;
             else if ((p = GetPlane(sE.frame, i)) == NONE) c = (x + y) & 1 ? red : redDark;
+            else if (k >= 20)
+            {
+                /* MAX: the plane's colour outright, the pixel's brightness
+                 * shading it (the outline stays dark), the plane edited
+                 * full and the others a little darker. */
+                unsigned l = Luma(pic[i]) + 64; /* 64..320 */
+
+                c = Mix(sPlaneColours[p], 0, l > 320 ? 320 : l, 320);
+                if (p != sE.layer) c = Mix(out, c, 1, 4);
+            }
             else if (p == sE.layer)
             {
                 /* The plane edited: its colour at full strength, lifted. */
@@ -2096,8 +2146,28 @@ static void DrawBrushDot(int cx, int cy)
 {
     int r = BrushDotRadius();
 
+    DrawDisc(cx, cy, r + 1, Rgb(31, 63, 31));
     DrawDisc(cx, cy, r, Mix(sPlaneColours[sE.layer], Rgb(0, 0, 0), 1, 2));
     DrawDisc(cx, cy, r - 1, sPlaneColours[sE.layer]);
+}
+
+/* The drawer's handle beside the pencil: the four brush sizes as dots, a
+ * pixel to four across, one over the other (the size in hand lit), so the
+ * pencil reads as something that opens: a tap for the next size, a hold
+ * for the slider. */
+static void DrawSizeHandle(int x, int y)
+{
+    const uint16_t rim = Rgb(1, 2, 2);
+    int cy = y + TOOL_H / 2 - 9;
+
+    FillMix(x, y + TOOL_H / 2 - 12, 7, 24, rim, 1, 2);
+    for (int s = 0; s < SIZES; ++s, cy += 6)
+    {
+        int w = s + 1;
+        uint16_t c = s + 1 == sE.size ? Rgb(31, 63, 31) : Mix(sPlaneColours[sE.layer], Rgb(31, 63, 31), 1, 2);
+
+        CtrBottomDraw_Fill(x + 3 - w / 2, cy - w / 2, w, w, c);
+    }
 }
 
 /* The brush size's slider, open to the pencil's right while the pencil is
@@ -2118,7 +2188,7 @@ static void DrawSizeSlider(void)
  * dot behind it; the grid's button at the bottom right. */
 static void DrawTools(void)
 {
-    static const int sprites[T_COUNT] = {SPRITE_PENCIL, SPRITE_LASSO, SPRITE_BUCKET, SPRITE_HAND};
+    static const int sprites[T_COUNT] = {SPRITE_PENCIL, SPRITE_ERASER, SPRITE_LASSO, SPRITE_BUCKET, SPRITE_HAND};
 
     for (int t = 0; t < T_COUNT; ++t)
     {
@@ -2129,6 +2199,7 @@ static void DrawTools(void)
         DrawRoundPlate(x + TOOL_W / 2, y + TOOL_H / 2, TOOL_W / 2, on, on || sE.pressed == P_TOOL + t);
         if (t == T_BRUSH) DrawBrushDot(x + TOOL_W / 2, y + TOOL_H / 2);
         Sprite(sprites[t], x + (TOOL_W - SPRITE_SIZE) / 2, y + (TOOL_H - SPRITE_SIZE) / 2);
+        if (t == T_BRUSH && !sE.sizeSlider) DrawSizeHandle(x + TOOL_W + 1, y);
     }
     if (sE.sizeSlider) DrawSizeSlider();
     DrawZoomSlider();
@@ -2220,16 +2291,38 @@ static void RoundFill(int x, int y, int w, int h, uint16_t c)
 /* A tab across half the column: the side shown in front, in the column's
  * own green and open onto it; the other behind, a shade darker and a
  * pixel lower, a soft shadow line where the front one overlaps it. */
+/* A box with only its top corners rounded off (RoundFill's cut), its
+ * bottom edge straight: a tab, not a button. */
+static void TabFill(int x, int y, int w, int h, uint16_t c)
+{
+    static const int8_t cut[3][2] = {{0, 0}, {1, 0}, {0, 1}};
+    uint16_t keep[2][3];
+
+    for (int k = 0; k < 3; ++k)
+    {
+        keep[0][k] = sCanvas[(x + cut[k][0]) * H + (H - 1 - (y + cut[k][1]))];
+        keep[1][k] = sCanvas[(x + w - 1 - cut[k][0]) * H + (H - 1 - (y + cut[k][1]))];
+    }
+    CtrBottomDraw_Fill(x, y, w, h, c);
+    for (int k = 0; k < 3; ++k)
+    {
+        Px(x + cut[k][0], y + cut[k][1], keep[0][k]);
+        Px(x + w - 1 - cut[k][0], y + cut[k][1], keep[1][k]);
+    }
+}
+
 static void DrawTab(int x, const char *label, bool front, bool other, uint16_t panel)
 {
     /* The column's green in front; a darker green behind (duller still
-     * when the pack has no other side). */
+     * when the pack has no other side). The bottoms are straight, as a
+     * folder's: the front tab open onto the column below it, the back one
+     * standing on the ledge. */
     const uint16_t rim = Rgb(1, 2, 2), dark = Rgb(10, 38, 14);
     const uint16_t face = front ? panel : other ? dark : Mix(dark, panel, 1, 2);
     int y = TAB_Y + (front ? 0 : 2), h = TAB_H - (front ? 0 : 2);
 
-    RoundFill(x, y, TAB_W, h + 2, rim);
-    RoundFill(x + 1, y + 1, TAB_W - 2, h + 1, face);
+    TabFill(x, y, TAB_W, h + 1, rim);
+    TabFill(x + 1, y + 1, TAB_W - 2, h, face);
     if (front) CtrBottomDraw_Fill(x + 1, y + h, TAB_W - 2, 3, face);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, x + TAB_W / 2, y, front ? CTR_DRAW_DARK : CTR_DRAW_WHITE);
 }
@@ -2274,6 +2367,7 @@ static void DrawRight(void)
     DrawTintCircles(TINT_X + 2, TINT_Y);
     snprintf(label, sizeof(label), "%s", sOpacityNames[sE.opacity]);
     CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, label, TINT_X + 20, TINT_Y + 2, CTR_DRAW_DARK);
+    if (sOpacities[sE.opacity] < 20)
     {
         /* A per cent sign, the game's font having none. */
         int px = TINT_X + 20 + CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, label) + 2, py = TINT_Y + 5;
@@ -2585,6 +2679,8 @@ static const Step sScript[] = {
     {180, 181, TOOL_TAP_X, TOOL_TAP_Y(T_BRUSH), 0},            /* its next size */
     {184, 214, TOOL_TAP_X, TOOL_TAP_Y(T_BRUSH), 0},            /* held: the size's slider */
     {222, 242, 0, 0, 0},                                       /* a stroke (drawn below) */
+    {244, 245, TOOL_TAP_X, TOOL_TAP_Y(T_ERASE), 0},            /* ERASER */
+    {246, 249, 0, 0, 0},                                       /* over the stroke's start (drawn below) */
     {250, 251, 0, 0, CTR_KEY_UP},                              /* zoom in */
     {256, 257, GRID_X + 12, GRID_Y + 12, 0},                   /* the grid's next look */
     {259, 260, GRID_X + 12, GRID_Y + 12, 0},                   /* and the next */
@@ -2614,7 +2710,7 @@ static const Step sScript[] = {
     {480, 481, 0, 0, CTR_KEY_X},                               /* the battle view */
     {486, 487, 0, 0, CTR_KEY_Y},                               /* animated */
 };
-static const uint16_t sDumpTicks[] = {30, 75, 105, 160, 172, 183, 200, 219, 247, 255, 265, 287, 291, 300, 308, 320, 326, 346, 352, 364, 369, 398, 420, 460, 520};
+static const uint16_t sDumpTicks[] = {30, 75, 105, 160, 172, 183, 200, 219, 243, 249, 255, 265, 287, 291, 300, 308, 320, 326, 346, 352, 364, 369, 398, 420, 460, 520};
 
 static void TestDump(void)
 {
@@ -2664,6 +2760,12 @@ static const CtrInput *TestInput(const CtrInput *real)
         else if (s->from == 222)
         {
             x = CAN_X + 60 + (int)(sE.tick - 222) * 5;
+            y = 150;
+        }
+        else if (s->from == 246)
+        {
+            /* Over the stroke where it crossed the body. */
+            x = CAN_X + 120 + (int)(sE.tick - 246) * 5;
             y = 150;
         }
         else if (s->from == 270)

@@ -171,6 +171,15 @@ static int sDepth = -1;
 static int sGroups = -1;
 static bool sAnimate = true;
 static uint32_t sTick;
+/* Whether sDrawn (CtrStereoMon_NeedsFrame) describes the frame on the
+ * screen, and whether this frame's tick has been counted already. */
+static bool sDrawnValid, sTicked;
+/* Moves on with every word redrawn on the help sheet (CtrStereoMon_HelpCell). */
+static unsigned sHelpVersion;
+/* Sprite pixels the gallery's and the editor's backdrop lies behind the
+ * farthest plane: a backdrop at the screen's depth stood in front of the
+ * far planes. */
+#define BACKDROP_BEHIND 6.0f
 
 static bool LoadEdit(uint16_t national);
 
@@ -1071,6 +1080,7 @@ static void ComposeSome(void)
 void CtrStereoMon_Idle(void)
 {
     sTexReady = false;
+    sDrawnValid = false;
 }
 
 /* ── Text: a 3x5 font, drawn as rectangles ──────────────────────────── */
@@ -1174,6 +1184,19 @@ static void DrawPlanes(float sign, float slider, unsigned frame, const C2D_Image
     const float depth = slider * percent / 100.0f * PARALLAX * DepthOf(sId);
 
     DrawStack(CENTRE_X - DIM / 2 * scale, CENTRE_Y - DIM / 2 * scale, scale, sign * depth, frame, tint);
+}
+
+/* The screen pixels a backdrop BACKDROP_BEHIND sprite pixels behind the
+ * farthest plane of DrawPlanes' stack moves for this eye. */
+static float BackdropShift(float sign, float slider, float scale)
+{
+    const unsigned groups = Groups();
+    const int percent = sEditing ? CtrStereoMon_Depth() : !sGallery && sDepth > DEX_DEPTH_MAX ? DEX_DEPTH_MAX : sDepth;
+    const float depth = slider * percent / 100.0f * PARALLAX * DepthOf(sId);
+    const float pivot = PIVOT_FRACTION * (groups - 1), spacing = groups > 1 ? DEPTH_SPAN / (float)(groups - 1) : 0.0f;
+
+    (void)scale;
+    return sign * depth * (-(pivot * spacing) - BACKDROP_BEHIND);
 }
 
 
@@ -1321,6 +1344,7 @@ void CtrStereoMon_HelpCell(unsigned cell, const uint8_t *alpha, unsigned width)
     unsigned cx, cy;
 
     if (cell >= CTR_HELP_CELLS || alpha == NULL || sHelpFailed) return;
+    ++sHelpVersion;
     if (!sHelpAllocated)
     {
         if (!C3D_TexInit(&sHelpTex, HELP_TEX_W, HELP_TEX_H, GPU_LA4))
@@ -1589,10 +1613,17 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
         DrawControls();
         return;
     }
-    /* The grid at the screen's depth, a shadow under the feet. */
-    C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, C2D_Color32(62, 64, 70, 255));
-    for (int gx = 8; gx < CTR_GAME_WIDTH; gx += 24) C2D_DrawRectSolid(gx, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(80, 82, 90, 255));
-    for (int gy = 10; gy < CTR_GAME_HEIGHT; gy += 24) C2D_DrawRectSolid(0, gy, 0, CTR_GAME_WIDTH, 1, C2D_Color32(80, 82, 90, 255));
+    /* The grid behind the farthest plane (BackdropShift), drawn wider than
+     * the screen so its displaced edge still has picture; a shadow under
+     * the feet at the screen's depth. */
+    {
+        const float back = BackdropShift(sign, slider, SCALE);
+
+        C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, C2D_Color32(62, 64, 70, 255));
+        for (int gx = 8 - 24; gx < CTR_GAME_WIDTH + 24; gx += 24)
+            C2D_DrawRectSolid(gx + back, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(80, 82, 90, 255));
+        for (int gy = 10; gy < CTR_GAME_HEIGHT; gy += 24) C2D_DrawRectSolid(0, gy, 0, CTR_GAME_WIDTH, 1, C2D_Color32(80, 82, 90, 255));
+    }
     {
         int scx = (int)(CENTRE_X + ((sBoxLeft + sBoxRight + 1) / 2.0f - DIM / 2) * SCALE);
         int scy = (int)(CENTRE_Y - DIM / 2 * SCALE + (sBoxBottom + 1) * SCALE) - 2;
@@ -1652,13 +1683,19 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
         C2D_Flush();
         return;
     }
-    /* A quiet backdrop at the screen's depth, and a floor the stack stands on. */
-    C2D_DrawRectangle(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT,
-                      C2D_Color32(22, 26, 40, 255), C2D_Color32(22, 26, 40, 255),
-                      C2D_Color32(8, 9, 14, 255), C2D_Color32(8, 9, 14, 255));
-    C2D_DrawRectangle(0, CENTRE_Y + DIM * SCALE / 2 - 6, 0, CTR_GAME_WIDTH, 12,
-                      C2D_Color32(40, 46, 70, 0), C2D_Color32(40, 46, 70, 0),
-                      C2D_Color32(40, 46, 70, 160), C2D_Color32(40, 46, 70, 160));
+    /* A quiet backdrop behind the farthest plane (BackdropShift), drawn
+     * wider than the screen so its displaced edge still has picture, and a
+     * floor the stack stands on, at the same depth. */
+    {
+        const float back = BackdropShift(sign, slider, SCALE);
+
+        C2D_DrawRectangle(back - 24, 0, 0, CTR_GAME_WIDTH + 48, CTR_GAME_HEIGHT,
+                          C2D_Color32(22, 26, 40, 255), C2D_Color32(22, 26, 40, 255),
+                          C2D_Color32(8, 9, 14, 255), C2D_Color32(8, 9, 14, 255));
+        C2D_DrawRectangle(back - 24, CENTRE_Y + DIM * SCALE / 2 - 6, 0, CTR_GAME_WIDTH + 48, 12,
+                          C2D_Color32(40, 46, 70, 0), C2D_Color32(40, 46, 70, 0),
+                          C2D_Color32(40, 46, 70, 160), C2D_Color32(40, 46, 70, 160));
+    }
     DrawPlanes(sign, slider, frame, NULL, SCALE);
     if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "NO.%03u %s", sId, sName);
     else snprintf(line, sizeof(line), "%s", sName);
@@ -1677,19 +1714,101 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
     C2D_Flush();
 }
 
+/* The frame the picture shows at tick `tick`: the gallery's blink, or while
+ * editing the frame being edited (still, unless the editor animates). */
+static unsigned FrameAt(uint32_t tick)
+{
+    unsigned frame = sAnimate && sFrames > 1 && tick % ANIM_PERIOD < ANIM_HOLD ? 1 : 0;
+
+    if (sEditing && !sEditAnimate) frame = sEditFrame < sFrames ? sEditFrame : 0;
+    else if (sEditing && sFrames) frame = (tick / EDIT_ANIM_STEP) % sFrames;
+    return frame;
+}
+
+/*
+ * Everything a frame of the viewer depends on, so that the compositor can
+ * leave the top screen as it is (and the GPU asleep) while none of it has
+ * changed: the picture and its planes, the frame, the slider, the edit
+ * view, the words on the help sheet.
+ */
+typedef struct
+{
+    uint16_t id;
+    uint8_t frame, groups, editing, editPlane, editOutline, edited, gallery, stereo;
+    uint8_t editBattle, editLayers, editControls, backdrop, mate, final, undrawn;
+    int depth, slider, boxLeft, boxRight, boxBottom;
+    uint32_t mark;
+    unsigned planesVersion, composed, toCompose, helpVersion, frames;
+    bool texReady;
+    char name[CTR_STEREO_MON_NAME];
+} DrawKey;
+
+static DrawKey sDrawn;
+
+static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
+{
+    memset(k, 0, sizeof(*k));
+    k->id = sId;
+    k->frame = (uint8_t)FrameAt(tick);
+    k->groups = (uint8_t)Groups();
+    k->editing = sEditing;
+    k->editPlane = (uint8_t)sEditPlane;
+    k->editOutline = sEditOutline;
+    k->edited = sEdited;
+    k->gallery = sGallery;
+    k->stereo = stereo;
+    k->editBattle = sEditBattle;
+    k->editLayers = sEditLayers;
+    k->editControls = sEditControls;
+    k->backdrop = sBackdropReady;
+    k->mate = sMateReady;
+    k->final = sMeta.finalized;
+    k->undrawn = sUndrawn;
+    k->depth = sEditing ? CtrStereoMon_Depth() : sDepth;
+    k->slider = (int)(slider * 256.0f + 0.5f);
+    k->boxLeft = sBoxLeft;
+    k->boxRight = sBoxRight;
+    k->boxBottom = sBoxBottom;
+    k->mark = sEditMark;
+    k->planesVersion = sPlanesVersion;
+    k->composed = sComposed;
+    k->toCompose = sToCompose;
+    k->helpVersion = sHelpVersion;
+    k->frames = sFrames;
+    k->texReady = sTexReady;
+    memcpy(k->name, sName, sizeof(k->name));
+}
+
+bool CtrStereoMon_NeedsFrame(float slider, bool stereo)
+{
+    DrawKey next;
+
+    if (!sActive) return false;
+    /* The frame's tick, counted here when the frame is held (Draw counts
+     * it otherwise), so the gallery's blink and the editor's animation keep
+     * their time whether or not frames are drawn. */
+    if (!sTicked) ++sTick;
+    sTicked = true;
+    if (!sDrawnValid || !sTexReady || sComposed < sToCompose) return true;
+    if (slider < 0.0f) slider = 0.0f;
+    if (slider > 1.0f) slider = 1.0f;
+    MakeKey(&next, sTick, slider, stereo);
+    return memcmp(&next, &sDrawn, sizeof(next)) != 0;
+}
+
 void CtrStereoMon_Draw(void *leftTarget, void *rightTarget, float slider)
 {
     unsigned frame;
 
     if (!sActive) return;
     if ((!sTexReady || sComposed < sToCompose) && TextureReady()) ComposeSome();
-    ++sTick;
-    frame = sAnimate && sFrames > 1 && sTick % ANIM_PERIOD < ANIM_HOLD ? 1 : 0;
-    /* Editing: the frame being edited, still, unless the editor animates. */
-    if (sEditing && !sEditAnimate) frame = sEditFrame < sFrames ? sEditFrame : 0;
-    else if (sEditing) frame = (sTick / EDIT_ANIM_STEP) % sFrames;
+    if (!sTicked) ++sTick;
+    sTicked = false;
+    frame = FrameAt(sTick);
     if (slider < 0.0f) slider = 0.0f;
     if (slider > 1.0f) slider = 1.0f;
+    MakeKey(&sDrawn, sTick, slider, rightTarget != NULL);
+    sDrawnValid = true;
     /* The left eye sees what is nearer than the screen shifted right. */
     DrawEye((C3D_RenderTarget *)leftTarget, rightTarget ? 1.0f : 0.0f, slider, frame);
     if (rightTarget)

@@ -9803,6 +9803,28 @@ void CtrVideo_Present(void)
         ++sStats.frames;
         return;
     }
+    /* The stereoscopic Pokémon viewer owns the top screen: in the field (its
+     * gallery and editor) or beside the Pokédex on the bottom screen. In the
+     * field nothing else is composed (below), and while none of what it
+     * shows has changed since the last frame the GPU rests: the screen keeps
+     * the frame, which is what drains the battery least. */
+    bool mon = CtrStereoMon_Active();
+    if (mon && !bottom)
+    {
+#ifdef CTR_FORCE_SLIDER
+        float monSlider = CTR_FORCE_SLIDER;
+#else
+        float monSlider = CtrScenario_Slider(osGet3DSliderState());
+#endif
+        bool monStereo = sTopRight && monSlider > 0.0f && roundf(monSlider * CTR_STEREO_PIXELS) > 0.0f;
+
+        if (!CtrStereoMon_NeedsFrame(monStereo ? monSlider : 0.0f, monStereo))
+        {
+            gspWaitForVBlank();
+            ++sStats.frames;
+            return;
+        }
+    }
     /* Wait for previous GPU work before editing the atlas. C3D owns VBlank
      * pacing and swap: no gfxSwapBuffers/gspWaitForVBlank in this path. */
     /* Outside the frame, where deleting a render target may wait for the GPU. */
@@ -10060,7 +10082,8 @@ void CtrVideo_Present(void)
      * planes: holding them there is what kept the overworld's atlas out of
      * VRAM for good, the 2D picture standing in for it frame after frame. */
     /* Opt-in from the bottom screen's options (CtrSettings_Voxel). */
-    bool overworld = field && CtrSettings_Voxel() && CtrVoxel_IsAvailable();
+    /* Not while the viewer has the top screen: the world is not seen. */
+    bool overworld = field && !mon && CtrSettings_Voxel() && CtrVoxel_IsAvailable();
     /* The slider before the update: the world's eyes are set, and its
      * frustum widened to what they see, before it picks this frame's chunks.
      * Per eye the frame clears and splits twice: the chunk uploads leave the
@@ -10134,7 +10157,6 @@ void CtrVideo_Present(void)
     /* The stereoscopic Pokémon viewer owns the top screen: in the field (its
      * gallery) or beside the Pokédex on the bottom screen. Its depth takes
      * any slider position, and it is drawn whether or not the top is held. */
-    bool mon = CtrStereoMon_Active();
     if (!mon) CtrStereoMon_Idle();
     /* A 2D screen composed per eye walks every layer twice, which on an Old
      * 3DS is 30 fps in a menu. Without its planes it stays flat until they
@@ -10205,10 +10227,11 @@ void CtrVideo_Present(void)
         }
     }
     PORT_PROF_BEGIN(layers);
-    if (!voxel && !blank) LayersRender();
+    /* The viewer alone on the top screen needs no layers converted. */
+    if (!voxel && !blank && !(mon && !bottom)) LayersRender();
     /* Before anything is composed: it is drawn from within (ComposeBand). */
     sObjWin.ready = false;
-    if (!voxel && !blank && !bottom) ObjWindowCompose();
+    if (!voxel && !blank && !bottom && !mon) ObjWindowCompose();
     PORT_PROF_END(layers, PORT_PROF_LAYERS);
     PORT_PROF_BEGIN(draw);
 

@@ -157,6 +157,11 @@ void CtrStereoMon_Press(unsigned keys);
  * given back (Idle), after the GPU has finished with them.
  */
 void CtrStereoMon_Draw(void *leftTarget, void *rightTarget, float slider);
+/* Whether the next Draw would show anything different from the last (the
+ * picture, its planes, the frame, the slider, the edit view, the words):
+ * false, and the compositor can leave the top screen as it is. Counts the
+ * frame's tick, so it is asked once a frame, before Draw. */
+bool CtrStereoMon_NeedsFrame(float slider, bool stereo);
 /*
  * The Pokédex's backdrop behind the Pokémon: a 256x128 picture (the species'
  * battle terrain, decoded on the game side) given row by row as RGBA5551
@@ -202,7 +207,11 @@ void CtrStereoMon_SetEditing(bool editing, unsigned plane);
 /* The planes' colours (RGB565), the farthest first: four clashing,
  * saturated hues, like a UV checker map's, so that neighbouring planes never
  * look alike (blue, yellow, cyan, red: the nearest red). */
-#define CTR_STEREO_EDIT_COLOURS {0x201F, 0xFFE0, 0x07FF, 0xF800}
+/* Four hues a quarter turn apart, fully saturated, far to near: red,
+ * yellow, cyan, magenta. Each stands out from the others and from any
+ * Pokémon's own colours; a green and a blue read alike over a green one,
+ * and two blues alike anywhere. */
+#define CTR_STEREO_EDIT_COLOURS {0xF800, 0xFFE0, 0x07FF, 0xF81F}
 /* What the top screen shows while editing: the frame being edited (or the
  * animation, every frame for as long), the plane being edited outlined in
  * `mark` (RGB565), and the view: the colours, every pixel tinted with its

@@ -4635,6 +4635,27 @@ static void DrawExtraCell(const ViewState *s, int row, const CtrExtra *extra)
 }
 
 /* The tabs: SETTINGS (the options) and each page that has extras. */
+/*
+ * A tab: a plate with its top corners cut and its bottom square and open,
+ * so it stands on the strip's baseline like a folder's tab rather than
+ * sitting on it like a button. The chosen one is a little taller and
+ * reaches through the baseline into its page; the others stop above it.
+ */
+static void DrawTab(int x, int y, int w, int h, const PlateLook *p, bool8 pressed)
+{
+    FillRect(x + 1, y, w - 2, 1, p->o);
+    for (int j = 1; j < h; ++j)
+    {
+        bool8 top = j == 1 && !pressed;
+
+        Put(x, y + j, p->o);
+        Put(x + w - 1, y + j, p->o);
+        FillRect(x + 1, y + j, w - 2, 1, top ? p->h : p->f);
+    }
+    Put(x + 1, y + 1, p->o);
+    Put(x + w - 2, y + 1, p->o);
+}
+
 static void DrawOptionTabs(const ViewState *s)
 {
     static const char *const names[CTR_EXTRAS_PAGES] = {CTR_TEXT("SETTINGS", "SETTINGS", "RÉGLAGES"), CTR_TEXT("ENHANCEMENTS", "ENHANCEMENTS", "AMÉLIOR."), CTR_TEXT("CHEATS", "CHEATS", "ASTUCES")};
@@ -4652,8 +4673,14 @@ static void DrawOptionTabs(const ViewState *s)
         bool8 chosen = s->optPage == pages[i], pressed = s->pressed == HIT_PAGE + pages[i];
         int line = TAB_Y + 1 + (TAB_H - 4 - cap) / 2 + pressed;
 
-        DrawPlate(x0, TAB_Y, x1 - x0, TAB_H, chosen ? &sLook.chosen : &sLook.plate, 0, pressed);
         char label[24];
+
+        /* The baseline the tabs stand on; the chosen tab breaks through it. */
+        FillRect(x0 - (i == 0 ? 0 : 4), TAB_Y + TAB_H, x1 - x0 + (i == 0 ? 4 : 8), 1, sLook.plate.o);
+        if (chosen)
+            DrawTab(x0, TAB_Y, x1 - x0, TAB_H + 3, &sLook.chosen, pressed);
+        else
+            DrawTab(x0, TAB_Y + 2, x1 - x0, TAB_H - 2, &sLook.plate, pressed);
 
         /* "CHEATS 1/2" on a page shown twelve at a time. */
         if (chosen && PageSubs(pages[i]) > 1)
