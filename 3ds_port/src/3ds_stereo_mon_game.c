@@ -395,6 +395,11 @@ void CtrStereoMonGame_Frame(void)
         sOpenEditor = TRUE;
         sMask = 2;
     }
+    else if (sGallery && CtrStereoMonGame_TryBattleOn() && (down & CTR_KEY_START))
+    {
+        /* START in the editor's battle: run from it. */
+        CtrStereoMonGame_LeaveBattle();
+    }
     else if (sGallery && CtrStereoEdit_Active() && !CtrStereoMonGame_TryBattleOn())
     {
         /* The editor has the keys; it leaves the gallery itself. In its

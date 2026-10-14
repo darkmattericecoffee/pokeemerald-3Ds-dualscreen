@@ -92,10 +92,6 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define REDO_X (CAN_X + CAN_W / 2 + 1)
 #define SAVE_W 26
 #define SAVE_X (RIGHT_X - 4 - SAVE_W)
-/* The battle (a Poké Ball) at the save's left: a real battle against the
- * picture, tapped again to come back. */
-#define BATTLE_W 28
-#define BATTLE_X (SAVE_X - 4 - BATTLE_W)
 /* At the picture's bottom right: the grid under the save, the tint (its
  * strength written on it) at its left. */
 #define GRID_X SAVE_X
@@ -1229,6 +1225,7 @@ static void KeyboardType(char c)
 /* The D-pad: zoom up and down (about the canvas's middle), undo and redo. */
 #define B_OUTLINE 100
 static void RightAct(int button);
+static void TryBattle(void);
 
 static void DpadKeys(unsigned dpad)
 {
@@ -1320,7 +1317,7 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
         return;
     }
     if (down & CTR_KEY_B) { Close(!sE.fromGallery); return; }
-    if (down & CTR_KEY_START) Save(false);
+    if (down & CTR_KEY_START) TryBattle();
     if (down & CTR_KEY_A) RightAct(B_OUTLINE);
     if (down & CTR_KEY_X) CycleView();
     if (down & CTR_KEY_Y)
@@ -1367,10 +1364,13 @@ static void ToolButton(int tool, int *x, int *y)
 
 /* The pencil's own touch: a tap picks it, a tap on it when picked takes
  * the next brush size, a hold opens the size's slider (TouchEdit). */
-static void PencilDown(void)
+/* The pencil's and the eraser's own touch: a tap picks it, a tap on it
+ * when picked takes the next brush size, a hold opens the size's slider
+ * (TouchEdit). */
+static void PencilDown(int tool)
 {
-    if (sE.tool == T_BRUSH) sE.pencilHold = 1;
-    sE.tool = T_BRUSH;
+    if (sE.tool == tool) sE.pencilHold = 1;
+    sE.tool = (uint8_t)tool;
 }
 
 static void CycleGrid(void)
@@ -1388,7 +1388,7 @@ static int ToolAt(int x, int y)
 
         ToolButton(t, &bx, &by);
         /* The pencil's reach takes in the size handle beside it. */
-        if (x >= bx && x < bx + TOOL_W + (t == T_BRUSH ? 9 : 0) && y >= by && y < by + TOOL_H) return t;
+        if (x >= bx && x < bx + TOOL_W + (t == T_BRUSH || t == T_ERASE ? 9 : 0) && y >= by && y < by + TOOL_H) return t;
     }
     return -1;
 }
@@ -1470,11 +1470,12 @@ static void FrameTap(unsigned frame)
     Toast(line);
 }
 
-/* The picture tried in a real battle: saved, then the game side starts
- * the battle (the field, the intro at turbo, both sides as their planes,
- * the real scenery and boxes at their depths); the top screen and the
- * buttons are the game's until it ends, the bottom screen and the stylus
- * stay the editor's. Tapped again, the battle is run from. */
+/* START: the picture tried in a real battle: saved, then the game side
+ * starts the battle (the field, the intro at turbo, both sides as their
+ * planes, the real scenery and boxes at their depths); the top screen and
+ * the buttons are the game's until it ends, the bottom screen and the
+ * stylus stay the editor's. START again (the game side sees it) runs
+ * from the battle. */
 static void TryBattle(void)
 {
     if (sE.inBattle)
@@ -1490,7 +1491,7 @@ static void TryBattle(void)
     }
     Save(true);
     CtrStereoMon_LogEdit("battle");
-    Toast("DRAW ON. TAP THE BALL AGAIN TO COME BACK");
+    Toast("DRAW ON. START AGAIN TO COME BACK");
 }
 
 /* The bar along the picture's top: a tap on one of its buttons. */
@@ -1502,7 +1503,6 @@ static bool BarAct(int x, int y)
     else if (x >= UNDO_X && x < UNDO_X + UNDO_W) { sE.pressed = P_UNDO; Undo(); }
     else if (x >= REDO_X && x < REDO_X + UNDO_W) { sE.pressed = P_REDO; Redo(); }
     else if (x >= SAVE_X && x < SAVE_X + SAVE_W) { sE.pressed = P_SAVE; SaveTap(); }
-    else if (x >= BATTLE_X && x < BATTLE_X + BATTLE_W) { sE.pressed = P_BATTLE; TryBattle(); }
     else return false;
     return true;
 }
@@ -1570,7 +1570,7 @@ static void TouchEdit(const CtrInput *in)
         else if ((b = ToolAt(x, y)) >= 0)
         {
             sE.pressed = P_TOOL + b;
-            if (b == T_BRUSH) PencilDown();
+            if (b == T_BRUSH || b == T_ERASE) PencilDown(b);
             else sE.tool = (uint8_t)b;
         }
         else if (BarAct(x, y) || CornerAct(x, y) || BottomAct(x, y)) {}
@@ -1940,8 +1940,9 @@ static void DrawPicture(void)
                 c = Mix(Muted(sPlaneColours[p]), Grey(Rgb565Of(pic[i])), k / 2, 20);
                 c = Mix(out, c, 1, 2);
             }
-            /* Under the eraser's stroke, waiting to be placed: lifted to white. */
-            if (sE.stroking && sE.tool == T_ERASE && BitGet(sErase, i)) c = Mix(Rgb(31, 63, 31), c, (x + y) & 1 ? 3 : 2, 4);
+            /* Under the eraser's stroke, waiting to be placed: their own
+             * colour drained of the plane's tint, so they read as let go. */
+            if (sE.stroking && sE.tool == T_ERASE && BitGet(sErase, i)) c = Mix(Grey(c), c, 3, 4);
             CanvasFill(sx, sy, s, s, c);
             if (sE.grid != GRID_OFF)
             {
@@ -2215,7 +2216,7 @@ static void DrawSizeSlider(void)
 {
     int x, y, cy, kx;
 
-    ToolButton(T_BRUSH, &x, &y);
+    ToolButton(sE.tool == T_ERASE ? T_ERASE : T_BRUSH, &x, &y);
     cy = y + TOOL_H / 2;
     kx = SIZE_X0 + (SIZE_X1 - SIZE_X0) * (sE.size - 1) / (SIZES - 1);
     DrawTrack(SIZE_X0, SIZE_X1, cy, sE.size - 1, SIZES, 1, 1);
@@ -2238,7 +2239,7 @@ static void DrawTools(void)
         DrawRoundPlate(x + TOOL_W / 2, y + TOOL_H / 2, TOOL_W / 2, on, on || sE.pressed == P_TOOL + t);
         if (t == T_BRUSH) DrawBrushDot(x + TOOL_W / 2, y + TOOL_H / 2);
         Sprite(sprites[t], x + (TOOL_W - SPRITE_SIZE) / 2, y + (TOOL_H - SPRITE_SIZE) / 2);
-        if (t == T_BRUSH && !sE.sizeSlider) DrawSizeHandle(x + TOOL_W + 1, y);
+        if ((t == T_BRUSH || t == T_ERASE) && !sE.sizeSlider) DrawSizeHandle(x + TOOL_W + 1, y);
     }
     if (sE.sizeSlider) DrawSizeSlider();
     DrawZoomSlider();
@@ -2259,9 +2260,6 @@ static void DrawBar(void)
               sRedoCount ? INK_DARK : INK_OFF);
     /* The save: green when final, its dot green once saved, red while
      * changes wait for the card. */
-    /* The battle: lit while the picture is in one. */
-    CtrBottomDraw_Plate(BATTLE_X, BAR_Y, BATTLE_W, BAR_H, sE.inBattle ? 1 : 0, sE.inBattle || sE.pressed == P_BATTLE);
-    CtrBottomDraw_GamePic(CTR_DRAW_PIC_BALL, BATTLE_X + BATTLE_W / 2, BAR_Y + BAR_H / 2);
     CtrBottomDraw_Plate(SAVE_X, BAR_Y, SAVE_W, BAR_H, final ? 1 : 0, final || sE.pressed == P_SAVE);
     Sprite(SPRITE_SAVE, SAVE_X + (SAVE_W - SPRITE_SIZE) / 2 - 1, BAR_Y + (BAR_H - SPRITE_SIZE) / 2);
     DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
