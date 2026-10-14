@@ -100,8 +100,9 @@ typedef struct
     unsigned shows;
     int x, y;
     unsigned priority;
-    /* The sprite's own scale (an affine squish or bounce), 1 when plain. */
-    float sx, sy;
+    /* The sprite's own affine matrix (a squish, a bounce, a lean, a turn)
+     * as the GBA holds it, target to texture; the identity when plain. */
+    float ma, mb, mc, md;
     /* What the texture holds for it: the planes, frame, groups and tile base. */
     bool composed;
     const Planes *composedPlanes;
@@ -432,26 +433,25 @@ unsigned CtrStereoBattle_Frame(const void *memory, bool battle, uint32_t skip[4]
             const Planes *p;
             unsigned shows;
 
-            float sx = 1.0f, sy = 1.0f;
+            float ma = 1.0f, mb = 0.0f, mc = 0.0f, md = 1.0f;
 
             /* A shown, plain 64x64 16-colour sprite at the picture's tile:
              * not hidden, blending, in mosaic, flipped or a window's. The
              * battlers' sprites are affine for their animations: the matrix
              * is the identity between them (the double-size box then holds
-             * the picture in its middle) and a plain scale in a squish, a
-             * bounce or a ball's grow, which the planes follow; a rotation
-             * is left to the sprite. */
+             * the picture in its middle); a squish, a bounce, a lean or a
+             * turn the planes follow, each card through the same matrix. */
             if ((!affine && (attr0 & 0x200)) || (attr0 & 0x3c00) != 0 || (attr0 >> 14) != 0) continue;
             if ((attr1 >> 14) != 3 || (!affine && (attr1 & 0x3000)) || (attr2 & 1023) != s->tileNum) continue;
             if (affine)
             {
                 unsigned m = ((attr1 >> 9) & 31) * 16;
-                int a = (int16_t)mem->oam[m + 3], b = (int16_t)mem->oam[m + 7];
-                int cc = (int16_t)mem->oam[m + 11], d = (int16_t)mem->oam[m + 15];
 
-                if (b != 0 || cc != 0 || a <= 0 || d <= 0) continue;
-                sx = 256.0f / a;
-                sy = 256.0f / d;
+                ma = (int16_t)mem->oam[m + 3] / 256.0f;
+                mb = (int16_t)mem->oam[m + 7] / 256.0f;
+                mc = (int16_t)mem->oam[m + 11] / 256.0f;
+                md = (int16_t)mem->oam[m + 15] / 256.0f;
+                if (fabsf(ma * md - mb * mc) < 0.00001f) continue;
             }
             shows = Shown(s, mem->vram + 0x10000 + s->tileNum * 32, &frame, &p);
             if (shows == SHOWS_NOTHING) continue;
@@ -465,8 +465,10 @@ unsigned CtrStereoBattle_Frame(const void *memory, bool battle, uint32_t skip[4]
             s->frame = frame;
             s->x = x;
             s->y = y;
-            s->sx = sx;
-            s->sy = sy;
+            s->ma = ma;
+            s->mb = mb;
+            s->mc = mc;
+            s->md = md;
             s->priority = (attr2 >> 10) & 3;
             shownPlanes[i] = p;
             ++active;
@@ -561,19 +563,47 @@ void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eye
     depth = eyeParallax * (spread / DEPTH_SPAN) * shiftScale;
     if ((s->composedPlanes->id & 0xC000) == CTR_STEREO_ID_BACK || (s->composedPlanes->id & 0xC000) == CTR_STEREO_ID_PLAYER)
         depth *= BACK_DEPTH;
-    for (unsigned plane = 0; plane < groups; ++plane)
     {
-        /* The plane's depth towards the viewer in sprite pixels. The left
-         * eye sees what is nearer than the sprite shifted right. */
-        float z = (plane - pivot) * spacing;
-        float scaleX = scale * s->sx, scaleY = scale * s->sy;
-        float px = x + DIM / 2.0f * scale - DIM / 2.0f * scaleX + depth * z;
-        float py = y + DIM / 2.0f * scale - DIM / 2.0f * scaleY;
-        C2D_Image image = {&sTex, &sTiles[s->composedBase + plane]};
+        /* The sprite's matrix inverted (texture to target) about the box's
+         * middle, with the target's scale: every card goes through it, the
+         * eye's shift of each added on the target's axis after. Plain
+         * sprites take the cheap path. */
+        const bool plain = s->ma == 1.0f && s->mb == 0.0f && s->mc == 0.0f && s->md == 1.0f;
+        const float det = s->ma * s->md - s->mb * s->mc;
+        const float ia = s->md / det * scale, ib = -s->mb / det * scale, ic = -s->mc / det * scale, id = s->ma / det * scale;
+        const float cx = x + DIM / 2.0f * scale, cy = y + DIM / 2.0f * scale;
+        C3D_Mtx saved;
 
-        /* On whole pixels of the target: a card between two pixels is
-         * sampled unevenly, and composed at 2x (3ds_video.c MonCells) that
-         * is half a GBA pixel, the finest the eye shift can be. */
-        C2D_DrawImageAt(image, roundf(px), roundf(py), 0, NULL, scaleX, scaleY);
+        /* On top of whatever view the caller draws in (the compositor's
+         * base view carries the zoom and the offset in DrawObjects). */
+        if (!plain) C2D_ViewSave(&saved);
+        for (unsigned plane = 0; plane < groups; ++plane)
+        {
+            /* The plane's depth towards the viewer in sprite pixels. The left
+             * eye sees what is nearer than the sprite shifted right. */
+            float z = (plane - pivot) * spacing;
+            C2D_Image image = {&sTex, &sTiles[s->composedBase + plane]};
+
+            if (plain)
+            {
+                /* On whole pixels of the target: a card between two pixels
+                 * is sampled unevenly, and composed at 2x (3ds_video.c
+                 * MonCells) that is half a GBA pixel, the finest the eye
+                 * shift can be. */
+                C2D_DrawImageAt(image, roundf(x + depth * z), roundf(y), 0, NULL, scale, scale);
+            }
+            else
+            {
+                C3D_Mtx m, view;
+
+                Mtx_Identity(&m);
+                m.r[0] = FVec4_New(ia, ib, 0, roundf(cx - (ia + ib) * DIM / 2.0f + depth * z));
+                m.r[1] = FVec4_New(ic, id, 0, roundf(cy - (ic + id) * DIM / 2.0f));
+                Mtx_Multiply(&view, &saved, &m);
+                C2D_ViewRestore(&view);
+                C2D_DrawImageAt(image, 0, 0, 0, NULL, 1.0f, 1.0f);
+            }
+        }
+        if (!plain) { C2D_Flush(); C2D_ViewRestore(&saved); }
     }
 }

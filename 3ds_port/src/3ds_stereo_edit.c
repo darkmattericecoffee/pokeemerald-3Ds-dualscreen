@@ -229,7 +229,7 @@ static struct
     unsigned planes, frames;
     const uint16_t *pic[MAX_FRAMES];
     unsigned frame, layer;
-    uint8_t tool, size, zoom, opacity, grid, view;
+    uint8_t tool, size, eraseSize, zoom, opacity, grid, view;
     bool outlineOn, animate, fromGallery, controls;
     /* The picture is in a real battle (CtrStereoMonGame_TryBattleOn). */
     bool inBattle;
@@ -602,7 +602,7 @@ static void ApplyErase(void)
 /* The brush (or the eraser) at one picture pixel: a disc `size` pixels across. */
 static void BrushAt(int x, int y)
 {
-    int r = (int)sE.size - 1;
+    int r = (int)(sE.tool == T_ERASE ? sE.eraseSize : sE.size) - 1;
 
     for (int dy = -r; dy <= r; ++dy)
         for (int dx = -r; dx <= r; ++dx)
@@ -1002,7 +1002,7 @@ void CtrStereoEdit_Open(bool fromGallery)
     memset(&sE, 0, sizeof(sE));
     sE.active = true;
     sE.screen = S_EDIT;
-    sE.size = 1;
+    sE.size = sE.eraseSize = 1;
     sE.pressed = -1;
     sE.grabRow = -1;
     sE.slider = SLIDER_NONE;
@@ -1248,7 +1248,9 @@ static void CycleView(void)
 /* The brush's next size (round again after the largest). */
 static void CycleSize(void)
 {
-    sE.size = (uint8_t)(sE.size % SIZES + 1);
+    uint8_t *size = sE.tool == T_ERASE ? &sE.eraseSize : &sE.size;
+
+    *size = (uint8_t)(*size % SIZES + 1);
     sE.dirtyDraw = true;
 }
 
@@ -1344,7 +1346,7 @@ static void SliderAt(int x, int y)
 {
     (void)y;
     if (sE.slider == SLIDER_ZOOM) SetZoom(SliderValue(x, ZOOM_X0, ZOOM_X1, ZOOMS), CAN_W / 2, H / 2);
-    else if (sE.slider == SLIDER_SIZE) sE.size = (uint8_t)(1 + SliderValue(x, SIZE_X0, SIZE_X1, SIZES));
+    else if (sE.slider == SLIDER_SIZE) *(sE.tool == T_ERASE ? &sE.eraseSize : &sE.size) = (uint8_t)(1 + SliderValue(x, SIZE_X0, SIZE_X1, SIZES));
     sE.dirtyDraw = true;
 }
 
@@ -2180,31 +2182,37 @@ static void DrawZoomSlider(void)
 
 /* The brush's dot: the plane's colour, larger for a larger brush, a stroke
  * of the colour's half-dark just inside its edge so it reads on white. */
-static int BrushDotRadius(void) { return 3 + 2 * ((int)sE.size - 1); }
+static int ToolSize(void) { return sE.tool == T_ERASE ? sE.eraseSize : sE.size; }
+static int BrushDotRadius(void) { return 3 + 2 * (ToolSize() - 1); }
 
+/* The pencil's dot in the plane's colour; the eraser's white, rimmed grey. */
 static void DrawBrushDot(int cx, int cy)
 {
     int r = BrushDotRadius();
+    uint16_t fill = sE.tool == T_ERASE ? Rgb(31, 63, 31) : sPlaneColours[sE.layer];
+    uint16_t rim = sE.tool == T_ERASE ? Rgb(16, 33, 17) : Mix(sPlaneColours[sE.layer], Rgb(0, 0, 0), 1, 2);
 
     DrawDisc(cx, cy, r + 1, Rgb(31, 63, 31));
-    DrawDisc(cx, cy, r, Mix(sPlaneColours[sE.layer], Rgb(0, 0, 0), 1, 2));
-    DrawDisc(cx, cy, r - 1, sPlaneColours[sE.layer]);
+    DrawDisc(cx, cy, r, rim);
+    DrawDisc(cx, cy, r - 1, fill);
 }
 
-/* The drawer's handle beside the pencil: the four brush sizes as dots, a
- * pixel to four across, one over the other (the size in hand lit), so the
- * pencil reads as something that opens: a tap for the next size, a hold
- * for the slider. */
+/* The drawer's handle beside the pencil or the eraser: the four brush
+ * sizes as dots, a pixel to four across, one over the other, white but
+ * the size in hand (the plane's colour; grey for the eraser), so the tool
+ * reads as something that opens: a tap for the next size, a hold for the
+ * slider. */
 static void DrawSizeHandle(int x, int y)
 {
     const uint16_t rim = Rgb(1, 2, 2);
+    const uint16_t lit = sE.tool == T_ERASE ? Rgb(12, 25, 13) : sPlaneColours[sE.layer];
     int cy = y + TOOL_H / 2 - 9;
 
     FillMix(x, y + TOOL_H / 2 - 12, 7, 24, rim, 1, 2);
     for (int s = 0; s < SIZES; ++s, cy += 6)
     {
         int w = s + 1;
-        uint16_t c = s + 1 == sE.size ? Rgb(31, 63, 31) : Mix(sPlaneColours[sE.layer], Rgb(31, 63, 31), 1, 2);
+        uint16_t c = s + 1 == ToolSize() ? lit : Rgb(31, 63, 31);
 
         CtrBottomDraw_Fill(x + 3 - w / 2, cy - w / 2, w, w, c);
     }
@@ -2218,8 +2226,8 @@ static void DrawSizeSlider(void)
 
     ToolButton(sE.tool == T_ERASE ? T_ERASE : T_BRUSH, &x, &y);
     cy = y + TOOL_H / 2;
-    kx = SIZE_X0 + (SIZE_X1 - SIZE_X0) * (sE.size - 1) / (SIZES - 1);
-    DrawTrack(SIZE_X0, SIZE_X1, cy, sE.size - 1, SIZES, 1, 1);
+    kx = SIZE_X0 + (SIZE_X1 - SIZE_X0) * (ToolSize() - 1) / (SIZES - 1);
+    DrawTrack(SIZE_X0, SIZE_X1, cy, ToolSize() - 1, SIZES, 1, 1);
     DrawKnob(kx, cy, KNOB_R + 3, 1, 1);
     DrawBrushDot(kx, cy);
 }
@@ -2237,7 +2245,7 @@ static void DrawTools(void)
 
         ToolButton(t, &x, &y);
         DrawRoundPlate(x + TOOL_W / 2, y + TOOL_H / 2, TOOL_W / 2, on, on || sE.pressed == P_TOOL + t);
-        if (t == T_BRUSH) DrawBrushDot(x + TOOL_W / 2, y + TOOL_H / 2);
+        if ((t == T_BRUSH || t == T_ERASE) && sE.tool == t) DrawBrushDot(x + TOOL_W / 2, y + TOOL_H / 2);
         Sprite(sprites[t], x + (TOOL_W - SPRITE_SIZE) / 2, y + (TOOL_H - SPRITE_SIZE) / 2);
         if ((t == T_BRUSH || t == T_ERASE) && !sE.sizeSlider) DrawSizeHandle(x + TOOL_W + 1, y);
     }
@@ -2628,7 +2636,7 @@ static void DrawKeyboard(void)
 static void MakeHelpSheet(void)
 {
     static const char *const fixed[] = {"NEXT/PICK PLANE", "OUTLINE", "PAN", "ZOOM", "UNDO/REDO", "ANIMATE", "VIEW",
-                                        "FRAME", "SWITCH PKMN", "SAVE", "BACK", ""};
+                                        "FRAME", "SWITCH PKMN", "BATTLE", "BACK", "", "POKEDEX"};
     static const char *const views[V_COUNT] = {"", "  LAYERS", "  BATTLE"};
     static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
     const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();

@@ -1367,7 +1367,7 @@ static void DrawDex(float sign, float slider, unsigned frame)
  * game's one-pixel shadow.
  */
 #define HELP_TEX_W 256
-#define HELP_TEX_H 128
+#define HELP_TEX_H 256
 static C3D_Tex sHelpTex;
 static bool sHelpAllocated, sHelpFailed;
 static uint8_t sHelpWidth[CTR_HELP_CELLS];
@@ -1614,6 +1614,7 @@ static void DrawControls(void)
         {BTN_X, false, CTR_HELP_R_LAYERS},
         {BTN_CSTICK, false, CTR_HELP_R_MON},
         {BTN_START, false, CTR_HELP_R_SAVE},
+        {BTN_SELECT, false, CTR_HELP_R_DEX},
         {BTN_B, false, CTR_HELP_R_BACK},
     };
     const uint32_t words = C2D_Color32(225, 230, 240, 255);
