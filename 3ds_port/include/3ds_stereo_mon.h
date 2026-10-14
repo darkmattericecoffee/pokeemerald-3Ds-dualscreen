@@ -364,6 +364,24 @@ void CtrStereoMonGame_OpenEditor(void);
 unsigned CtrStereoMonGame_GalleryIndex(void);
 void CtrStereoMonGame_SelectIndex(unsigned index);
 void CtrStereoMonGame_CloseGallery(void);
+/*
+ * For the editor: the picture tried in a real battle. From the field, a
+ * wild battle against the Pokémon (a Pokémon's front or back: the player's
+ * lead is a clone of it, so its back stands on screen with its front) or
+ * against a trainer with that picture, the planes as the editor has them;
+ * the intro runs at turbo until the fight menu first asks, then the battle
+ * stands still (the Pokémon play their own idle animations now and then).
+ * When it ends the editor is back on the picture. False when no battle can
+ * start here (not in the field, no party).
+ */
+bool CtrStereoMonGame_TryBattle(uint16_t id);
+/* Whether that battle is on (asked for, or being fought): the editor keeps
+ * the bottom screen and the stylus, the game the buttons. */
+bool CtrStereoMonGame_TryBattleOn(void);
+/* The battle left: RUN chosen for the player and the text passed, at turbo. */
+void CtrStereoMonGame_LeaveBattle(void);
+/* Keys the editor's battle presses for the player this frame (GBA bits). */
+unsigned CtrStereoMonGame_InjectedKeys(void);
 
 /* ── Game side: the plane editor (3ds_stereo_edit.c) ──────────────────── */
 

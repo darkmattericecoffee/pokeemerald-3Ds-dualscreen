@@ -92,6 +92,10 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define REDO_X (CAN_X + CAN_W / 2 + 1)
 #define SAVE_W 26
 #define SAVE_X (RIGHT_X - 4 - SAVE_W)
+/* The battle (a Poké Ball) at the save's left: a real battle against the
+ * picture, tapped again to come back. */
+#define BATTLE_W 28
+#define BATTLE_X (SAVE_X - 4 - BATTLE_W)
 /* At the picture's bottom right: the grid under the save, the tint (its
  * strength written on it) at its left. */
 #define GRID_X SAVE_X
@@ -158,7 +162,7 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 enum { T_BRUSH, T_ERASE, T_LASSO, T_FILL, T_PAN, T_COUNT };
 enum { B_OPACITY, B_GRID, B_COUNT };
 /* The pressed button's number: the tools', the right's, the bars'. */
-enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B };
+enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B, P_BATTLE };
 /* What the top screen shows: the colours, the planes tinted, the battle. */
 enum { V_COLOURS, V_LAYERS, V_BATTLE, V_COUNT };
 enum { SLIDER_NONE = -1, SLIDER_ZOOM, SLIDER_SIZE };
@@ -231,6 +235,8 @@ static struct
     unsigned frame, layer;
     uint8_t tool, size, zoom, opacity, grid, view;
     bool outlineOn, animate, fromGallery, controls;
+    /* The picture is in a real battle (CtrStereoMonGame_TryBattleOn). */
+    bool inBattle;
     /* The pencil held: frames so far, and its size slider open. */
     unsigned pencilHold;
     bool sizeSlider;
@@ -1033,6 +1039,11 @@ static void Close(bool leaveGallery)
 /* Another Pokémon: saved, then the gallery is told; Bind picks it up. */
 static void Choose(unsigned index)
 {
+    if (sE.inBattle)
+    {
+        Toast("AFTER THE BATTLE");
+        return;
+    }
     Save(true);
     sE.screen = S_EDIT;
     sE.pl = NULL;
@@ -1411,6 +1422,11 @@ static void SwapSide(bool toBack)
     int index;
 
     if (toBack == ((sE.id & 0xC000) != 0)) return;
+    if (sE.inBattle)
+    {
+        Toast("AFTER THE BATTLE");
+        return;
+    }
     if (other == 0 || (index = CtrStereoMon_GalleryIndexOf(other)) < 0)
     {
         Toast(toBack ? "NO BACK IN THE PACK" : "NO FRONT IN THE PACK");
@@ -1454,6 +1470,29 @@ static void FrameTap(unsigned frame)
     Toast(line);
 }
 
+/* The picture tried in a real battle: saved, then the game side starts
+ * the battle (the field, the intro at turbo, both sides as their planes,
+ * the real scenery and boxes at their depths); the top screen and the
+ * buttons are the game's until it ends, the bottom screen and the stylus
+ * stay the editor's. Tapped again, the battle is run from. */
+static void TryBattle(void)
+{
+    if (sE.inBattle)
+    {
+        CtrStereoMonGame_LeaveBattle();
+        Toast("LEAVING THE BATTLE");
+        return;
+    }
+    if (!CtrStereoMonGame_TryBattle(sE.id))
+    {
+        Toast("A BATTLE NEEDS THE FIELD AND A PARTY");
+        return;
+    }
+    Save(true);
+    CtrStereoMon_LogEdit("battle");
+    Toast("DRAW ON. TAP THE BALL AGAIN TO COME BACK");
+}
+
 /* The bar along the picture's top: a tap on one of its buttons. */
 static bool BarAct(int x, int y)
 {
@@ -1463,6 +1502,7 @@ static bool BarAct(int x, int y)
     else if (x >= UNDO_X && x < UNDO_X + UNDO_W) { sE.pressed = P_UNDO; Undo(); }
     else if (x >= REDO_X && x < REDO_X + UNDO_W) { sE.pressed = P_REDO; Redo(); }
     else if (x >= SAVE_X && x < SAVE_X + SAVE_W) { sE.pressed = P_SAVE; SaveTap(); }
+    else if (x >= BATTLE_X && x < BATTLE_X + BATTLE_W) { sE.pressed = P_BATTLE; TryBattle(); }
     else return false;
     return true;
 }
@@ -2219,6 +2259,9 @@ static void DrawBar(void)
               sRedoCount ? INK_DARK : INK_OFF);
     /* The save: green when final, its dot green once saved, red while
      * changes wait for the card. */
+    /* The battle: lit while the picture is in one. */
+    CtrBottomDraw_Plate(BATTLE_X, BAR_Y, BATTLE_W, BAR_H, sE.inBattle ? 1 : 0, sE.inBattle || sE.pressed == P_BATTLE);
+    CtrBottomDraw_GamePic(CTR_DRAW_PIC_BALL, BATTLE_X + BATTLE_W / 2, BAR_Y + BAR_H / 2);
     CtrBottomDraw_Plate(SAVE_X, BAR_Y, SAVE_W, BAR_H, final ? 1 : 0, final || sE.pressed == P_SAVE);
     Sprite(SPRITE_SAVE, SAVE_X + (SAVE_W - SPRITE_SIZE) / 2 - 1, BAR_Y + (BAR_H - SPRITE_SIZE) / 2);
     DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
@@ -2862,6 +2905,16 @@ bool CtrStereoEdit_BottomFrame(void)
         return true;
     }
     if (!sE.active) return true;
+    if (sE.inBattle != CtrStereoMonGame_TryBattleOn())
+    {
+        sE.inBattle = !sE.inBattle;
+        sE.dirtyDraw = true;
+        if (!sE.inBattle)
+        {
+            sE.screen = S_EDIT;
+            Toast("BACK FROM THE BATTLE");
+        }
+    }
     if (sE.screen == S_CHOOSE) { TouchChoose(in); PreviewChosen(); }
     else if (sE.screen == S_KEYBOARD) TouchKeyboard(in);
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
