@@ -52,7 +52,7 @@
 #define BACKUP_DIR EDIT_DIR "/backup"
 /* The address used when online.txt names none (make ONLINE_SERVER=...). */
 #ifndef CTR_ONLINE_SERVER
-#define CTR_ONLINE_SERVER ""
+#define CTR_ONLINE_SERVER "https://poke.cloudnoud.nl"
 #endif
 #define USER_AGENT "emerald3ds/1"
 /* http:C's shared memory, for request bodies (an edit is at most ~11 KiB). */
@@ -379,6 +379,14 @@ static void ReadLinkLocked(void)
     fclose(f);
     /* No slash at the end: paths start with one. */
     for (size_t n = strlen(sLink.server); n && sLink.server[n - 1] == '/'; --n) sLink.server[n - 1] = 0;
+    /* A quick tunnel's address (the first tests') is gone for good: the
+     * standard server instead, the token kept (the data moved with it). */
+    if (strstr(sLink.server, ".trycloudflare.com"))
+    {
+        CtrLog_Write(CTR_LOG_FS, "online: %s was a quick tunnel; the standard server %s instead", sLink.server,
+                     CTR_ONLINE_SERVER);
+        snprintf(sLink.server, sizeof(sLink.server), "%s", CTR_ONLINE_SERVER);
+    }
 }
 
 static Link GetLink(void)
@@ -402,10 +410,15 @@ static bool PutLink(const Link *link)
     sLink = *link;
     sLinkRead = true;
     Unlock();
+    /* The standard server is not written down: a later build's standard
+     * then holds for this card too. */
     n = snprintf(text, sizeof(text),
                  "# The plane-sharing link (3ds_online.c). Unlink in OPTIONS or on the website.\n"
-                 "server=%s\ntoken=%s\nuser=%s\nseq=%u\n%s",
-                 link->server, link->token, link->user, link->seq, link->verify ? "" : "verify=0\n");
+                 "%s%s%stoken=%s\nuser=%s\nseq=%u\n%s",
+                 strcmp(link->server, CTR_ONLINE_SERVER) ? "server=" : "",
+                 strcmp(link->server, CTR_ONLINE_SERVER) ? link->server : "",
+                 strcmp(link->server, CTR_ONLINE_SERVER) ? "\n" : "",
+                 link->token, link->user, link->seq, link->verify ? "" : "verify=0\n");
     return n > 0 && n < (int)sizeof(text) && WriteWhole(LINK_PATH, text, (uint32_t)n);
 }
 
@@ -571,6 +584,12 @@ static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path,
         CtrLog_Write(CTR_LOG_ERROR, "online: %s %s failed %08lx after %lums%s", method == HTTPC_METHOD_POST ? "POST" : "GET",
                      path, (unsigned long)r, (unsigned long)(CtrPlatform_Milliseconds() - t0),
                      (u32)r == RESULT_TLS ? " (TLS: certificate or handshake)" : "");
+        if ((u32)r == RESULT_TLS)
+            CtrLog_Write(CTR_LOG_ERROR, "online: TLS FAILED with %s: this console's SSL module did not accept the "
+                         "server's handshake or certificate (%s). Check with tools/tlsprobe and "
+                         "%s/api/health in its urls.txt; verify=0 in online.txt tells a certificate from a "
+                         "handshake problem.", link->server, link->verify ? "GlobalSign Root CA pinned" : "checks off",
+                         link->server);
         httpcCloseContext(&ctx);
         return false;
     }
@@ -1619,6 +1638,52 @@ static bool Keyboard(const char *hint, const char *initial, int maxLength, char 
     button = swkbdInputText(&kb, out, size);
     return button == SWKBD_BUTTON_RIGHT && out[0] != 0;
 }
+
+const char *CtrOnline_Server(void)
+{
+    static char copy[SERVER_MAX];
+    Link link = GetLink();
+
+    snprintf(copy, sizeof(copy), "%s", link.server);
+    return copy;
+}
+
+bool CtrOnline_ServerIsStandard(void)
+{
+    Link link = GetLink();
+
+    return strcmp(link.server, CTR_ONLINE_SERVER) == 0;
+}
+
+/* Another server for this console (the token is kept: a server that moved
+ * keeps its links; on a different one LINK CONSOLE again). */
+static void SetServer(const char *server)
+{
+    Link link = GetLink();
+
+    snprintf(link.server, sizeof(link.server), "%s", server);
+    for (size_t n = strlen(link.server); n && link.server[n - 1] == '/'; --n) link.server[n - 1] = 0;
+    if (!PutLink(&link)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", LINK_PATH);
+    CtrLog_Write(CTR_LOG_FS, "online: server set to %s%s", link.server,
+                 strcmp(link.server, CTR_ONLINE_SERVER) ? "" : " (the standard one)");
+    SetStatus(CTR_ONLINE_IDLE, "SERVER CHANGED");
+}
+
+bool CtrOnline_AskServer(void)
+{
+    Link link = GetLink();
+    char server[SERVER_MAX - 8], full[SERVER_MAX];
+
+    if (!Keyboard("Server address, e.g. poke.cloudnoud.nl", link.server, (int)sizeof(server) - 1, server, sizeof(server)))
+        return false;
+    /* A bare host name is an HTTPS one. */
+    if (strstr(server, "://") == NULL) snprintf(full, sizeof(full), "https://%s", server);
+    else snprintf(full, sizeof(full), "%s", server);
+    SetServer(full);
+    return true;
+}
+
+void CtrOnline_UseStandardServer(void) { SetServer(CTR_ONLINE_SERVER); }
 
 bool CtrOnline_AskCode(char *code, unsigned size)
 {

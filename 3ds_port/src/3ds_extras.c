@@ -311,6 +311,42 @@ static const u8 *OnlineStatusText(void)
     return OnlineGame(text);
 }
 
+/* SERVER: another address with the system keyboard; its cell shows the
+ * one in use (its host name). STANDARD SERVER: back to poke.cloudnoud.nl. */
+static void OnlineServer(void)
+{
+    PlaySE(SE_SELECT);
+    CtrOnline_AskServer();
+}
+
+static const u8 *OnlineServerText(void)
+{
+    char host[48];
+    const char *server = CtrOnline_Server(), *p = strstr(server, "://");
+
+    snprintf(host, sizeof(host), "%s", p ? p + 3 : server);
+    for (char *c = host; *c; ++c)
+        if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 'a' + 'A');
+    return OnlineGame(host);
+}
+
+static void OnlineStandard(void)
+{
+    if (CtrOnline_ServerIsStandard())
+    {
+        PlaySE(SE_FAILURE);
+        return;
+    }
+    PlaySE(SE_SELECT);
+    CtrOnline_UseStandardServer();
+}
+
+static const u8 *OnlineStandardText(void)
+{
+    return OnlineGame(CtrOnline_ServerIsStandard() ? CTR_TEXT("IN USE", "EN USO", "UTILISE", "IN USO")
+                                                   : CTR_TEXT("TAP TO USE", "TOCA PARA USAR", "UTILISER", "USA"));
+}
+
 static void OnlineStatusTap(void)
 {
     PlaySE(SE_SELECT);
@@ -415,8 +451,9 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_ONLINE, CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("LOAD NEW ONES", "BAJAR NUEVOS", "CHARGER NOUV.", "SCARICA NUOVI"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("SEE AND VOTE", "VER Y VOTAR", "VOIR, VOTER", "VEDI E VOTA"), "online_new", 0, 0, NULL, OnlineOpenNew, NULL, OnlineNewText},
-    {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
-    {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
+    /* The server: poke.cloudnoud.nl unless another is typed (3ds_online.c). */
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("SERVER", "SERVIDOR", "SERVEUR", "SERVER"), "online_server", 0, 0, NULL, OnlineServer, NULL, OnlineServerText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("STANDARD SERVER", "SERVIDOR NORMAL", "SERVEUR NORMAL", "SERVER NORMALE"), "online_standard", 0, 0, NULL, OnlineStandard, NULL, OnlineStandardText},
     {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
     {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},

@@ -10,7 +10,8 @@
  * Every request runs on a worker thread, one job at a time; the game never
  * waits. A job started while another runs is refused (its status says so).
  * The link is kept in sdmc:/3ds/emerald3ds/online.txt: the server's address
- * (server=, else the one compiled in with ONLINE_SERVER=), the device token
+ * (server=, else the standard one, https://poke.cloudnoud.nl, or what
+ * ONLINE_SERVER= compiles in), the device token
  * (token=), the account (user=), the last sync (seq=) and verify=0 to turn
  * certificate checks off while debugging.
  *
@@ -36,6 +37,13 @@ bool CtrOnline_Linked(void);
 bool CtrOnline_Available(void);
 /* The account the console is linked to ("" when not linked). */
 const char *CtrOnline_User(void);
+/* The server: https://poke.cloudnoud.nl unless online.txt names another
+ * (server=); AskServer types another with the system keyboard, and
+ * UseStandardServer goes back. The token is kept either way. */
+const char *CtrOnline_Server(void);
+bool CtrOnline_ServerIsStandard(void);
+bool CtrOnline_AskServer(void);
+void CtrOnline_UseStandardServer(void);
 /* The system keyboard: the server's address when none is known yet, then
  * the pairing code; false when cancelled (or not on this build). */
 bool CtrOnline_AskCode(char *code, unsigned size);
