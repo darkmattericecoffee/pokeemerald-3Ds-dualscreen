@@ -211,6 +211,25 @@ A later on-device "vote" button can call the same endpoint.
 no Wi-Fi (or when TLS misbehaves on their console) copies the card to a PC and syncs from
 there. Same accounts, same data.
 
+### 5.5 What v1 built (2026-10-15)
+
+`tools/sprite_server/` (see its README): users, sessions, pairing codes, device tokens,
+upload with validation, newest-wins current with admin pin, unpin and delete, `sync` by a
+server sequence number, ETag downloads, the progress grid, a page per Pokémon with tinted and
+swaying-plane previews from the game's own pictures, Account and Users pages, a PC client,
+`run.sh` for server plus tunnel, and end-to-end tests. Differences from the plan above:
+
+- Standard library only (`http.server`, `sqlite3`), not FastAPI: nothing to install.
+- Voting is not in v1. The newest upload is current until an admin pins one (§5.1's
+  `votes` table is v2).
+- `sync` takes `since=<seq>`, a server counter, not a time.
+- The PC client links with a pairing code like a console does. There is no web upload.
+
+Verified on 2026-10-15: all 14 real edit files from the New 3DS's card were accepted, both
+with and without the trailer and with up to 14 planes. Pages were checked at desktop and
+phone width. Sign-in, pairing and sync worked through a quick tunnel, with a `Secure` cookie
+and the public address on the pairing page.
+
 ## 6. Sign in once: pairing
 
 Never type a password on the console. The website gives a signed-in user an 8-character
