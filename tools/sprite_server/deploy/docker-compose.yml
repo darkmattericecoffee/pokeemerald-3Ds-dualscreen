@@ -1,0 +1,35 @@
+# The plane-sharing server on the Mac mini, at https://poke.cloudnoud.nl.
+#
+#   cd tools/sprite_server/deploy
+#   cp env.example .env              # once; fill in TUNNEL_ID (cloudflared tunnel list)
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# The server publishes its port on the Mac mini's 127.0.0.1 only. The tunnel is a named
+# tunnel made with the cloudflared CLI (README, "Deploying on the Mac mini"); it reaches the
+# server over the compose network. Both come back by themselves after a reboot, as long as
+# Docker itself starts at login.
+name: emerald3ds
+services:
+  server:
+    build: ..
+    restart: unless-stopped
+    volumes:
+      - ${DATA_DIR:-${HOME}/emerald3ds-sprite-server}:/data
+    ports:
+      - "127.0.0.1:${PORT:-8787}:8787"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    volumes:
+      - ${TUNNEL_CREDENTIALS:?set TUNNEL_CREDENTIALS in .env}:/etc/cloudflared/creds.json:ro
+    command: ["tunnel", "--no-autoupdate", "run", "--cred-file", "/etc/cloudflared/creds.json",
+              "--url", "http://server:8787", "${TUNNEL_ID:?set TUNNEL_ID in .env}"]
