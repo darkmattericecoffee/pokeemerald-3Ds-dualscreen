@@ -2000,7 +2000,8 @@ unsigned CtrOnline_Serial(void)
  * other, ten seconds after start and each once the job before it ended: "wait <frames>", "pair <code>", "upload <key>",
  * "uploadall", "sync", "unlink", "versions <key>",
  * "use <key> <version>", "vote <key> [<version> [<version>]]", "index", "flush",
- * "count <key>" (what the console knows of a picture). Each step and its result go to port.log.
+ * "count <key>" (what the console knows of a picture), "editor", "dex" (the
+ * editor, or straight into its Pokédex). Each step and its result go to port.log.
  */
 static void TestFrame(void)
 {
@@ -2071,6 +2072,12 @@ static void TestFrame(void)
         sscanf(line, "%*s %*s %15s", second);
         CtrOnline_UploadPair(IdOf(arg), second[0] ? IdOf(second) : 0);
     }
+    else if (strncmp(line, "dex", 3) == 0)
+    {
+        CtrStereoEdit_PreferDex(false);
+        CtrStereoMonGame_OpenEditor();
+    }
+    else if (strncmp(line, "editor", 6) == 0) CtrStereoMonGame_OpenEditor();
     else if (strncmp(line, "index", 5) == 0)
     {
         CtrOnline_FetchIndex();

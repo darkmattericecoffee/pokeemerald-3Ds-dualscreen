@@ -7509,6 +7509,18 @@ static void Activate(u8 id, u8 mode)
             }
             return;
         }
+        /* POKéDEX: in this build the plane editor's Pokédex, in place of
+         * the game's (every Pokémon's planes, its versions online). */
+        if (screen == SCR_POKEDEX)
+        {
+            if (FieldIdle())
+            {
+                PlaySE(SE_SELECT);
+                CtrStereoEdit_PreferDex(FALSE);
+                CtrStereoMonGame_OpenEditor();
+            }
+            return;
+        }
         /* The game's bag and Pokédex, as the PokéNav: they take the area
          * when they open. */
         if (screen == SCR_BAG || screen == SCR_POKEDEX || screen == SCR_POKEMON)

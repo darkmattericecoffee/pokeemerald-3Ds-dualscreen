@@ -929,6 +929,20 @@ void CtrGame_WaitFrame(void)
         }
         CtrPlatform_NoteBottom(CtrPlatform_TickMs(CtrPlatform_Ticks() - start));
     }
+    /* The plane editor open on the field: the game waits here, as through
+     * lag frames, while the frames are presented (the VBlank handler, so the
+     * sound, goes on), the bottom screen and the editor run. */
+    while (CtrStereoMonGame_WorldPaused())
+    {
+        CtrPlatform_EndFrame();
+        if (!CtrPlatform_BeginFrame())
+        {
+            CtrPlatform_Shutdown();
+            exit(0);
+        }
+        CtrBottom_Frame();
+        CtrStereoMonGame_Frame();
+    }
 
     /* Which screen the game is on, and what the resource layer is doing for it.
      * A callback change is the only unambiguous marker of progress in the log. */

@@ -379,6 +379,19 @@ pinned GlobalSign root, and a version made on the PC synced down. Then, on the u
   the entry's globe) opens its versions screen.
 - The versions JSON has `mine` per version.
 
+### 7.5 Round five (2026-10-15)
+
+- **Both sides in 3D**: the versions screen and the Pokédex show the front and the back side by
+  side, both as their planes. The other side's planes (its card edit, else the pack's) are
+  composed into a texture of its own (4 planes x 2 frames, 64 KiB, made while one of those
+  screens is open; `stereo: other side ... as planes` in port.log).
+- **The column's POKéDEX** opens the plane editor's Pokédex instead of the game's.
+- **The world waits for the editor**: open on the field, the game's main loop is held in
+  `CtrGame_WaitFrame` (frames are presented, so the VBlank handler and the sound go on; the
+  bottom screen and the editor run), so nothing moves, no script runs and no battle starts.
+  The Pokémon Center theme plays meanwhile and the map's music comes back on closing
+  (`editor: the world waits` in port.log). The editor's own BATTLE preview lets the game run.
+
 ## 8. Open questions and risks
 
 | Item | Status |

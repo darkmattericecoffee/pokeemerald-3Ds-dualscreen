@@ -218,10 +218,11 @@ void CtrStereoMon_SetEditing(bool editing, unsigned plane);
  * plane's colour, or the picture in its place in a battle. */
 enum { CTR_STEREO_VIEW_COLOURS, CTR_STEREO_VIEW_LAYERS, CTR_STEREO_VIEW_BATTLE };
 void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view, bool controls);
-/* The other side of the picture being edited (a front's back, a back's
- * front) for the battle view: `frames` of 64x64 RGBA5551 pixels, copied
- * here, drawn flat in its own battle place; NULL for none. */
-void CtrStereoMon_SetCompanion(const uint16_t *picture, unsigned frames);
+/* The other side of the picture on show (a front's back, a back's front),
+ * id `id`: `frames` of 64x64 RGBA5551 pixels, copied here, and its planes
+ * (its card edit, else the pack's) composed into a stack of its own, so the
+ * versions screen and the Pokédex show both sides in 3D; NULL for none. */
+void CtrStereoMon_SetCompanion(uint16_t id, const uint16_t *picture, unsigned frames);
 /* The editor's 3D depth (percent, 0..CTR_STEREO_EDIT_DEPTH_MAX): its own
  * setting, capped at half the gallery's usual depth to spare the eyes over
  * a long session; the gallery and the Pokédex keep theirs. */
@@ -398,6 +399,9 @@ void CtrStereoMonGame_CloseGallery(void);
 /* The other side of whatever is shown, flat, for the versions screen
  * (its texture is made only while asked for). */
 void CtrStereoMonGame_WantCompanion(bool on);
+/* Whether the world waits for the plane editor (open on the field): the
+ * game's main loop is held meanwhile (3ds_game_full.c CtrGame_WaitFrame). */
+bool CtrStereoMonGame_WorldPaused(void);
 /*
  * For the editor: the picture tried in a real battle. From the field, a
  * wild battle against the Pokémon (a Pokémon's front or back: the player's

@@ -1132,6 +1132,8 @@ static void Close(bool leaveGallery)
     Save(true);
     CtrStereoMon_SetEditing(false, 0);
     CtrStereoMon_SetChooser(false);
+    CtrStereoMon_SetVersionsView(false);
+    CtrStereoMonGame_WantCompanion(false);
     CtrStereoBattle_SetLive(0, NULL, 0);
     sE.active = false;
     sE.pl = NULL;
@@ -3521,8 +3523,8 @@ static void MakeHelpSheet(void)
                                         "FRAME", "SWITCH PKMN", "BATTLE", "BACK", "POKEDEX", "HOLD", "START", "SELECT"};
     static const char *const views[V_COUNT] = {"", "  LAYERS"};
     /* CTR_HELP_C_POKEMON on: the Pokédex's words, or the versions screen's. */
-    static const char *const chooser[] = {"POKEMON", "", "PAGE BACK", "NEXT PAGE", "EDIT", "ITS VERSIONS ONLINE", "SEARCH",
-                                          "ALL/EDITED/NEW", "BACK"};
+    static const char *const chooser[] = {"POKEMON", "", "PAGE BACK", "NEXT PAGE", "EDIT", "ONLINE", "SEARCH", "FILTER",
+                                          "BACK"};
     static const char *const versions[] = {"FRONT OR BACK", "SHOW A VERSION", "FRONT", "BACK", "", "VOTE FOR IT", "", "",
                                            "BACK"};
     static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
@@ -3584,6 +3586,25 @@ static void MakeHelpSheet(void)
         else snprintf(text[CTR_HELP_CHOOSE_NAME], 40, "%s", name);
         snprintf(text[CTR_HELP_PAGE], 40, "PAGE %u OF %u   %u OF %u", sE.chooseCursor / CH_PER_PAGE + 1,
                  (sListCount + CH_PER_PAGE - 1) / CH_PER_PAGE, sE.chooseCursor + 1, sListCount);
+        /* Under the front and the back: what the server has of each; at
+         * the top right, whose they are. */
+        {
+            uint16_t other = CtrStereoMon_Counterpart(id);
+            uint16_t front = (id & 0xC000) == CTR_STEREO_ID_BACK && other ? other : id, back = front == id ? other : id;
+            bool voted;
+            unsigned nf = CtrOnline_VersionCount(front, &voted), nb = back ? CtrOnline_VersionCount(back, &voted) : 0;
+            char author[20];
+            bool linked = CtrOnline_Linked();
+
+            snprintf(text[CTR_HELP_VERSION_BY], 40, linked ? "FRONT  %u ONLINE" : "FRONT", nf);
+            snprintf(text[CTR_HELP_VERSION_VOTES], 40, linked ? "BACK  %u ONLINE" : "BACK", nb);
+            text[CTR_HELP_VERSION][0] = 0;
+            if (CtrStereoMon_HasEdit(front) || (back && CtrStereoMon_HasEdit(back)))
+                snprintf(text[CTR_HELP_VERSION], 40, "YOUR EDIT");
+            else if (CtrOnline_CurrentAuthor(front, author, sizeof(author))
+                     || (back && CtrOnline_CurrentAuthor(back, author, sizeof(author))))
+                snprintf(text[CTR_HELP_VERSION], 40, "BY %s", author);
+        }
     }
     /* The lines into the canvas, white on black, as many at a time as its
      * rows hold, and from there into the sheet. */
@@ -3891,6 +3912,9 @@ bool CtrStereoEdit_BottomFrame(void)
     OnlineFrame();
     CtrStereoMon_SetChooser(sE.screen == S_CHOOSE || (sE.screen == S_KEYBOARD && sE.kbReturn == S_CHOOSE));
     CtrStereoMon_SetVersionsView(sE.screen == S_VERSIONS);
+    /* Both sides in 3D on the versions screen and in the Pokédex. */
+    CtrStereoMonGame_WantCompanion(sE.screen == S_VERSIONS || sE.screen == S_CHOOSE
+                                   || (sE.screen == S_KEYBOARD && sE.kbReturn == S_CHOOSE));
     /* The Pokédex's globe: the versions screen once the picture is in. */
     if (sE.versionsAfterBind && sE.pl != NULL && sE.screen == S_EDIT)
     {

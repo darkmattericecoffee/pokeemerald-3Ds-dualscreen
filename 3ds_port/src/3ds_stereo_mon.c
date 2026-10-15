@@ -762,37 +762,103 @@ const CtrStereoEditMeta *CtrStereoMon_EditMeta(void) { return &sMeta; }
 
 /* The companion: the other side's picture, flat, in a 128x64 texture (its
  * frames side by side). */
+/*
+ * The other side of the picture on show (its front, or its back) as a stack
+ * of planes of its own, for the versions screen and the Pokédex, which show
+ * both sides in 3D. Its picture comes from the game side
+ * (CtrStereoMon_SetCompanion, only while those screens are open); its planes
+ * from its edit file on the card, else from the pack; composed at once, in
+ * MATE_GROUPS planes, into a texture of its own.
+ */
+#define MATE_GROUPS 4
+#define MATE_FRAMES 2
+#define MATE_TEX_W (MATE_GROUPS * DIM)
+#define MATE_TEX_H (MATE_FRAMES * DIM)
 static C3D_Tex sMateTex;
 static bool sMateAllocated, sMateReady;
 static unsigned sMateFrames;
+static uint16_t sMateId;
+static uint16_t sMatePicture[MATE_FRAMES][DIM * DIM];
+static uint8_t sMatePlanes[CTR_STEREO_MON_MAX_FRAMES * EDIT_FRAME_BYTES];
+static Tex3DS_SubTexture sMateTiles[MATE_FRAMES * MATE_GROUPS];
 
-void CtrStereoMon_SetCompanion(const uint16_t *picture, unsigned frames)
+/* The other side's planes: the card's edit, else the pack's. */
+static bool MatePlanes(uint16_t id, CtrStereoMonHeader *header)
 {
-    uint16_t *texels;
+    int index;
+    PlanesFile *pf = FileOf(id, &index);
+    unsigned planes, frames;
+
+    if (index < 0) return false;
+    *header = pf->header;
+    if (ReadEdit(id, sMatePlanes, sizeof(sMatePlanes), &planes, &frames))
+    {
+        header->planes = (uint8_t)planes;
+        header->frames = (uint8_t)frames;
+        return true;
+    }
+    if (!ReadPlanesInto(pf, (unsigned)index, sMatePlanes, sizeof(sMatePlanes), &frames)) return false;
+    header->frames = (uint8_t)frames;
+    return true;
+}
+
+static void ComposeMate(void)
+{
+    CtrStereoMonHeader header;
 
     sMateReady = false;
-    if (picture == NULL || frames == 0) return;
+    if (sMateId == 0 || sMateFrames == 0 || !MatePlanes(sMateId, &header)) return;
     if (!sMateAllocated)
     {
-        if (!C3D_TexInit(&sMateTex, 2 * DIM, DIM, GPU_RGBA5551))
+        if (!C3D_TexInit(&sMateTex, MATE_TEX_W, MATE_TEX_H, GPU_RGBA5551))
         {
-            CtrLog_Write(CTR_LOG_ERROR, "stereo: no linear memory for the companion's texture");
+            CtrLog_Write(CTR_LOG_ERROR, "stereo: no linear memory for the other side's planes (free=%lu)",
+                         (unsigned long)linearSpaceFree());
             return;
         }
         C3D_TexSetFilter(&sMateTex, GPU_NEAREST, GPU_NEAREST);
         C3D_TexSetWrap(&sMateTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
         sMateAllocated = true;
     }
-    if (frames > 2) frames = 2;
-    texels = sMateTex.data;
-    memset(texels, 0, 2 * DIM * DIM * 2);
-    for (unsigned f = 0; f < frames; ++f)
-        for (unsigned y = 0; y < DIM; ++y)
-            for (unsigned x = 0; x < DIM; ++x)
-                texels[CtrVideo_Texel(f * DIM + x, y, 2 * DIM)] = picture[f * DIM * DIM + y * DIM + x];
+    memset(sMateTex.data, 0, MATE_TEX_W * MATE_TEX_H * 2);
+    for (unsigned f = 0; f < sMateFrames; ++f)
+        for (unsigned g = 0; g < MATE_GROUPS; ++g)
+        {
+            CtrStereoMon_ComposeTile(sMatePicture[f], sMatePlanes, &header, f < header.frames ? f : 0, MATE_GROUPS, g,
+                                     sMateTex.data, MATE_TEX_W, g * DIM, f * DIM, SKIRT);
+            sMateTiles[f * MATE_GROUPS + g] = (Tex3DS_SubTexture){DIM, DIM, g * DIM / (float)MATE_TEX_W,
+                                                                  1.0f - f * DIM / (float)MATE_TEX_H,
+                                                                  (g + 1) * DIM / (float)MATE_TEX_W,
+                                                                  1.0f - (f + 1) * DIM / (float)MATE_TEX_H};
+        }
     C3D_TexFlush(&sMateTex);
-    sMateFrames = frames;
     sMateReady = true;
+    CtrLog_Write(CTR_LOG_VIDEO, "stereo: other side %04x as planes (%u planes, %u frames)", sMateId, header.planes, sMateFrames);
+}
+
+void CtrStereoMon_SetCompanion(uint16_t id, const uint16_t *picture, unsigned frames)
+{
+    sMateReady = false;
+    sMateId = 0;
+    if (picture == NULL || frames == 0 || id == 0) return;
+    if (frames > MATE_FRAMES) frames = MATE_FRAMES;
+    memcpy(sMatePicture, picture, frames * sizeof(sMatePicture[0]));
+    sMateFrames = frames;
+    sMateId = id;
+    ComposeMate();
+    sDrawnValid = false;
+}
+
+/* The other side's stack, its top-left corner at (left, top). */
+static void DrawMateStack(float left, float top, float scale, float shift, unsigned frame)
+{
+    const float pivot = PIVOT_FRACTION * (MATE_GROUPS - 1), spacing = DEPTH_SPAN / (float)(MATE_GROUPS - 1);
+    unsigned f = frame < sMateFrames ? frame : 0;
+
+    if (!sMateReady) return;
+    for (unsigned g = 0; g < MATE_GROUPS; ++g)
+        C2D_DrawImageAt((C2D_Image){&sMateTex, &sMateTiles[f * MATE_GROUPS + g]}, left + shift * (g - pivot) * spacing, top, 0,
+                        NULL, scale, scale);
 }
 
 void CtrStereoMon_SetFinalized(bool finalized) { sMeta.finalized = finalized; }
@@ -1011,6 +1077,7 @@ static void ReloadShown(void)
     sTexReady = false;
     ++sPlanesVersion;
     ++sReloads;
+    if (sMateId) ComposeMate();
 }
 
 void CtrStereoMon_EditsChanged(void)
@@ -1021,6 +1088,7 @@ void CtrStereoMon_EditsChanged(void)
      * keeps what the editor holds (the card's copy is replaced under it,
      * the one before kept in stereo/backup). */
     if (sActive && !sEditing) ReloadShown();
+    else if (sMateId) ComposeMate();
 }
 
 void CtrStereoMon_ReloadShown(void)
@@ -1632,16 +1700,7 @@ static void DrawBattleEye(float sign, float slider, unsigned frame)
     snprintf(line, sizeof(line), "WHAT WILL %s DO?", sName);
     DrawText(GbaX(10), GbaY(124), line, C2D_Color32(240, 240, 240, 255));
     /* The other side, flat, then the planes in their place. */
-    if (sMateReady)
-    {
-        unsigned f = frame < sMateFrames ? frame : 0;
-        const Tex3DS_SubTexture sub = {DIM, DIM, f * 0.5f, 1.0f, f * 0.5f + 0.5f, 0.0f};
-        float mx = back ? foeX : ownX, my = back ? foeY : ownY;
-        float mateDepth = back ? 1.0f : BACK_DEPTH;
-
-        C2D_DrawImageAt((C2D_Image){&sMateTex, &sub}, mx + sign * depth * mateDepth * 2.0f, my, 0, NULL, BATTLE_SCALE,
-                        BATTLE_SCALE);
-    }
+    DrawMateStack(back ? foeX : ownX, back ? foeY : ownY, BATTLE_SCALE, sign * depth * (back ? 1.0f : BACK_DEPTH), frame);
     DrawStack(back ? ownX : foeX, back ? ownY : foeY, BATTLE_SCALE, sign * depth * DepthOf(sId), frame, NULL);
     if (sEditOutline && sEditPlane < Groups() && sTexReady && sComposed == sToCompose)
     {
@@ -1692,38 +1751,6 @@ static void DrawControls(void)
     DrawButton(BTN_A, x, y + 2);
 }
 
-/*
- * The Pokédex's top screen (the editor's chooser): the picture under the
- * cursor, its name and the page at the top left, which version is on the
- * card at the top right, and the controls down both sides: the Circle Pad
- * (and the D-pad) move through the Pokémon, A edits, X opens its versions.
- */
-static void DrawChooserHelp(void)
-{
-    static const Help left[] = {
-        {BTN_PAD, false, CTR_HELP_C_POKEMON},
-        {BTN_L, false, CTR_HELP_C_PREV_PAGE},
-    };
-    static const Help right[] = {
-        {BTN_A, false, CTR_HELP_C_EDIT},
-        {BTN_X, false, CTR_HELP_C_VOTE},
-        {BTN_R, false, CTR_HELP_C_NEXT_PAGE},
-        {BTN_Y, false, CTR_HELP_C_SEARCH},
-        {BTN_START, false, CTR_HELP_C_FILTER},
-        {BTN_B, false, CTR_HELP_C_CLOSE},
-    };
-    const uint32_t white = C2D_Color32(240, 242, 248, 255), cyan = C2D_Color32(80, 230, 240, 255);
-    const uint32_t gold = C2D_Color32(255, 214, 72, 255), dim = C2D_Color32(185, 190, 205, 255);
-
-    DrawHelpCell(CTR_HELP_CHOOSE_NAME, 8, 4, white);
-    DrawHelpCell(CTR_HELP_PAGE, 8, 18, cyan);
-    DrawHelpCell(CTR_HELP_VERSION, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION), 4, gold);
-    DrawHelpCell(CTR_HELP_VERSION_BY, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_BY), 18, white);
-    DrawHelpCell(CTR_HELP_VERSION_VOTES, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_VOTES), 32, dim);
-    DrawHelp(false, 154, left, sizeof(left) / sizeof(left[0]));
-    DrawHelp(true, 114, right, sizeof(right) / sizeof(right[0]));
-}
-
 /* Help along a row, centred on `cx`: each button with its word after it. */
 static void DrawHelpRow(int cx, int y, const Help *help, unsigned count)
 {
@@ -1743,56 +1770,74 @@ static void DrawHelpRow(int cx, int y, const Help *help, unsigned count)
 }
 
 /*
- * The versions screen's top screen (3ds_stereo_edit.c): the picture's front
- * on the left and its back on the right, the side being looked at as its
- * planes (in 3D), the other flat; their names under them, the picture's name
- * at the top left, which version this is at the top right, and the screen's
- * controls along the bottom.
+ * The top screen of the versions screen and of the Pokédex (3ds_stereo_edit.c):
+ * the picture's front on the left and its back on the right, both as their
+ * planes in 3D (the one on show and its other side, DrawMateStack); words
+ * under each, the picture's name at the top left, the version (or who made
+ * it) at the top right, and the screen's own controls along the bottom.
  */
-#define VERSIONS_SCALE 2.0f
-static void DrawVersionsEye(float sign, float slider, unsigned frame)
+#define PAIR_SCALE 2.0f
+static void DrawPairEye(float sign, float slider, unsigned frame, bool chooser)
 {
-    static const Help row1[] = {
+    static const Help versions1[] = {
         {BTN_DPAD_UD, false, CTR_HELP_C_VERSIONS},
         {BTN_DPAD_LR, false, CTR_HELP_C_POKEMON},
     };
-    static const Help row2[] = {
+    static const Help versions2[] = {
         {BTN_A, false, CTR_HELP_C_VOTE},
         {BTN_Y, false, CTR_HELP_R_ANIMATE},
         {BTN_B, false, CTR_HELP_C_CLOSE},
     };
-    const bool back = (sId & 0xC000) != 0;
-    const float size = DIM * VERSIONS_SCALE, top = 44;
-    const float leftX = CTR_GAME_WIDTH / 4 - size / 2, rightX = CTR_GAME_WIDTH * 3 / 4 - size / 2;
+    static const Help dex1[] = {
+        {BTN_PAD, false, CTR_HELP_C_POKEMON},
+        {BTN_L, false, CTR_HELP_C_PREV_PAGE},
+        {BTN_R, false, CTR_HELP_C_NEXT_PAGE},
+    };
+    static const Help dex2[] = {
+        {BTN_A, false, CTR_HELP_C_EDIT},
+        {BTN_X, false, CTR_HELP_C_VOTE},
+        {BTN_Y, false, CTR_HELP_C_SEARCH},
+        {BTN_START, false, CTR_HELP_C_FILTER},
+        {BTN_B, false, CTR_HELP_C_CLOSE},
+    };
+    const bool back = (sId & 0xC000) == CTR_STEREO_ID_BACK, pair = sMateReady;
+    const float size = DIM * PAIR_SCALE, top = 40;
+    const float leftX = pair ? CTR_GAME_WIDTH / 4 - size / 2 : CTR_GAME_WIDTH / 2 - size / 2;
+    const float rightX = CTR_GAME_WIDTH * 3 / 4 - size / 2;
     const float depth = slider * CtrStereoMon_Depth() / 100.0f * PARALLAX * 2.0f;
     const uint32_t white = C2D_Color32(240, 242, 248, 255), gold = C2D_Color32(255, 214, 72, 255);
     const uint32_t dim = C2D_Color32(185, 190, 205, 255), cyan = C2D_Color32(80, 230, 240, 255);
-    const float back3d = BackdropShift(sign, slider, SCALE);
+    const float grid = BackdropShift(sign, slider, SCALE);
+    /* Under the front and the back: the versions screen's FRONT and BACK,
+     * the Pokédex's counts of each. */
+    const unsigned underFront = chooser ? CTR_HELP_VERSION_BY : CTR_HELP_C_PREV_PAGE;
+    const unsigned underBack = chooser ? CTR_HELP_VERSION_VOTES : CTR_HELP_C_NEXT_PAGE;
+    float frontX = back && pair ? rightX : leftX, mateX = back ? leftX : rightX;
 
+    (void)frontX;
     C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, C2D_Color32(52, 56, 66, 255));
     for (int gx = 8 - 24; gx < CTR_GAME_WIDTH + 24; gx += 24)
-        C2D_DrawRectSolid(gx + back3d, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(66, 70, 82, 255));
-    /* The other side, flat. */
-    if (sMateReady)
-    {
-        unsigned f = frame < sMateFrames ? frame : 0;
-        const Tex3DS_SubTexture sub = {DIM, DIM, f * 0.5f, 1.0f, f * 0.5f + 0.5f, 0.0f};
-
-        C2D_DrawImageAt((C2D_Image){&sMateTex, &sub}, back ? leftX : rightX, top, 0, NULL, VERSIONS_SCALE, VERSIONS_SCALE);
-    }
-    /* The side looked at, as its planes. */
-    DrawStack(back ? rightX : leftX, top, VERSIONS_SCALE, sign * depth * DepthOf(sId), frame, NULL);
-    DrawHelpCell(CTR_HELP_C_PREV_PAGE, leftX + size / 2 - HelpWidth(CTR_HELP_C_PREV_PAGE) / 2, top + size + 2,
-                 back ? dim : cyan);
-    DrawHelpCell(CTR_HELP_C_NEXT_PAGE, rightX + size / 2 - HelpWidth(CTR_HELP_C_NEXT_PAGE) / 2, top + size + 2,
-                 back ? cyan : dim);
+        C2D_DrawRectSolid(gx + grid, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(66, 70, 82, 255));
+    /* The front on the left, the back on the right, whichever is on show. */
+    DrawStack(back && pair ? rightX : leftX, top, PAIR_SCALE, sign * depth * DepthOf(sId), frame, NULL);
+    if (pair) DrawMateStack(mateX, top, PAIR_SCALE, sign * depth * DepthOf(sMateId), frame);
+    DrawHelpCell(underFront, leftX + size / 2 - HelpWidth(underFront) / 2, top + size + 2, chooser || !back ? cyan : dim);
+    if (pair) DrawHelpCell(underBack, rightX + size / 2 - HelpWidth(underBack) / 2, top + size + 2, chooser || back ? cyan : dim);
     DrawHelpCell(CTR_HELP_CHOOSE_NAME, 8, 4, white);
     DrawHelpCell(CTR_HELP_PAGE, 8, 18, cyan);
     DrawHelpCell(CTR_HELP_VERSION, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION), 4, gold);
-    DrawHelpCell(CTR_HELP_VERSION_BY, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_BY), 18, white);
-    DrawHelpCell(CTR_HELP_VERSION_VOTES, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_VOTES), 32, dim);
-    DrawHelpRow(CTR_GAME_WIDTH / 2, CTR_GAME_HEIGHT - 42, row1, sizeof(row1) / sizeof(row1[0]));
-    DrawHelpRow(CTR_GAME_WIDTH / 2, CTR_GAME_HEIGHT - 21, row2, sizeof(row2) / sizeof(row2[0]));
+    if (!chooser)
+    {
+        DrawHelpCell(CTR_HELP_VERSION_BY, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_BY), 18, white);
+        DrawHelpCell(CTR_HELP_VERSION_VOTES, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_VOTES), 32, dim);
+        DrawHelpRow(CTR_GAME_WIDTH / 2, CTR_GAME_HEIGHT - 42, versions1, sizeof(versions1) / sizeof(versions1[0]));
+        DrawHelpRow(CTR_GAME_WIDTH / 2, CTR_GAME_HEIGHT - 21, versions2, sizeof(versions2) / sizeof(versions2[0]));
+    }
+    else
+    {
+        DrawHelpRow(CTR_GAME_WIDTH / 2, CTR_GAME_HEIGHT - 42, dex1, sizeof(dex1) / sizeof(dex1[0]));
+        DrawHelpRow(CTR_GAME_WIDTH / 2, CTR_GAME_HEIGHT - 21, dex2, sizeof(dex2) / sizeof(dex2[0]));
+    }
 }
 
 static void DrawEditEye(float sign, float slider, unsigned frame)
@@ -1882,9 +1927,15 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ZERO);
     if (!sGallery || sEditing)
     {
-        if (sEditing && sVersionsView) DrawVersionsEye(sign, slider, frame);
+        if (sEditing && sVersionsView) DrawPairEye(sign, slider, frame, false);
         else if (sEditing) DrawEditEye(sign, slider, frame);
         else DrawDex(sign, slider, frame);
+        C2D_Flush();
+        return;
+    }
+    if (sChooser)
+    {
+        DrawPairEye(sign, slider, frame, true);
         C2D_Flush();
         return;
     }
@@ -1902,12 +1953,6 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
                           C2D_Color32(40, 46, 70, 160), C2D_Color32(40, 46, 70, 160));
     }
     DrawPlanes(sign, slider, frame, NULL, SCALE);
-    if (sChooser)
-    {
-        DrawChooserHelp();
-        C2D_Flush();
-        return;
-    }
     if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "NO.%03u %s", sId, sName);
     else snprintf(line, sizeof(line), "%s", sName);
     DrawText(8, 6, line, C2D_Color32(235, 235, 240, 255));
