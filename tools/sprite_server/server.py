@@ -240,7 +240,9 @@ def csrf_field(req: Request) -> str:
 
 MESSAGES = {
     "pinned": "That version is now the current one and stays so until unpinned.",
-    "unpinned": "Unpinned: the newest upload is current again.",
+    "unpinned": "Unpinned: the most votes win again (among equals, the newest).",
+    "voted": "Your favourites for this picture are saved.",
+    "twofavourites": "You already have two favourites here: take the star off one first.",
     "deleted": "The version was deleted.",
     "revoked": "The console was unlinked. Its token no longer works.",
     "password": "Password changed. Other browsers were signed out.",
@@ -383,6 +385,8 @@ def mon_page(req: Request, key: str) -> Response:
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
     admin = req.user["role"] == "admin"
+    counts = db.vote_counts(req.conn, key)
+    mine = db.favourites(req.conn, req.user["id"], key)
     prev, nxt, other = neighbours(key)
     links = []
     if prev:
@@ -430,7 +434,13 @@ def mon_page(req: Request, key: str) -> Response:
         if v["author_tag"] and v["author_tag"].lower() != v["uploader"].lower():
             author += ' <span class="muted">(signed %s)</span>' % e(v["author_tag"])
         where = ' <span class="muted">from %s</span>' % e(v["console_name"]) if v["console_name"] else ""
-        actions = ['<a href="/dl/v%d/%s.bin">Download</a>' % (v["id"], key)]
+        starred = v["id"] in mine
+        actions = ['<form method="post" action="/mon/%s/vote" class="inline">%s<input type="hidden" name="version" '
+                   'value="%d"><button class="small%s" title="%s">%s</button></form>'
+                   % (key, csrf_field(req), v["id"], " on" if starred else "",
+                      "Take your vote back" if starred else "One of your two favourites",
+                      "&#9733; Favourite" if starred else "&#9734; Favourite"),
+                   '<a href="/dl/v%d/%s.bin">Download</a>' % (v["id"], key)]
         if admin and not (is_cur and cur["pinned"]):
             actions.append('<form method="post" action="/mon/%s/pin" class="inline">%s'
                            '<input type="hidden" name="version" value="%d"><button class="small">%s</button>'
@@ -443,14 +453,35 @@ def mon_page(req: Request, key: str) -> Response:
         rows.append(
             '<tr class="%s"><td><img src="/img/v%d/tint.png" width="64" height="64" alt=""></td>'
             '<td><strong>#%d</strong> %s<br>by %s%s</td><td>%d planes, %d frame%s<br>%s</td>'
-            '<td title="%s">%s</td><td class="actions">%s</td></tr>'
+            '<td class="votes">%s</td><td title="%s">%s</td><td class="actions">%s</td></tr>'
             % ("is-current" if is_cur else "", v["id"], v["id"], " ".join(tags), author, where, v["planes"],
-               v["frames"], "s" if v["frames"] > 1 else "", rev, e(utc(v["uploaded_at"])), ago(v["uploaded_at"]),
-               " ".join(actions)))
+               v["frames"], "s" if v["frames"] > 1 else "", rev,
+               "%d vote%s" % (counts.get(v["id"], 0), "" if counts.get(v["id"], 0) == 1 else "s"),
+               e(utc(v["uploaded_at"])), ago(v["uploaded_at"]), " ".join(actions)))
     table = ('<h2>Versions</h2><table class="versions"><tbody>%s</tbody></table>' % "".join(rows)) if rows else ""
-    rule = ('<p class="muted rule">Until voting arrives, the newest upload is current, unless an admin pins one.</p>'
+    rule = ('<p class="muted rule">Everybody picks up to two favourites per picture, here or on the console. The '
+            'version with the most votes is current (among equals, the newest), unless an admin pins one.</p>'
             if rows else "")
     return Response(page(req, CFG.name(key), head + hero + table + rule, MESSAGES.get(req.q("msg"), "")))
+
+
+@route("POST", r"/mon/" + KEY + r"/vote", "session")
+def vote_post(req: Request, key: str) -> Response:
+    """A favourite's star: on, or off again. A third one is refused."""
+    try:
+        vid = int(req.form.get("version", ""))
+    except ValueError:
+        vid = -1
+    mine = db.favourites(req.conn, req.user["id"], key)
+    if vid in mine:
+        mine.remove(vid)
+    elif len(mine) >= db.MAX_FAVOURITES:
+        return redirect("/mon/%s?msg=twofavourites" % key)
+    else:
+        mine.append(vid)
+    if db.set_votes(req.conn, req.user["id"], key, mine) is not None:
+        return Response(page(req, "Not found", "<p>No such version.</p>"), 404)
+    return redirect("/mon/%s?msg=voted" % key)
 
 
 @route("POST", r"/mon/" + KEY + r"/pin", "admin")
@@ -722,6 +753,45 @@ def api_upload(req: Request, key: str) -> Response:
     vid, current, duplicate = db.add_version(req.conn, edit, req.device["user_id"], req.device["id"])
     return json_resp({"key": key, "version_id": vid, "current": current, "duplicate": duplicate,
                       "sha256": edit.sha256}, 200 if duplicate else 201)
+
+
+def _voter(req: Request) -> int:
+    return req.device["user_id"] if req.device is not None else req.user["id"]
+
+
+def _versions_json(req: Request, key: str) -> dict:
+    rows = req.conn.execute(
+        "SELECT v.id, v.revision, v.final, v.author_tag, v.sha256, v.size, v.uploaded_at, u.name AS uploader "
+        "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
+        (key,)).fetchall()
+    cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
+    counts = db.vote_counts(req.conn, key)
+    return {"key": key, "current": cur["version_id"] if cur else None, "pinned": bool(cur and cur["pinned"]),
+            "favourites": db.favourites(req.conn, _voter(req), key), "max_favourites": db.MAX_FAVOURITES,
+            "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],
+                          "revision": r["revision"], "final": bool(r["final"]), "votes": counts.get(r["id"], 0),
+                          "sha256": r["sha256"], "size": r["size"], "uploaded_at": r["uploaded_at"]} for r in rows]}
+
+
+@route("GET", r"/api/mons/" + KEY + r"/versions", "any")
+def api_versions(req: Request, key: str) -> Response:
+    if editfile.key_to_id(key) is None:
+        return api_error(404, "no such picture")
+    return json_resp(_versions_json(req, key))
+
+
+@route("POST", r"/api/mons/" + KEY + r"/votes", "device")
+def api_votes(req: Request, key: str) -> Response:
+    """{"version_ids": [...]}: the caller's favourites for the picture, replacing the earlier ones."""
+    if editfile.key_to_id(key) is None:
+        return api_error(404, "no such picture")
+    ids = req.json().get("version_ids")
+    if not isinstance(ids, list):
+        return api_error(400, "version_ids must be a list")
+    err = db.set_votes(req.conn, _voter(req), key, ids)
+    if err is not None:
+        return api_error(400, err)
+    return json_resp(_versions_json(req, key))
 
 
 @route("GET", r"/api/mons/" + KEY + r"/current", "any")

@@ -10,6 +10,13 @@
 #include "3ds_extras.h"
 #include "3ds_locale_text.h"
 #include "3ds_online.h"
+
+/* This build's third tab is the plane editor's (CTR_EXTRAS_EDITOR); the
+ * cheats it held are left out. 1 brings them back (on a tab of their own
+ * only if CTR_EXTRAS_EDITOR is given back its own number). */
+#ifndef CTR_CHEATS_MENU
+#define CTR_CHEATS_MENU 0
+#endif
 #include "3ds_platform.h"
 #include "3ds_daynight.h"
 #include "event_data.h"
@@ -32,8 +39,10 @@ static const char *const sTimedEncounters[] = {CTR_TEXT("ORIGINAL", "ORIGINAL", 
                                                CTR_TEXT("TIMED", "POR HORARIO", "PAR HORAIRE", "PER ORARIO")};
 
 static const char *const sVisibleWild[] = {CTR_TEXT("OFF", "NO", "NON", "NO"), CTR_TEXT("FEW", "POCOS", "PEU", "POCHE"), CTR_TEXT("SOME", "ALGUNOS", "MOYEN", "ALCUNE"), CTR_TEXT("MANY", "MUCHOS", "BEAUCOUP", "MOLTE")};
+#if CTR_CHEATS_MENU
 static const char *const sEncounterRate[] = {CTR_TEXT("NORMAL", "NORMAL", "NORMAL", "NORMALE"), CTR_TEXT("OFF", "NO", "NON", "NO"), "1/4", "1/2", "2X"};
 static const char *const sShinyOdds[] = {"1/8192", "1/4096", "1/1024", "1/256", "1/64", CTR_TEXT("ALWAYS", "SIEMPRE", "TOUJOURS", "SEMPRE")};
+#endif
 /* The voxel world per eye with the 3D slider (3ds_video.c): AUTO is on a
  * New 3DS only (the second pass costs an Old 3DS the frame), and how deep
  * the slider's full travel goes, in percent of the renderer's depth. */
@@ -49,6 +58,7 @@ static const char *const sBattleBacks[] = {"2PX", "3PX", "4PX", "6PX", "8PX", "1
 static const char *const sBattleMons[] = {"0PX", "1PX", "2PX", "3PX", "4PX"};
 static const char *const sPlaneSpreads[] = {"1PX", "2PX", "3PX", "4PX", "6PX", "8PX"};
 static const char *const sPlanePivots[] = {CTR_TEXT("BEHIND", "DETRÁS", "DERRIÈRE", "DIETRO"), CTR_TEXT("AROUND", "ALREDEDOR", "AUTOUR", "INTORNO"), CTR_TEXT("IN FRONT", "DELANTE", "DEVANT", "DAVANTI")};
+#if CTR_CHEATS_MENU
 /*
  * Pokedex (CHEATS): the Hoenn Pokedex complete, the National Pokedex
  * unlocked, or complete (and unlocked): every Pokemon seen and caught. OPTIONS
@@ -179,6 +189,7 @@ static void GiveBack(void)
 {
     CtrExtras_ShowScreen(CTR_EXTRAS_CHEATS, 0);
 }
+#endif
 
 /*
  * Fast-forward's SPEED (1x to 4x; settings.txt speed=, ZR/ZL on a New 3DS):
@@ -215,21 +226,6 @@ static void OpenStereoEditor(void)
  * the system keyboard (and the server's address first when none is known);
  * the status cell shows the last job's progress or result.
  */
-static const char *const sOnlineOpenText[] = {CTR_TEXT("TAP TO OPEN", "TOCA PARA ABRIR", "OUVRIR", "APRI")};
-static const char *const sOnlineBackText[] = {CTR_TEXT("BACK", "VOLVER", "RETOUR", "INDIETRO")};
-
-static void OnlineOpen(void)
-{
-    PlaySE(SE_SELECT);
-    CtrExtras_ShowScreen(CTR_EXTRAS_ENHANCEMENTS, 2);
-}
-
-static void OnlineBack(void)
-{
-    PlaySE(SE_SELECT);
-    CtrExtras_ShowScreen(CTR_EXTRAS_ENHANCEMENTS, 1);
-}
-
 /* ASCII into the game's characters, a few kept at once. */
 static const u8 *OnlineGame(const char *ascii)
 {
@@ -313,6 +309,32 @@ static void OnlineStatusTap(void)
     PlaySE(SE_SELECT);
 }
 
+/* NEW FROM SERVER: the editor on what the last sync brought, its chooser
+ * showing only those. */
+void CtrStereoMonGame_OpenEditorAt(u16 id, bool8 newOnes);
+static void OnlineOpenNew(void)
+{
+    u16 first;
+
+    if (CtrOnline_NewIds(&first, 1) == 0)
+    {
+        PlaySE(SE_FAILURE);
+        return;
+    }
+    PlaySE(SE_SELECT);
+    CtrStereoMonGame_OpenEditorAt(first, TRUE);
+}
+
+static const u8 *OnlineNewText(void)
+{
+    char text[24];
+    unsigned count = CtrOnline_NewIds(NULL, 0);
+
+    if (count == 0) return OnlineGame(CTR_TEXT("NONE YET", "NINGUNO", "AUCUN", "NESSUNO"));
+    snprintf(text, sizeof(text), CTR_TEXT("OPEN %u", "ABRIR %u", "OUVRIR %u", "APRI %u"), count);
+    return OnlineGame(text);
+}
+
 const CtrExtra gCtrExtras[] =
 {
     /* Features add their lines here. */
@@ -342,6 +364,7 @@ const CtrExtra gCtrExtras[] =
     /* Moves physical or special by their own category, as from Gen IV on
      * (pokemon.c, MoveSplitEnabled). */
     {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PHYS/SPEC SPLIT", "FISICO / ESPECIAL", "PHYS./SPÉC.", "FIS./SPEC."), "move_split", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+#if CTR_CHEATS_MENU
     {CTR_EXTRAS_CHEATS, CTR_TEXT("WILD ENCOUNTERS", "ENC. SALVAJES", "RENCONTRES", "INCONTRI"), "encounter_rate", 5, 0, sEncounterRate, NULL, NULL, NULL},
     {CTR_EXTRAS_CHEATS, CTR_TEXT("SHINY ODDS", "PROB. VARIOCOLOR", "CHROMATIQUES", "PROB. SHINY"), "shiny_odds", 6, 0, sShinyOdds, NULL, NULL, NULL},
     /* Only wild Pokémon with depth planes, to try the 3D battle anywhere
@@ -360,6 +383,7 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("ITEM", "OBJETO", "OBJET", "OGGETTO"), "give_item", 0, 0, NULL, NULL, GiveItemStep, GiveItemText},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("HOW MANY", "CANTIDAD", "QUANTITÉ", "QUANTI"), "give_count", 5, 0, sGiveCounts, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE", "DAR", "DONNER", "DAI"), "give_now", 0, 0, sGiveText, GiveItemsNow, NULL, NULL},
+#endif
     /* The clock (3ds_daynight.c): outdoor light by the hour, its speed, the
      * wild Pokémon of the hour (3ds_encounters.c) and the bottom screen's
      * clock. ENHANCEMENTS is full, twelve cells a screen: its second. */
@@ -367,17 +391,25 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("CLOCK SPEED", "VELOC. RELOJ", "VITESSE HORLOGE", "VELOC. OROLOGIO"), "clock_speed", CTR_DAYNIGHT_SPEED_COUNT, 0, sClockSpeeds, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("WILD POKEMON", "POKéMON SALV.", "POKÉMON SAUV.", "POKéMON SELV."), "timed_encounters", 2, 0, sTimedEncounters, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SHOW CLOCK", "VER RELOJ", "VOIR HORLOGE", "MOSTRA OROLOGIO"), "show_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("3D SPRITE EDITOR", "EDITOR 3D", "ÉDITEUR 3D", "EDITOR 3D"), "stereo_edit", 0, 0, sStereoEditText, OpenStereoEditor, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), "ONLINE", "online_open", 0, 0, sOnlineOpenText, OnlineOpen, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), "ONLINE", "online_back", 0, 0, sOnlineBackText, OnlineBack, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("UNLINK", "DESENLAZAR", "DÉLIER", "SCOLLEGA"), "online_unlink", 0, 0, NULL, OnlineUnlink, NULL, OnlineUnlinkText},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("SYNC FROM SERVER", "SINCRONIZAR", "SYNCHRONISER", "SINCRONIZZA"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
+    /* The plane editor and sharing its edits (3ds_stereo_edit.c, 3ds_online.c):
+     * the third tab. The status takes the first row whole (with the
+     * pictures the last sync brought; 3ds_bottom_ui.c), so the right
+     * column's first cell is a gap. */
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("3D SPRITE EDITOR", "EDITOR 3D", "ÉDITEUR 3D", "EDITOR 3D"), "stereo_edit", 0, 0, sStereoEditText, OpenStereoEditor, NULL, NULL},
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("SYNC FROM SERVER", "SINCRONIZAR", "SYNCHRONISER", "SINCRONIZZA"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("UNLINK", "DESENLAZAR", "DÉLIER", "SCOLLEGA"), "online_unlink", 0, 0, NULL, OnlineUnlink, NULL, OnlineUnlinkText},
+    {CTR_EXTRAS_EDITOR, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("NEW FROM SERVER", "NUEVOS", "NOUVEAUX", "NUOVI"), "online_new", 0, 0, NULL, OnlineOpenNew, NULL, OnlineNewText},
+    /* A sync that brings pictures opens the editor on them (3ds_stereo_mon_game.c). */
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("OPEN NEW ONES", "ABRIR NUEVOS", "OUVRIR NOUV.", "APRI NUOVI"), "online_open_new", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
     /* Read by the editor (3ds_stereo_edit.c ToggleFinal): a picture marked
      * FINAL is uploaded at once. */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    /* Read by the editor when it opens (3ds_stereo_edit.c). */
+    {CTR_EXTRAS_EDITOR, CTR_TEXT("SHOW CONTROLS", "VER CONTROLES", "COMMANDES", "COMANDI"), "edit_controls", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
     {0},
 };
 

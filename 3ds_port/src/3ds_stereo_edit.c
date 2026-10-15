@@ -207,8 +207,9 @@ static const char *const sOpacityNames[] = {"MAX", "60", "30", "15"};
  * Pokémon, and the top screen's VIEW LAYERS uses them too. */
 static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
-enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD };
-enum { O_DEPTH, O_CONTROLS, O_AUTHOR, O_RESET, O_CLOSE, O_COUNT };
+enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS };
+enum { O_DEPTH, O_CONTROLS, O_AUTHOR, O_VERSIONS, O_RESET, O_CLOSE, O_COUNT };
+enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
 /* Frames L is held before a press is a hold (a pick), not a step. */
@@ -282,7 +283,9 @@ static struct
      * top screen shows now (the cursor's, as it moves). */
     unsigned chooseOpened, previewIndex;
     bool iconsMissing;
-    bool onlyEdited, editedFirst;
+    /* SHOW_ALL, SHOW_EDITED, or SHOW_NEW: what the last sync brought. */
+    uint8_t show;
+    bool editedFirst;
     char query[QUERY_MAX + 1];
     /* The keyboard: what for, the text, the screen it came from. */
     uint8_t kbFor, kbReturn;
@@ -295,6 +298,12 @@ static struct
      * as it changes, until it ends. */
     bool onlineWatch;
     unsigned onlineSerial;
+    /* The versions screen (MORE: VERSIONS): the server's list for the
+     * picture (CtrOnline_GetVersions) and its serial, the cursor, the
+     * status line's serial; the viewer's reloads seen (a version put on the
+     * card is taken up as a new picture). */
+    CtrOnlineVersions versions;
+    unsigned versionsSerial, verCursor, statusSerial, reloads;
     uint32_t tick;
     bool touching;
     char name[CTR_STEREO_MON_NAME];
@@ -1001,6 +1010,10 @@ static bool Bind(void)
 }
 
 bool CtrStereoEdit_Active(void) { return sE.active; }
+static void Choose(unsigned index);
+static void VersionsKeys(unsigned down);
+/* The next open shows the new pictures (CtrStereoEdit_PreferNew). */
+static bool sPreferNew;
 
 void CtrStereoEdit_Open(bool fromGallery)
 {
@@ -1022,8 +1035,31 @@ void CtrStereoEdit_Open(bool fromGallery)
     if (sE.opacity >= OPACITIES) sE.opacity = 1;
     sE.fromGallery = fromGallery;
     sE.dirtyDraw = true;
+    sE.reloads = CtrStereoMon_ReloadCount();
     CtrStereoMon_EditScan();
     Bind();
+    if (sPreferNew)
+    {
+        /* Opened on what a sync brought: the chooser lists only those. */
+        sPreferNew = false;
+        sE.show = SHOW_NEW;
+        Toast("NEW FROM THE SERVER  -  DEX LISTS THEM");
+    }
+}
+
+void CtrStereoEdit_PreferNew(void) { sPreferNew = true; }
+
+void CtrStereoEdit_GoTo(uint16_t id, bool newOnes)
+{
+    int index = CtrStereoMon_GalleryIndexOf(id);
+
+    if (!sE.active) return;
+    if (newOnes) sE.show = SHOW_NEW;
+    if (index >= 0 && id != sE.id && !sE.inBattle)
+    {
+        Choose((unsigned)index);
+        Toast("NEW FROM THE SERVER  -  DEX LISTS THEM");
+    }
 }
 
 static void Close(bool leaveGallery)
@@ -1114,9 +1150,10 @@ static void BuildList(void)
             /* A Pokémon is one entry: its back is reached from its front
              * (the F/B tabs); a back with no front is listed by itself. */
             if ((id & 0xC000) == CTR_STEREO_ID_BACK && other) continue;
-            if (sE.onlyEdited && !edited) continue;
+            if (sE.show == SHOW_EDITED && !edited) continue;
+            if (sE.show == SHOW_NEW && !CtrOnline_IsNew(id) && !(other && CtrOnline_IsNew(other))) continue;
             /* Edited first: those on the first pass, the rest on the second. */
-            if (sE.editedFirst && !sE.onlyEdited ? edited != (pass == 0) : pass == 1) continue;
+            if (sE.editedFirst && sE.show == SHOW_ALL ? edited != (pass == 0) : pass == 1) continue;
             if (sE.query[0] && !Matches(i)) continue;
             sList[sListCount++] = (uint16_t)i;
         }
@@ -1268,7 +1305,7 @@ static void ChooseKeys(unsigned down)
     if (down & CTR_KEY_Y) { OpenKeyboard(KB_SEARCH); return; }
     if (down & CTR_KEY_X)
     {
-        sE.onlyEdited = !sE.onlyEdited;
+        sE.show = (uint8_t)((sE.show + 1) % SHOW_COUNT);
         BuildList();
         return;
     }
@@ -1306,6 +1343,11 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
     if (sE.screen == S_CHOOSE)
     {
         ChooseKeys(down);
+        return;
+    }
+    if (sE.screen == S_VERSIONS)
+    {
+        VersionsKeys(down);
         return;
     }
     if (sE.screen == S_OPTIONS || sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL)
@@ -1769,6 +1811,134 @@ static void TouchEdit(const CtrInput *in)
 #define OPT_W 200
 #define OPT_ROW 26
 
+/* ── The versions on the server (3ds_online.c) ─────────────────────── */
+
+#define VER_Y0 28
+#define VER_ROW 30
+#define VER_ROWS 6
+#define VER_STAR_W 34
+#define VER_CLOSE_W 56
+
+static void FetchVersions(void)
+{
+    if (!CtrOnline_FetchVersions(sE.id)) Toast("BUSY - A MOMENT");
+    sE.dirtyDraw = true;
+}
+
+static void OpenVersions(void)
+{
+    if (!CtrOnline_Linked())
+    {
+        sE.screen = S_EDIT;
+        Toast("LINK IN OPTIONS: EDITOR FIRST");
+        return;
+    }
+    if (sE.dirtyFile) Save(true);
+    memset(&sE.versions, 0, sizeof(sE.versions));
+    sE.versionsSerial = CtrOnline_GetVersions(&sE.versions);
+    if (sE.versions.id != sE.id) memset(&sE.versions, 0, sizeof(sE.versions));
+    sE.verCursor = 0;
+    sE.screen = S_VERSIONS;
+    FetchVersions();
+}
+
+/* A version to the card and the screens (the card's own edit kept in
+ * stereo/backup unless the server has it). */
+static void UseVersion(unsigned i)
+{
+    if (i >= sE.versions.count) return;
+    if (sE.dirtyFile) Save(true);
+    if (CtrOnline_UseVersion(sE.id, sE.versions.v[i].version)) sE.verCursor = i;
+    else Toast("BUSY - A MOMENT");
+    sE.dirtyDraw = true;
+}
+
+/* A favourite's star on or off: at most two, sent at once. */
+static void StarVersion(unsigned i)
+{
+    uint32_t ids[2];
+    unsigned n = 0, most = sE.versions.maxFavourites && sE.versions.maxFavourites < 2 ? sE.versions.maxFavourites : 2;
+    CtrOnlineVersion *v;
+
+    if (i >= sE.versions.count) return;
+    v = &sE.versions.v[i];
+    for (unsigned k = 0; k < sE.versions.count; ++k)
+        if (k != i && sE.versions.v[k].favourite && n < 2) ids[n++] = sE.versions.v[k].version;
+    if (!v->favourite)
+    {
+        if (n >= most)
+        {
+            Toast("TWO FAVOURITES ALREADY: UNSTAR ONE");
+            return;
+        }
+        ids[n++] = v->version;
+    }
+    if (CtrOnline_Vote(sE.id, ids, n)) v->favourite = !v->favourite;
+    else Toast("BUSY - A MOMENT");
+    sE.verCursor = i;
+    sE.dirtyDraw = true;
+}
+
+/* Each frame on the screen: a new list, a new status line. */
+static void VersionsFrame(void)
+{
+    CtrOnlineVersions list;
+    unsigned serial = CtrOnline_GetVersions(&list);
+
+    if (serial != sE.versionsSerial)
+    {
+        sE.versionsSerial = serial;
+        if (list.id == sE.id)
+        {
+            sE.versions = list;
+            if (sE.verCursor >= list.count) sE.verCursor = list.count ? list.count - 1 : 0;
+        }
+        sE.dirtyDraw = true;
+    }
+    if (CtrOnline_Serial() != sE.statusSerial)
+    {
+        sE.statusSerial = CtrOnline_Serial();
+        sE.dirtyDraw = true;
+    }
+}
+
+/* UP/DOWN shows the version above or below, A stars it, Y asks the server
+ * again, L/R turn the page, B goes back. */
+static void VersionsKeys(unsigned down)
+{
+    unsigned count = sE.versions.count;
+
+    if (down & (CTR_KEY_B | CTR_KEY_START)) sE.screen = S_EDIT;
+    else if ((down & CTR_KEY_UP) && sE.verCursor > 0) UseVersion(sE.verCursor - 1);
+    else if ((down & CTR_KEY_DOWN) && sE.verCursor + 1 < count) UseVersion(sE.verCursor + 1);
+    else if (down & CTR_KEY_A) StarVersion(sE.verCursor);
+    else if (down & CTR_KEY_Y) FetchVersions();
+    else if ((down & CTR_KEY_L) && sE.verCursor >= VER_ROWS) sE.verCursor -= VER_ROWS;
+    else if ((down & CTR_KEY_R) && sE.verCursor + VER_ROWS < count) sE.verCursor += VER_ROWS;
+    sE.dirtyDraw = true;
+}
+
+static void TouchVersions(const CtrInput *in)
+{
+    int x = in->touchX, y = in->touchY;
+
+    if (!in->touchDown) return;
+    sE.dirtyDraw = true;
+    if (y < VER_Y0 - 4)
+    {
+        if (x >= W - 4 - VER_CLOSE_W) sE.screen = S_EDIT;
+        else FetchVersions();
+        return;
+    }
+    if (y >= VER_Y0 && y < VER_Y0 + VER_ROWS * VER_ROW)
+    {
+        unsigned i = (sE.verCursor / VER_ROWS) * VER_ROWS + (unsigned)((y - VER_Y0) / VER_ROW);
+
+        if (x < VER_STAR_W) StarVersion(i);
+        else UseVersion(i);
+    }
+}
+
 static void OptionAct(int row, bool rightHalf)
 {
     switch (row)
@@ -1779,6 +1949,7 @@ static void OptionAct(int row, bool rightHalf)
         break;
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
     case O_AUTHOR: OpenKeyboard(KB_AUTHOR); break;
+    case O_VERSIONS: OpenVersions(); break;
     case O_RESET:
         sE.screen = S_CONFIRM_RESET;
         break;
@@ -1857,7 +2028,7 @@ static void TouchChoose(const CtrInput *in)
     if (y < CH_Y0)
     {
         if (x >= CH_SEARCH_X && x < CH_SEARCH_X + CH_SEARCH_W) OpenKeyboard(KB_SEARCH);
-        else if (x >= CH_SHOW_X && x < CH_SHOW_X + CH_SHOW_W) { sE.onlyEdited = !sE.onlyEdited; BuildList(); }
+        else if (x >= CH_SHOW_X && x < CH_SHOW_X + CH_SHOW_W) { sE.show = (uint8_t)((sE.show + 1) % SHOW_COUNT); BuildList(); }
         else if (x >= CH_SORT_X && x < CH_SORT_X + CH_SORT_W) { sE.editedFirst = !sE.editedFirst; BuildList(); }
         else if (count && x >= CH_PREV_X && x < CH_PREV_X + CH_PAGE_W)
             sE.chooseCursor = (sE.chooseCursor + count - CH_PER_PAGE % count) % count;
@@ -2535,9 +2706,86 @@ static void DrawConfirm(void)
                               final ? CTR_DRAW_DARK : CTR_DRAW_WHITE);
 }
 
+/* A five-pointed star, 11 pixels: a favourite's, gold, else a grey outline. */
+static void DrawStar(int x, int y, bool on)
+{
+    static const char *const rows[11] = {
+        "     #     ", "    ###    ", "    ###    ", "###########", " ######### ", "  #######  ",
+        "   #####   ", "  ### ###  ", "  ##   ##  ", " ##     ## ", " #       # ",
+    };
+
+    for (int r = 0; r < 11; ++r)
+        for (int c = 0; c < 11; ++c)
+        {
+            bool in = rows[r][c] == '#';
+            bool edge = in && (r == 0 || c == 0 || c == 10 || r == 10 || rows[r - 1][c] != '#' || rows[r][c - 1] != '#'
+                               || rows[r][c + 1] != '#' || (r < 10 && rows[r + 1][c] != '#'));
+
+            if (!in) continue;
+            if (on) Px(x + c, y + r, edge ? Rgb(20, 30, 2) : Rgb(31, 52, 4));
+            else if (edge) Px(x + c, y + r, Rgb(14, 30, 16));
+        }
+}
+
+/*
+ * The versions screen: every version of the picture on the server, newest
+ * first, who made it, its votes, whether it is current and whether it is
+ * the one on the card; a star for each of the (two) favourites.
+ */
+static void DrawVersions(void)
+{
+    const CtrOnlineVersions *list = &sE.versions;
+    unsigned page = sE.verCursor / VER_ROWS;
+    char line[64], status[CTR_ONLINE_TEXT];
+    CtrOnlineStatus st = CtrOnline_Status(status, sizeof(status));
+
+    CtrBottomDraw_Panel(0, 0, W, H);
+    snprintf(line, sizeof(line), "VERSIONS OF %s", sE.name);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, 7, CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(W - 4 - VER_CLOSE_W, 2, VER_CLOSE_W, 20, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "CLOSE", W - 4 - VER_CLOSE_W / 2, 7, CTR_DRAW_DARK);
+    if (list->count == 0)
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_NORMAL, st == CTR_ONLINE_BUSY ? "ASKING THE SERVER..." : "NONE ON THE SERVER YET",
+                                  W / 2, H / 2 - 8, CTR_DRAW_DARK);
+    for (unsigned r = 0; r < VER_ROWS; ++r)
+    {
+        unsigned i = page * VER_ROWS + r;
+        const CtrOnlineVersion *v = &list->v[i];
+        int y = VER_Y0 + (int)r * VER_ROW, colour;
+        bool chosen = i == sE.verCursor;
+
+        if (i >= list->count) break;
+        CtrBottomDraw_Plate(4, y, W - 8, VER_ROW - 4, chosen ? 1 : 0, false);
+        DrawStar(13, y + 7, v->favourite);
+        colour = chosen ? CTR_DRAW_WHITE : CTR_DRAW_DARK;
+        snprintf(line, sizeof(line), "#%lu %s", (unsigned long)v->version, v->author[0] ? v->author : "?");
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, VER_STAR_W, y + 3, colour);
+        snprintf(line, sizeof(line), "R%u%s%s", v->revision, v->final ? "  FINAL" : "",
+                 v->current ? (list->pinned ? "  CURRENT, PINNED" : "  CURRENT") : "");
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, VER_STAR_W, y + 14, chosen ? CTR_DRAW_WHITE : CTR_DRAW_BLUE);
+        snprintf(line, sizeof(line), "%u VOTE%s", v->votes, v->votes == 1 ? "" : "S");
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, W - 12 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, line), y + 3,
+                           colour);
+        if (v->onCard)
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "SHOWING", W - 12 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "SHOWING"),
+                               y + 14, chosen ? CTR_DRAW_WHITE : CTR_DRAW_RED);
+    }
+    if (list->count > VER_ROWS)
+    {
+        snprintf(line, sizeof(line), "PAGE %u OF %u  L/R", page + 1, (list->count + VER_ROWS - 1) / VER_ROWS);
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, W - 8 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, line), H - 15,
+                           CTR_DRAW_DARK);
+    }
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "UP/DOWN SHOW   A STAR (TWO)   B BACK", 6, H - 28, CTR_DRAW_DARK);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, status, 6, H - 15,
+                       st == CTR_ONLINE_ERROR ? CTR_DRAW_RED : st == CTR_ONLINE_BUSY ? CTR_DRAW_BLUE : CTR_DRAW_DARK);
+    DrawToast();
+}
+
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "AUTHOR", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "AUTHOR", "VERSIONS ON SERVER", "RESET TO PACK",
+                                               "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -2581,10 +2829,10 @@ static void DrawChooser(void)
     Icon(ICON_SEARCH, false, CH_SEARCH_X + 5, 6, InkOn(sE.query[0] != 0));
     CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.query[0] ? sE.query : "SEARCH  Y", CH_SEARCH_X + 22, 5,
                        sE.query[0] ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
-    CtrBottomDraw_Plate(CH_SHOW_X, 2, CH_SHOW_W, 20, sE.onlyEdited ? 1 : 0, sE.onlyEdited);
-    Icon(sE.onlyEdited ? ICON_EDIT : ICON_FILTER, false, CH_SHOW_X + 4, 6, InkOn(sE.onlyEdited));
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.onlyEdited ? "EDITED" : "ALL", CH_SHOW_X + 19, 5,
-                       sE.onlyEdited ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(CH_SHOW_X, 2, CH_SHOW_W, 20, sE.show != SHOW_ALL ? 1 : 0, sE.show != SHOW_ALL);
+    Icon(sE.show == SHOW_EDITED ? ICON_EDIT : ICON_FILTER, false, CH_SHOW_X + 4, 6, InkOn(sE.show != SHOW_ALL));
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.show == SHOW_EDITED ? "EDITED" : sE.show == SHOW_NEW ? "NEW" : "ALL",
+                       CH_SHOW_X + 19, 5, sE.show != SHOW_ALL ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
     CtrBottomDraw_Plate(CH_SORT_X, 2, CH_SORT_W, 20, sE.editedFirst ? 1 : 0, sE.editedFirst);
     Icon(ICON_SORT, false, CH_SORT_X + 4, 6, InkOn(sE.editedFirst));
     CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.editedFirst ? "EDITED 1ST" : "BY NO.", CH_SORT_X + 19, 5,
@@ -2595,7 +2843,8 @@ static void DrawChooser(void)
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "R", CH_NEXT_X + CH_PAGE_W / 2, 5, CTR_DRAW_DARK);
     sE.iconsMissing = false;
     if (count == 0)
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_NORMAL, sE.onlyEdited ? "NO EDITED PICTURES YET" : "NOTHING BY THAT NAME",
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_NORMAL, sE.show == SHOW_EDITED ? "NO EDITED PICTURES YET"
+                                  : sE.show == SHOW_NEW ? "NOTHING NEW FROM THE SERVER" : "NOTHING BY THAT NAME",
                                   W / 2, H / 2 - 8, CTR_DRAW_DARK);
     for (unsigned cell = 0; cell < CH_PER_PAGE; ++cell)
     {
@@ -2747,6 +2996,8 @@ static void Draw(void)
         DrawChooser();
     else if (sE.screen == S_KEYBOARD)
         DrawKeyboard();
+    else if (sE.screen == S_VERSIONS && sE.pl != NULL)
+        DrawVersions();
     else if (sE.pl == NULL)
     {
         CtrBottomDraw_Panel(0, 0, W, H);
@@ -2965,6 +3216,15 @@ bool CtrStereoEdit_BottomFrame(void)
     in = TestInput(in);
     if (sE.pl != NULL) sE.dirtyDraw = true;
 #endif
+    /* A version put on the card (the versions screen): the viewer read it
+     * again, so the planes are taken up afresh. */
+    if (CtrStereoMon_ReloadCount() != sE.reloads)
+    {
+        sE.reloads = CtrStereoMon_ReloadCount();
+        sE.id = 0;
+        sE.pl = NULL;
+        sE.dirtyDraw = true;
+    }
     if (sE.screen != S_CHOOSE && sE.screen != S_KEYBOARD && !Bind())
     {
         if (sE.tick % 16 == 0) Draw();
@@ -2984,6 +3244,7 @@ bool CtrStereoEdit_BottomFrame(void)
     if (sE.screen == S_CHOOSE) { TouchChoose(in); PreviewChosen(); }
     else if (sE.screen == S_KEYBOARD) TouchKeyboard(in);
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
+    else if (sE.screen == S_VERSIONS) { TouchVersions(in); VersionsFrame(); }
     else if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) TouchConfirm(in);
     else
     {

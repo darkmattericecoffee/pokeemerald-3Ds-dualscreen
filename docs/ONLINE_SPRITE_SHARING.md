@@ -312,6 +312,30 @@ the error statuses for a wrong code, a missing file and an unlinked console. **N
 verified**: the TLS path on the real New 3DS, and the on-screen parts (ONLINE page, the
 keyboard, the editor's UPLOAD row, the gallery line), which were built but not looked at.
 
+### 7.2 Round two (2026-10-15, after the first hardware test)
+
+The first New 3DS test passed: 14 edits uploaded through the Cloudflare tunnel with the
+pinned GlobalSign root, and a version made on the PC synced down. Then, on the user's request:
+
+- **Votes** (server): `votes` table, at most two favourites per user per picture, from the
+  website (a star per version) or the console (`POST /api/mons/<key>/votes`). Current = admin
+  pin, else most votes, else newest. `GET /api/mons/<key>/versions` lists a picture's versions
+  with their votes and the caller's favourites.
+- **Versions on the console**: the editor's MORE › VERSIONS ON SERVER. UP/DOWN (or a tap)
+  puts that version on the card and shows it at once; the card's own edit goes to
+  `stereo/backup/` unless the server has it. A (or the star) toggles a favourite.
+- **New pictures**: each sync that brings pictures writes them to `online_new.txt`. The
+  editor's chooser has a NEW filter. After such a sync the editor turns to the first new
+  picture, the gallery shows it, or on the field the editor opens on it (OPEN NEW ONES).
+- **Menus**: the column's trainer-card button is EDITOR (opens the plane editor; icon
+  `tools/sprite_editor/sprites/editor_menu.png` via `gen_menu_icon.py`). OPTIONS' CHEATS tab
+  is now EDITOR (`CTR_EXTRAS_EDITOR`; the cheats stay in the source behind
+  `CTR_CHEATS_MENU`): a status row across the whole width with the new pictures' icons (three,
+  then a drawn "+n"), the editor, link, upload all, sync, unlink, NEW FROM SERVER, OPEN NEW
+  ONES, UPLOAD ON FINAL, SHOW CONTROLS.
+- **Top-screen help**: on the START and SELECT rows the action word was placed against the
+  button rather than the "START"/"SELECT" label, so BATTLE and POKEDEX overlapped those labels.
+
 ## 8. Open questions and risks
 
 | Item | Status |

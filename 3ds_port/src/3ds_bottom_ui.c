@@ -109,6 +109,8 @@
 #include "3ds_stereo_mon.h"
 #include "3ds_extras.h"
 #include "3ds_bottom_art.h"
+#include "3ds_menu_icon.h"
+#include "3ds_online.h"
 #include "3ds_input.h"
 #include "3ds_log.h"
 #include "3ds_platform.h"
@@ -2584,10 +2586,16 @@ static const CtrExtra *PageExtra(unsigned page, unsigned row)
 
 /* What a cell shows, for the redraw to notice a change: its value, or for
  * one with its own text, a sum of that text. */
+/* The wide status cell (DrawWideStatus) is still waiting for a picture. */
+static bool8 sStatusIconsMissing;
+
 static u16 ExtraShownValue(const CtrExtra *extra)
 {
     u16 sum = 0;
 
+    /* The status: its pictures too, and every frame until they are all in. */
+    if (strcmp(extra->key, "online_status") == 0)
+        sum = (u16)(CtrOnline_NewIds(NULL, 0) * 7 + (sStatusIconsMissing ? CtrPlatform_FrameCount() : 0));
     if (!extra->text)
         return extra->step ? CtrSettings_GetInt(extra->key, extra->fallback) : CtrExtras_Value(extra);
     for (const u8 *c = extra->text(); *c != EOS; ++c)
@@ -3560,19 +3568,33 @@ enum { PLATE_NORMAL, PLATE_CHOSEN, PLATE_PRESSED, PLATE_OFF };
 
 static void DrawColumnButton(const ViewState *s, int i, u8 state)
 {
+    /* The trainer card's place holds the plane editor (3ds_stereo_edit.c). */
     const u8 *labels[SCR_COUNT] = {
-        Ascii(CTR_TEXT("MAP", "MAPA", "CARTE", "MAPPA")), gText_MenuPokemon, gText_MenuBag, s->name, gText_MenuPokedex, gText_MenuPokenav,
+        Ascii(CTR_TEXT("MAP", "MAPA", "CARTE", "MAPPA")), gText_MenuPokemon, gText_MenuBag,
+        Ascii(CTR_TEXT("EDITOR", "EDITOR", "ÉDITEUR", "EDITOR")), gText_MenuPokedex, gText_MenuPokenav,
         gText_MenuSave, gText_MenuOption,
     };
     const Icon *icon = &sRes.column[i];
     int y = PLATE_Y(i), dy = state == PLATE_PRESSED;
+
+    (void)s;
     bool8 on = state == PLATE_CHOSEN || state == PLATE_PRESSED;
     const PlateLook *look = state == PLATE_OFF ? &sLook.off : on ? &sLook.chosen : &sLook.plate;
 
     DrawPlate(PLATE_X, y, PLATE_W, PLATE_H, look, PLATE_SOCKET, dy);
     /* The icon's visible pixels centred on the socket; none on a button not
      * available yet. */
-    if (icon->tiles && state != PLATE_OFF)
+    if (i == SCR_CARD && state != PLATE_OFF)
+    {
+        /* The editor's palette (3ds_menu_icon.h), centred on the socket. */
+        int x0 = PLATE_X + (PLATE_SOCKET - MENU_ICON_W) / 2, y0 = y + dy + (PLATE_H - MENU_ICON_H) / 2 + 1;
+
+        for (int r = 0; r < MENU_ICON_H; ++r)
+            for (int c = 0; c < MENU_ICON_W; ++c)
+                if (sMenuIcon[r * MENU_ICON_W + c] != MENU_ICON_CLEAR)
+                    Put(x0 + c, y0 + r, sMenuIcon[r * MENU_ICON_W + c]);
+    }
+    else if (icon->tiles && state != PLATE_OFF)
         DrawSpriteCentred(icon->tiles, icon->size, icon->size, 2 * PLATE_X + PLATE_SOCKET, 2 * (y + dy) + 21,
                           icon->pal.c);
     DrawStrIn(&sSmall, labels[i], PLATE_X + PLATE_SOCKET, PLATE_X + PLATE_W - 1, y + 1 + dy, y + PLATE_H - 2 + dy,
@@ -4681,6 +4703,87 @@ static void DrawOptionCell(const ViewState *s, int row, const u8 *name, bool8 vo
         DrawRing(x, y, OPT_CELL_W, OPT_CELL_H, s->blink);
 }
 
+/*
+ * The EDITOR tab's status (3ds_online.c), the whole first row: the last
+ * job's progress or result, and after a sync the little pictures of what
+ * it brought, three at most and "+n" for the rest.
+ */
+#define WIDE_W (124 + OPT_CELL_W - 4)
+#define CTR_EXTRAS_NEW_SHOWN 3
+static void DrawWideStatus(const ViewState *s, int row, const CtrExtra *extra)
+{
+    bool8 on = s->pressed == HIT_OPTION + row;
+    u16 ids[CTR_EXTRAS_NEW_SHOWN + 1];
+    unsigned total = CtrOnline_NewIds(ids, CTR_EXTRAS_NEW_SHOWN + 1), shown = 0, mons = 0;
+    char status[CTR_ONLINE_TEXT];
+    CtrOnlineStatus st = CtrOnline_Status(status, sizeof(status));
+    bool8 icons = total > 0 && (st == CTR_ONLINE_IDLE || st == CTR_ONLINE_BUSY || CtrOnline_LastWasSync());
+    const u8 *name = Ascii(icons && st != CTR_ONLINE_BUSY && !CtrOnline_LastWasSync()
+                               ? CTR_TEXT("NEW FROM SERVER", "NUEVOS", "NOUVEAUX", "NUOVI") : extra->name);
+    const u8 *value = extra->text();
+    int x, y, capTop, capBottom, cap, line, right, dy = on;
+
+    OptionCell(row, &x, &y);
+    DrawPlate(x, y, WIDE_W, OPT_CELL_H, on ? &sLook.chosen : &sLook.plate, 0, on);
+    right = x + WIDE_W - 6;
+    sStatusIconsMissing = FALSE;
+    if (icons)
+    {
+        /* "+n" at the right end, the pictures before it. */
+        unsigned rest = total;
+
+        for (unsigned i = 0; i < total && i < CTR_EXTRAS_NEW_SHOWN + 1; ++i)
+            if ((ids[i] & 0x4000) == 0) ++mons;
+        mons = mons < CTR_EXTRAS_NEW_SHOWN ? mons : CTR_EXTRAS_NEW_SHOWN;
+        rest = total - mons;
+        if (rest > 0)
+        {
+            /* The game's font has no plus: a drawn one, then the number. */
+            u8 number[8];
+            u16 ink = on ? TXT_WHITE : TXT_DARK;
+            int w, cy = y + 15 + dy;
+
+            ConvertIntToDecimalStringN(number, rest, STR_CONV_MODE_LEFT_ALIGN, 3);
+            w = StrWidth(&sSmall, number);
+            DrawStrIn(&sSmall, number, right - w, right, y + 10 + dy, y + 20 + dy, ink, on ? sLook.chosenShadow : TXT_LIGHT);
+            right -= w + 2;
+            FillRect(right - 5, cy - 1, 5, 2, ink);
+            FillRect(right - 4, cy - 3, 2, 6, ink);
+            right -= 8;
+        }
+        for (unsigned i = 0, k = 0; i < total && i < CTR_EXTRAS_NEW_SHOWN + 1 && shown < mons; ++i)
+        {
+            u16 national = ids[i] & 0x3FFF, species = NationalPokedexNumToSpecies(national);
+            const u8 *tiles;
+
+            if (ids[i] & 0x4000) continue;
+            k = mons - 1 - shown++;
+            tiles = species != SPECIES_NONE && species < NUM_SPECIES ? MonIcon(species, FALSE) : NULL;
+            if (tiles && gMonIconPaletteIndices[species] < 3)
+                DrawSprite(tiles, 4, 4, right - 30 * (int)(k + 1), y + dy, sRes.monIconPal[gMonIconPaletteIndices[species]].c);
+            else
+                sStatusIconsMissing = TRUE;
+        }
+        right -= 30 * (int)mons + 2;
+    }
+    CapRows(&sSmall, &capTop, &capBottom);
+    cap = capBottom - capTop;
+    line = y + 1 + (28 - (2 * cap + 3)) / 2 + dy;
+    DrawStrIn(&sSmall, name, x + 8, x + 8 + StrWidth(&sSmall, name), line, line + cap, on ? TXT_WHITE : TXT_DARK,
+              on ? sLook.chosenShadow : TXT_LIGHT);
+    line += cap + 3;
+    {
+        int w = StrWidth(&sSmall, value);
+
+        if (x + 8 + w > right) w = right - x - 8;
+        DrawStrIn(&sSmall, value, x + 8, x + 8 + w, line, line + cap, on ? TXT_WHITE : TXT_RED,
+                  on ? sLook.chosenShadow : TXT_LRED);
+    }
+    AddHit(x, y, WIDE_W, OPT_CELL_H, HIT_OPTION + row);
+    if (s->optFocus == row)
+        DrawRing(x, y, WIDE_W, OPT_CELL_H, s->blink);
+}
+
 /* An extra's cell: its name, and its value between the arrows, or for an
  * action its one text without them. */
 static void DrawExtraCell(const ViewState *s, int row, const CtrExtra *extra)
@@ -4724,7 +4827,7 @@ static void DrawTab(int x, int y, int w, int h, const PlateLook *p, bool8 presse
 
 static void DrawOptionTabs(const ViewState *s)
 {
-    static const char *const names[CTR_EXTRAS_PAGES] = {CTR_TEXT("SETTINGS", "AJUSTES", "RÉGLAGES", "OPZIONI"), CTR_TEXT("ENHANCEMENTS", "MEJORAS", "AMÉLIOR.", "MIGLIORIE"), CTR_TEXT("CHEATS", "TRUCOS", "ASTUCES", "TRUCCHI")};
+    static const char *const names[CTR_EXTRAS_PAGES] = {CTR_TEXT("SETTINGS", "AJUSTES", "RÉGLAGES", "OPZIONI"), CTR_TEXT("ENHANCEMENTS", "MEJORAS", "AMÉLIOR.", "MIGLIORIE"), CTR_TEXT("EDITOR", "EDITOR", "ÉDITEUR", "EDITOR")};
     u8 pages[CTR_EXTRAS_PAGES], count = 0;
     int capTop, capBottom, cap, widths[CTR_EXTRAS_PAGES], need = 0, x = 4;
     bool8 fit = TRUE;
@@ -4816,7 +4919,11 @@ static void DrawOptions(const ViewState *s)
         {
             const CtrExtra *extra = PageExtra(s->optPage, row);
 
-            if (extra)
+            if (extra && strcmp(extra->key, CTR_EXTRAS_GAP_KEY) == 0)
+                continue;
+            if (extra && strcmp(extra->key, "online_status") == 0)
+                DrawWideStatus(s, row, extra);
+            else if (extra)
                 DrawExtraCell(s, row, extra);
         }
         return;
@@ -7381,6 +7488,16 @@ static void Activate(u8 id, u8 mode)
         }
         if (mode != MODE_FIELD)
             return;
+        /* EDITOR: the plane editor over the gallery, on the field only. */
+        if (screen == SCR_CARD)
+        {
+            if (FieldIdle())
+            {
+                PlaySE(SE_SELECT);
+                CtrStereoMonGame_OpenEditor();
+            }
+            return;
+        }
         /* The PokéNav takes the area when it opens; the top keeps the world
          * from the moment it is asked for, fade included. */
         if (screen == SCR_POKENAV)

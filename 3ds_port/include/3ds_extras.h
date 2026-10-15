@@ -21,6 +21,12 @@ enum
     CTR_EXTRAS_PAGES
 };
 
+/* This build: the third tab holds the plane editor and its sharing instead
+ * of the cheats (3ds_extras.c CTR_CHEATS_MENU). A cell whose key is
+ * CTR_EXTRAS_GAP_KEY is left empty (a wide cell's other half). */
+#define CTR_EXTRAS_EDITOR CTR_EXTRAS_CHEATS
+#define CTR_EXTRAS_GAP_KEY "gap"
+
 /* A tab can hold more than one screen of cells (twelve each): the tab reads
  * "CHEATS 1/2" and a tap on it shows the next. An extra names its screen;
  * the first is the tab itself. */

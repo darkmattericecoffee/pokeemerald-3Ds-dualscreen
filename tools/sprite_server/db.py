@@ -1,4 +1,4 @@
-"""The server's SQLite database: users, sessions, consoles, versions and the current pick.
+"""The server's SQLite database: users, sessions, consoles, versions, votes and the current pick.
 
 One file (sprites.db in the data folder), WAL mode, a connection per request.
 Standard library only.
@@ -68,6 +68,15 @@ CREATE TABLE IF NOT EXISTS current (
     seq        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS current_by_seq ON current (seq);
+-- Each user's favourites: at most two versions per picture (set_votes).
+CREATE TABLE IF NOT EXISTS votes (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mon_key    TEXT NOT NULL,
+    version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+    voted_at   INTEGER NOT NULL,
+    PRIMARY KEY (user_id, version_id)
+);
+CREATE INDEX IF NOT EXISTS votes_by_mon ON votes (mon_key, user_id);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 INSERT OR IGNORE INTO meta (k, v) VALUES ('seq', 0);
 """
@@ -240,15 +249,60 @@ def add_version(conn: sqlite3.Connection, edit, user_id: int, device_id: Optiona
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
         if cur is not None and cur["pinned"]:
             return vid, False, False
-        conn.execute("INSERT OR REPLACE INTO current (mon_key, version_id, pinned, seq) VALUES (?, ?, 0, ?)",
-                     (edit.key, vid, next_seq(conn)))
-        return vid, True, False
+        _set_best(conn, edit.key)
+        cur = conn.execute("SELECT version_id FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
+        return vid, cur is not None and cur["version_id"] == vid, False
 
 
-def _newest(conn: sqlite3.Connection, key: str) -> Optional[int]:
-    row = conn.execute("SELECT id FROM versions WHERE mon_key = ? ORDER BY uploaded_at DESC, id DESC LIMIT 1",
-                       (key,)).fetchone()
+def _best(conn: sqlite3.Connection, key: str) -> Optional[int]:
+    """The version with the most votes; among equals (and with none) the newest."""
+    row = conn.execute(
+        "SELECT v.id, COUNT(t.version_id) AS n FROM versions v LEFT JOIN votes t ON t.version_id = v.id "
+        "WHERE v.mon_key = ? GROUP BY v.id ORDER BY n DESC, v.uploaded_at DESC, v.id DESC LIMIT 1",
+        (key,)).fetchone()
     return row["id"] if row else None
+
+
+def vote_counts(conn: sqlite3.Connection, key: str) -> dict:
+    """{version_id: votes} for a picture's versions that have any."""
+    return {r["version_id"]: r["n"] for r in conn.execute(
+        "SELECT version_id, COUNT(*) AS n FROM votes WHERE mon_key = ? GROUP BY version_id", (key,))}
+
+
+def favourites(conn: sqlite3.Connection, user_id: int, key: str) -> list:
+    """The user's (at most two) favourite versions of a picture, oldest vote first."""
+    return [r["version_id"] for r in conn.execute(
+        "SELECT version_id FROM votes WHERE user_id = ? AND mon_key = ? ORDER BY voted_at, version_id",
+        (user_id, key))]
+
+
+MAX_FAVOURITES = 2
+
+
+def set_votes(conn: sqlite3.Connection, user_id: int, key: str, version_ids) -> Optional[str]:
+    """Replaces the user's favourites for a picture (0 to MAX_FAVOURITES of its versions); the current
+    version follows the votes unless an admin pinned one. An error message, or None."""
+    ids = []
+    for v in version_ids:
+        if not isinstance(v, int) or isinstance(v, bool):
+            return "version ids must be numbers"
+        if v not in ids:
+            ids.append(v)
+    if len(ids) > MAX_FAVOURITES:
+        return "pick at most %d favourites" % MAX_FAVOURITES
+    with Tx(conn):
+        for v in ids:
+            if conn.execute("SELECT 1 FROM versions WHERE id = ? AND mon_key = ?", (v, key)).fetchone() is None:
+                return "version %d is not one of this picture's" % v
+        conn.execute("DELETE FROM votes WHERE user_id = ? AND mon_key = ?", (user_id, key))
+        t = now()
+        for i, v in enumerate(ids):
+            conn.execute("INSERT INTO votes (user_id, mon_key, version_id, voted_at) VALUES (?, ?, ?, ?)",
+                         (user_id, key, v, t + i))
+        cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
+        if cur is None or not cur["pinned"]:
+            _set_best(conn, key)
+    return None
 
 
 def pin(conn: sqlite3.Connection, key: str, version_id: int) -> bool:
@@ -261,19 +315,19 @@ def pin(conn: sqlite3.Connection, key: str, version_id: int) -> bool:
 
 
 def unpin(conn: sqlite3.Connection, key: str) -> None:
-    """Back to 'the newest upload is current'."""
+    """Back to 'the most votes win, else the newest'."""
     with Tx(conn):
-        _set_newest(conn, key)
+        _set_best(conn, key)
 
 
-def _set_newest(conn: sqlite3.Connection, key: str) -> None:
-    newest = _newest(conn, key)
+def _set_best(conn: sqlite3.Connection, key: str) -> None:
+    best = _best(conn, key)
     cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
-    if newest is None:
+    if best is None:
         conn.execute("DELETE FROM current WHERE mon_key = ?", (key,))
-    elif cur is None or cur["version_id"] != newest or cur["pinned"]:
+    elif cur is None or cur["version_id"] != best or cur["pinned"]:
         conn.execute("INSERT OR REPLACE INTO current (mon_key, version_id, pinned, seq) VALUES (?, ?, 0, ?)",
-                     (key, newest, next_seq(conn)))
+                     (key, best, next_seq(conn)))
 
 
 def delete_version(conn: sqlite3.Connection, version_id: int) -> Optional[str]:
@@ -285,7 +339,8 @@ def delete_version(conn: sqlite3.Connection, version_id: int) -> Optional[str]:
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (row["mon_key"],)).fetchone()
         if cur is not None and cur["version_id"] == version_id:
             conn.execute("DELETE FROM current WHERE mon_key = ?", (row["mon_key"],))
+        conn.execute("DELETE FROM votes WHERE version_id = ?", (version_id,))
         conn.execute("DELETE FROM versions WHERE id = ?", (version_id,))
-        if cur is not None and cur["version_id"] == version_id:
-            _set_newest(conn, row["mon_key"])
+        if cur is not None and (cur["version_id"] == version_id or not cur["pinned"]):
+            _set_best(conn, row["mon_key"])
         return row["mon_key"]

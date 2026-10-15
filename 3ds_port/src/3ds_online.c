@@ -40,6 +40,8 @@
 #define DATA_DIR "sdmc:/3ds/emerald3ds"
 #define LINK_PATH DATA_DIR "/online.txt"
 #define SENT_PATH DATA_DIR "/online_sent.txt"
+#define NEW_PATH DATA_DIR "/online_new.txt"
+#define MAX_NEW 512
 #define EDIT_DIR DATA_DIR "/" CTR_STEREO_EDIT_DIR
 #define BACKUP_DIR EDIT_DIR "/backup"
 /* The address used when online.txt names none (make ONLINE_SERVER=...). */
@@ -70,7 +72,7 @@ typedef struct
     bool verify;
 } Link;
 
-enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC };
+enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_VOTE };
 
 typedef struct
 {
@@ -78,6 +80,9 @@ typedef struct
     uint16_t id;
     char code[16];
     char consoleName[40];
+    uint32_t version;
+    uint32_t votes[2];
+    unsigned voteCount;
 } Job;
 
 static CtrLock sLock;
@@ -94,6 +99,16 @@ static bool sEditsWritten;
 static bool sWifiDown;
 /* The job the worker runs (written before it starts). */
 static Job sJob;
+static int sLastJob = -1;
+/* What the last syncs brought (online_new.txt), and the last versions list
+ * with each version's SHA-256 (to know which one the card has). */
+static uint16_t sNew[MAX_NEW];
+static unsigned sNewCount, sNewSerial;
+static bool sNewRead;
+static CtrOnlineVersions sVersions;
+static char sVersionSha[CTR_ONLINE_MAX_VERSIONS][65];
+static unsigned sVersionsSerial;
+static bool sShownWritten;
 /* Main thread only. */
 static bool sSleepHeld;
 static char sUserCopy[USER_MAX];
@@ -785,6 +800,52 @@ static bool Backup(const char *key, const uint8_t *data, uint32_t size)
     return WriteWhole(path, data, size);
 }
 
+/* online_new.txt: one key a line. Called with sLock held. */
+static void ReadNewLocked(void)
+{
+    FILE *f;
+    char line[16];
+
+    if (sNewRead) return;
+    sNewRead = true;
+    sNewCount = 0;
+    if ((f = fopen(NEW_PATH, "r")) == NULL) return;
+    while (sNewCount < MAX_NEW && fgets(line, sizeof(line), f))
+    {
+        uint16_t id;
+
+        line[strcspn(line, "\r\n ")] = 0;
+        if ((id = IdOf(line)) != 0) sNew[sNewCount++] = id;
+    }
+    fclose(f);
+}
+
+/* What a sync brought: kept for the NEW filter and the status's pictures. */
+static void PutNew(const uint16_t *ids, unsigned count)
+{
+    char *text = malloc(count * 8 + 1);
+    size_t n = 0;
+
+    if (text)
+    {
+        for (unsigned i = 0; i < count; ++i)
+        {
+            char key[8];
+
+            KeyOf(ids[i], key, sizeof(key));
+            n += (size_t)sprintf(text + n, "%s\n", key);
+        }
+        if (!WriteWhole(NEW_PATH, text, (uint32_t)n)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", NEW_PATH);
+        free(text);
+    }
+    Lock();
+    memcpy(sNew, ids, count * sizeof(ids[0]));
+    sNewCount = count;
+    sNewRead = true;
+    ++sNewSerial;
+    Unlock();
+}
+
 static void DoSync(Link *link)
 {
     char urlPath[48];
@@ -794,6 +855,7 @@ static void DoSync(Link *link)
     long seq = 0;
     unsigned got = 0, kept = 0, same = 0, items = 0;
     bool ok = true;
+    static uint16_t fetched[MAX_NEW];
 
     SetStatus(CTR_ONLINE_BUSY, "SYNCING...");
     snprintf(urlPath, sizeof(urlPath), "/api/sync?since=%u", link->seq);
@@ -865,6 +927,7 @@ static void DoSync(Link *link)
             else
             {
                 SentPut(&sent, key, sha);
+                if (got < MAX_NEW) fetched[got] = IdOf(key);
                 ++got;
                 kept += local != NULL;
                 CtrLog_Write(CTR_LOG_FS, "online: %s now version %ld%s", key, version,
@@ -881,6 +944,7 @@ static void DoSync(Link *link)
         Lock();
         sEditsWritten = true;
         Unlock();
+        PutNew(fetched, got < MAX_NEW ? got : MAX_NEW);
     }
     CtrLog_Write(CTR_LOG_FS, "online: sync since %u: %u items, %u fetched, %u kept in backup, %u the same%s", link->seq,
                  items, got, kept, same, ok ? "" : ", STOPPED");
@@ -890,6 +954,217 @@ static void DoSync(Link *link)
     if (got == 0) SetStatus(CTR_ONLINE_DONE, "UP TO DATE");
     else if (kept) SetStatus(CTR_ONLINE_DONE, "GOT %u. BACKUP %u", got, kept);
     else SetStatus(CTR_ONLINE_DONE, "GOT %u NEW", got);
+}
+
+/* The card's file of an id: its SHA-256, or "" without one. */
+static void CardSha(uint16_t id, char sha[65])
+{
+    char key[8], path[64];
+    uint32_t size;
+    uint8_t *data;
+
+    KeyOf(id, key, sizeof(key));
+    snprintf(path, sizeof(path), EDIT_DIR "/%s.bin", key);
+    sha[0] = 0;
+    if ((data = ReadWhole(path, MAX_EDIT, &size)) != NULL)
+    {
+        Sha256Hex(data, size, sha);
+        free(data);
+    }
+}
+
+/* The numbers in a JSON array named `name`, up to `max`. */
+static unsigned JsonNumbers(const char *json, const char *name, long *out, unsigned max)
+{
+    char pattern[32];
+    const char *p;
+    unsigned n = 0;
+
+    snprintf(pattern, sizeof(pattern), "\"%s\":[", name);
+    if ((p = strstr(json, pattern)) == NULL) return 0;
+    for (p += strlen(pattern); *p && *p != ']' && n < max;)
+    {
+        char *end;
+        long v = strtol(p, &end, 10);
+
+        if (end == p) ++p;
+        else
+        {
+            out[n++] = v;
+            p = end;
+        }
+    }
+    return n;
+}
+
+/* The server's list of a picture's versions (GET .../versions, or a vote's
+ * answer) into sVersions. */
+static bool ParseVersions(uint16_t id, const char *json)
+{
+    CtrOnlineVersions list;
+    char shas[CTR_ONLINE_MAX_VERSIONS][65], card[65];
+    long current = 0, pinned = 0, most = 2, fav[4];
+    unsigned favs = JsonNumbers(json, "favourites", fav, 4);
+    const char *p = strstr(json, "\"versions\":[");
+
+    if (p == NULL) return false;
+    memset(&list, 0, sizeof(list));
+    list.id = id;
+    JsonNumber(json, "current", &current);
+    JsonNumber(json, "pinned", &pinned);
+    JsonNumber(json, "max_favourites", &most);
+    list.pinned = pinned != 0;
+    list.maxFavourites = (uint8_t)most;
+    CardSha(id, card);
+    for (const char *item = strchr(p, '{'); item != NULL && list.count < CTR_ONLINE_MAX_VERSIONS;
+         item = strchr(item + 1, '{'))
+    {
+        char object[400];
+        const char *end = strchr(item, '}');
+        CtrOnlineVersion *v = &list.v[list.count];
+        long number = 0;
+
+        if (end == NULL || (size_t)(end - item) >= sizeof(object)) break;
+        memcpy(object, item, (size_t)(end - item + 1));
+        object[end - item + 1] = 0;
+        if (!JsonNumber(object, "version_id", &number)) continue;
+        v->version = (uint32_t)number;
+        JsonString(object, "author", v->author, sizeof(v->author));
+        FontSafe(v->author);
+        if (JsonNumber(object, "revision", &number)) v->revision = (uint16_t)number;
+        if (JsonNumber(object, "votes", &number)) v->votes = (uint16_t)number;
+        if (JsonNumber(object, "final", &number)) v->final = number != 0;
+        v->current = v->version == (uint32_t)current;
+        for (unsigned f = 0; f < favs; ++f) v->favourite |= (uint32_t)fav[f] == v->version;
+        JsonString(object, "sha256", shas[list.count], sizeof(shas[0]));
+        v->onCard = card[0] && strcmp(card, shas[list.count]) == 0;
+        ++list.count;
+    }
+    Lock();
+    sVersions = list;
+    memcpy(sVersionSha, shas, sizeof(shas));
+    ++sVersionsSerial;
+    Unlock();
+    return true;
+}
+
+static void DoVersions(const Job *job, const Link *link)
+{
+    char key[8], path[48];
+    Reply reply;
+
+    SetStatus(CTR_ONLINE_BUSY, "GETTING VERSIONS...");
+    KeyOf(job->id, key, sizeof(key));
+    snprintf(path, sizeof(path), "/api/mons/%s/versions", key);
+    if (!Http(link, HTTPC_METHOD_GET, path, NULL, 0, NULL, &reply) || reply.status != 200)
+        FailStatus(&reply, "versions");
+    else if (!ParseVersions(job->id, (const char *)reply.body)) SetStatus(CTR_ONLINE_ERROR, "BAD ANSWER");
+    else
+    {
+        Lock();
+        unsigned count = sVersions.count;
+        Unlock();
+        if (count == 0) SetStatus(CTR_ONLINE_DONE, "NONE ON THE SERVER");
+        else SetStatus(CTR_ONLINE_DONE, "%u VERSION%s", count, count == 1 ? "" : "S");
+    }
+    ReplyFree(&reply);
+}
+
+/* One version onto the card: the card's own first to stereo/backup unless
+ * the server has it too. */
+static void DoUse(const Job *job, const Link *link)
+{
+    char key[8], path[64], urlPath[40], sha[65], card[65];
+    Reply reply;
+    uint8_t *local;
+    uint32_t localSize;
+    SentList sent;
+
+    SetStatus(CTR_ONLINE_BUSY, "LOADING %lu...", (unsigned long)job->version);
+    KeyOf(job->id, key, sizeof(key));
+    snprintf(urlPath, sizeof(urlPath), "/api/versions/%lu", (unsigned long)job->version);
+    if (!Http(link, HTTPC_METHOD_GET, urlPath, NULL, 0, NULL, &reply) || reply.status != 200)
+    {
+        FailStatus(&reply, key);
+        ReplyFree(&reply);
+        return;
+    }
+    if (reply.length < 16 || memcmp(reply.body, CTR_STEREO_EDIT_MAGIC, 8) != 0
+        || (reply.body[8] | (reply.body[9] << 8)) != job->id)
+    {
+        SetStatus(CTR_ONLINE_ERROR, "DOWNLOAD DAMAGED");
+        ReplyFree(&reply);
+        return;
+    }
+    Sha256Hex(reply.body, reply.length, sha);
+    snprintf(path, sizeof(path), EDIT_DIR "/%s.bin", key);
+    mkdir(EDIT_DIR, 0777);
+    if ((local = ReadWhole(path, MAX_EDIT, &localSize)) != NULL)
+    {
+        bool known = false;
+
+        Sha256Hex(local, localSize, card);
+        Lock();
+        for (unsigned i = 0; i < sVersions.count && sVersions.id == job->id; ++i)
+            known |= strcmp(sVersionSha[i], card) == 0;
+        Unlock();
+        if (!known && strcmp(card, sha) != 0 && !Backup(key, local, localSize))
+        {
+            SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
+            free(local);
+            ReplyFree(&reply);
+            return;
+        }
+        if (!known && strcmp(card, sha) != 0)
+            CtrLog_Write(CTR_LOG_FS, "online: %s's card file was on no server version: kept in stereo/backup", key);
+        free(local);
+    }
+    if (!WriteWhole(path, reply.body, reply.length)) SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
+    else
+    {
+        SentLoad(&sent);
+        SentPut(&sent, key, sha);
+        SentSave(&sent);
+        Lock();
+        for (unsigned i = 0; i < sVersions.count && sVersions.id == job->id; ++i)
+            sVersions.v[i].onCard = sVersions.v[i].version == job->version;
+        ++sVersionsSerial;
+        sEditsWritten = true;
+        sShownWritten = true;
+        Unlock();
+        CtrLog_Write(CTR_LOG_FS, "online: %s now version %lu (picked on the console)", key, (unsigned long)job->version);
+        SetStatus(CTR_ONLINE_DONE, "NOW VERSION %lu", (unsigned long)job->version);
+    }
+    ReplyFree(&reply);
+}
+
+static void DoVote(const Job *job, const Link *link)
+{
+    char key[8], path[48], body[64];
+    Reply reply;
+    int n;
+
+    SetStatus(CTR_ONLINE_BUSY, "VOTING...");
+    KeyOf(job->id, key, sizeof(key));
+    snprintf(path, sizeof(path), "/api/mons/%s/votes", key);
+    if (job->voteCount == 0) n = snprintf(body, sizeof(body), "{\"version_ids\":[]}");
+    else if (job->voteCount == 1)
+        n = snprintf(body, sizeof(body), "{\"version_ids\":[%lu]}", (unsigned long)job->votes[0]);
+    else
+        n = snprintf(body, sizeof(body), "{\"version_ids\":[%lu,%lu]}", (unsigned long)job->votes[0],
+                     (unsigned long)job->votes[1]);
+    if (!Http(link, HTTPC_METHOD_POST, path, body, (uint32_t)n, "application/json", &reply) || reply.status != 200)
+    {
+        FailStatus(&reply, "vote");
+        if (reply.status == 400) SetStatus(CTR_ONLINE_ERROR, "VOTE REFUSED");
+    }
+    else if (!ParseVersions(job->id, (const char *)reply.body)) SetStatus(CTR_ONLINE_ERROR, "BAD ANSWER");
+    else
+    {
+        CtrLog_Write(CTR_LOG_FS, "online: %s favourites %s", key, body);
+        SetStatus(CTR_ONLINE_DONE, job->voteCount ? "VOTE SENT" : "VOTES TAKEN BACK");
+    }
+    ReplyFree(&reply);
 }
 
 static void Worker(void *arg)
@@ -925,6 +1200,9 @@ static void Worker(void *arg)
         case JOB_UPLOAD: DoUpload(&job, &link); break;
         case JOB_UPLOAD_ALL: DoUploadAll(&link); break;
         case JOB_SYNC: DoSync(&link); break;
+        case JOB_VERSIONS: DoVersions(&job, &link); break;
+        case JOB_USE: DoUse(&job, &link); break;
+        case JOB_VOTE: DoVote(&job, &link); break;
         }
         httpcExit();
     }
@@ -937,6 +1215,7 @@ static void Worker(void *arg)
         sEndedMs = CtrPlatform_Milliseconds();
     }
     sBusy = false;
+    sLastJob = job.type;
     Unlock();
 }
 
@@ -1097,6 +1376,93 @@ bool CtrOnline_Sync(void)
     return Start(&job);
 }
 
+bool CtrOnline_FetchVersions(uint16_t id)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_VERSIONS;
+    job.id = id;
+    return Start(&job);
+}
+
+bool CtrOnline_UseVersion(uint16_t id, uint32_t version)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_USE;
+    job.id = id;
+    job.version = version;
+    return Start(&job);
+}
+
+bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_VOTE;
+    job.id = id;
+    job.voteCount = count < 2 ? count : 2;
+    for (unsigned i = 0; i < job.voteCount; ++i) job.votes[i] = versions[i];
+    return Start(&job);
+}
+
+unsigned CtrOnline_GetVersions(CtrOnlineVersions *out)
+{
+    unsigned serial;
+
+    Lock();
+    *out = sVersions;
+    serial = sVersionsSerial;
+    Unlock();
+    return serial;
+}
+
+unsigned CtrOnline_NewIds(uint16_t *out, unsigned max)
+{
+    unsigned count;
+
+    Lock();
+    ReadNewLocked();
+    count = sNewCount;
+    for (unsigned i = 0; i < count && i < max; ++i) out[i] = sNew[i];
+    Unlock();
+    return count;
+}
+
+unsigned CtrOnline_NewSerial(void)
+{
+    unsigned serial;
+
+    Lock();
+    serial = sNewSerial;
+    Unlock();
+    return serial;
+}
+
+bool CtrOnline_IsNew(uint16_t id)
+{
+    bool found = false;
+
+    Lock();
+    ReadNewLocked();
+    for (unsigned i = 0; i < sNewCount && !found; ++i) found = sNew[i] == id;
+    Unlock();
+    return found;
+}
+
+bool CtrOnline_LastWasSync(void)
+{
+    bool sync;
+
+    Lock();
+    sync = sLastJob == JOB_SYNC;
+    Unlock();
+    return sync;
+}
+
 void CtrOnline_Unlink(void)
 {
     Link link = GetLink();
@@ -1155,7 +1521,8 @@ unsigned CtrOnline_Serial(void)
  * A scripted run, for an emulator or a first hardware check: when
  * sdmc:/3ds/emerald3ds/online_test.txt exists, its lines one after the
  * other, ten seconds after start and each once the job before it ended: "wait <frames>", "pair <code>", "upload <key>",
- * "uploadall", "sync", "unlink". Each step and its result go to port.log.
+ * "uploadall", "sync", "unlink", "versions <key>",
+ * "use <key> <version>", "vote <key> [<version> [<version>]]". Each step and its result go to port.log.
  */
 static void TestFrame(void)
 {
@@ -1181,6 +1548,18 @@ static void TestFrame(void)
         CtrOnlineStatus status = CtrOnline_Status(text, sizeof(text));
 
         CtrLog_Write(CTR_LOG_FS, "online test: -> %s \"%s\"", status == CTR_ONLINE_ERROR ? "ERROR" : "ok", text);
+        static unsigned logged;
+        CtrOnlineVersions list;
+
+        if (CtrOnline_GetVersions(&list) != logged)
+        {
+            logged = CtrOnline_GetVersions(&list);
+            for (unsigned i = 0; i < list.count; ++i)
+                CtrLog_Write(CTR_LOG_FS, "online test:    #%lu %s r%u votes %u%s%s%s%s", (unsigned long)list.v[i].version,
+                             list.v[i].author, list.v[i].revision, list.v[i].votes, list.v[i].current ? " current" : "",
+                             list.v[i].favourite ? " favourite" : "", list.v[i].onCard ? " on-card" : "",
+                             list.v[i].final ? " final" : "");
+        }
     }
     if (!fgets(line, sizeof(line), script))
     {
@@ -1199,12 +1578,30 @@ static void TestFrame(void)
     else if (strncmp(line, "upload", 6) == 0) CtrOnline_Upload(IdOf(arg));
     else if (strncmp(line, "sync", 4) == 0) CtrOnline_Sync();
     else if (strncmp(line, "unlink", 6) == 0) CtrOnline_Unlink();
+    else if (strncmp(line, "versions", 8) == 0) CtrOnline_FetchVersions(IdOf(arg));
+    else if (strncmp(line, "use", 3) == 0)
+    {
+        unsigned long version = 0;
+
+        sscanf(line, "%*s %*s %lu", &version);
+        CtrOnline_UseVersion(IdOf(arg), (uint32_t)version);
+    }
+    else if (strncmp(line, "vote", 4) == 0)
+    {
+        unsigned long a = 0, b = 0;
+        uint32_t ids[2];
+        int n = sscanf(line, "%*s %*s %lu %lu", &a, &b);
+
+        ids[0] = (uint32_t)a;
+        ids[1] = (uint32_t)b;
+        CtrOnline_Vote(IdOf(arg), ids, n > 0 ? (unsigned)n : 0);
+    }
     if (wait == 0) wait = 1;
 }
 
 void CtrOnline_Frame(void)
 {
-    bool busy, written;
+    bool busy, written, shown;
 
     if (!sLockReady)
     {
@@ -1216,6 +1613,8 @@ void CtrOnline_Frame(void)
     busy = sBusy;
     written = sEditsWritten;
     sEditsWritten = false;
+    shown = sShownWritten;
+    sShownWritten = false;
     Unlock();
     /* Awake while a transfer runs: sleep would drop Wi-Fi under it. */
     if (busy != sSleepHeld)
@@ -1224,4 +1623,7 @@ void CtrOnline_Frame(void)
         sSleepHeld = busy;
     }
     if (written) CtrStereoMon_EditsChanged();
+    /* A version picked on the console: the picture on show (the editor's
+     * too) is read from the card again. */
+    if (shown) CtrStereoMon_ReloadShown();
 }

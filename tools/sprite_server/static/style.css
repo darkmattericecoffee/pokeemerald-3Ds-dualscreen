@@ -35,6 +35,8 @@ input, select { font: inherit; padding: 8px 10px; border: 1px solid var(--line);
 button { font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 0;
   background: var(--accent); color: var(--accent-ink); cursor: pointer; }
 button.small { padding: 3px 10px; font-size: 13px; }
+button.small.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+td.votes { white-space: nowrap; }
 button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
 button.link { background: none; color: var(--accent); padding: 0; font-weight: 400; }
 

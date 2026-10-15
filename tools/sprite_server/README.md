@@ -35,10 +35,11 @@ game pictures and can be made again.
 
 ## The 3DS client
 
-OPTIONS › ENHANCEMENTS (third screen) › ONLINE › LINK CONSOLE, then the code from the
-Account page (the first time also the server's address). After that: FINALIZE in the plane
-editor uploads the picture, UPLOAD ALL EDITS sends everything new, SELECT in the gallery or
-SYNC FROM SERVER fetches the current versions. Details: `3ds_port/src/3ds_online.c` and
+OPTIONS › EDITOR › LINK CONSOLE, then the code from the Account page (the first time also
+the server's address). After that: FINALIZE in the plane editor uploads the picture, UPLOAD
+ALL EDITS sends everything new, SELECT in the gallery or SYNC FROM SERVER fetches the current
+versions (and opens the editor on what came in), and the editor's MORE › VERSIONS ON SERVER
+lists a picture's versions to switch between and star. Details: `3ds_port/src/3ds_online.c` and
 section 7.1 of the design doc.
 
 ## The PC client
@@ -58,9 +59,10 @@ A local file that differs is copied to `stereo/backup/<key>-<time>.bin` first.
 
 ## Which version is current
 
-v1 rule: **the newest upload is current, unless an admin pins one** on the Pokémon's page.
-Voting replaces this in v2. Admins can also delete a version. Deleting the current one
-makes the newest remaining one current.
+**Everybody picks up to two favourite versions per picture** (a star on the Pokémon's page,
+or on the console's VERSIONS screen). The version with the most votes is current; among
+equals, and with no votes at all, the newest. An admin can pin one instead. Admins can also
+delete a version; its votes go with it and the current one is worked out again.
 
 ## API (what the 3DS client will call)
 
@@ -77,6 +79,8 @@ has a `Content-Length`. There are no redirects.
 | `GET /api/versions/<id>` | the `.bin`, with `ETag`, `X-Version-Id`, `X-Sha256` |
 | `GET /api/mons/<key>/current` | the current `.bin`; `If-None-Match` gives 304 |
 | `GET /api/mons` | every Pokémon with a current version |
+| `GET /api/mons/<key>/versions` | `{"current","pinned","favourites","max_favourites","versions":[{"version_id","author","signed","revision","final","votes","sha256","size","uploaded_at"}]}`, newest first; `favourites` are the caller's |
+| `POST /api/mons/<key>/votes` `{"version_ids":[…]}` | consoles only: the caller's favourites (0 to 2) for the picture, replacing the earlier ones; answers like `…/versions` |
 
 `<key>` is the edit file's name: `006` front, `b006` back, `t012` trainer, `p001` player.
 `seq` is a server counter, so the console's clock never matters.

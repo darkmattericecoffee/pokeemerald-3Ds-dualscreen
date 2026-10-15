@@ -251,6 +251,50 @@ class ServerTest(unittest.TestCase):
                                       ctype="application/json")
         self.assertEqual(status, 403)
 
+    def test_votes(self):
+        _, frank = self.linked_client("frank")
+        gina_web, gina = self.linked_client("gina")
+        api = lambda method, path, cfg, obj=None: client.request(
+            method, self.base + path, cfg["token"], json.dumps(obj).encode() if obj is not None else None,
+            "application/json" if obj is not None else None)
+        ids = []
+        for seed in (1, 2, 3):
+            status, _, body = client.request("POST", self.base + "/api/mons/030/versions", frank["token"],
+                                             make_edit("030", seed=seed))
+            self.assertEqual(status, 201)
+            ids.append(json.loads(body)["version_id"])
+        # No votes: the newest is current.
+        status, _, body = api("GET", "/api/mons/030/versions", gina)
+        listing = json.loads(body)
+        self.assertEqual((status, listing["current"], listing["favourites"]), (200, ids[2], []))
+        self.assertEqual([v["version_id"] for v in listing["versions"]], ids[::-1])
+        # Two favourites from the console; the voted one wins over the newest.
+        status, _, body = api("POST", "/api/mons/030/votes", gina, {"version_ids": [ids[0], ids[1]]})
+        self.assertEqual(status, 200, body)
+        listing = json.loads(body)
+        self.assertEqual(listing["favourites"], [ids[0], ids[1]])
+        self.assertIn(listing["current"], (ids[0], ids[1]))
+        status, _, body = api("POST", "/api/mons/030/votes", frank, {"version_ids": [ids[0]]})
+        self.assertEqual(json.loads(body)["current"], ids[0])
+        votes = {v["version_id"]: v["votes"] for v in json.loads(body)["versions"]}
+        self.assertEqual(votes, {ids[0]: 2, ids[1]: 1, ids[2]: 0})
+        # A sync reports the change, so other consoles fetch the winner.
+        status, _, body = api("GET", "/api/sync?since=0", gina)
+        self.assertIn(ids[0], [i["version_id"] for i in json.loads(body)["items"]])
+        # Three are too many; another picture's version is refused.
+        self.assertEqual(api("POST", "/api/mons/030/votes", gina, {"version_ids": ids})[0], 400)
+        self.assertEqual(api("POST", "/api/mons/006/votes", gina, {"version_ids": [ids[0]]})[0], 400)
+        # On the website: a star takes a vote back, a third star is refused.
+        csrf = gina_web.csrf("/mon/030")
+        status, headers, _ = gina_web.go("POST", "/mon/030/vote", {"version": str(ids[1]), "csrf": csrf})
+        self.assertEqual((status, headers["Location"]), (303, "/mon/030?msg=voted"))
+        gina_web.go("POST", "/mon/030/vote", {"version": str(ids[2]), "csrf": csrf})
+        status, headers, _ = gina_web.go("POST", "/mon/030/vote", {"version": str(ids[1]), "csrf": csrf})
+        self.assertEqual(headers["Location"], "/mon/030?msg=twofavourites")
+        self.assertEqual(json.loads(api("GET", "/api/mons/030/versions", gina)[2])["favourites"], [ids[0], ids[2]])
+        status, _, page = gina_web.go("GET", "/mon/030")
+        self.assertIn(b"2 votes", page)
+
     def test_unlinking_a_console(self):
         b, cfg = self.linked_client("dave")
         status, _, body = b.go("GET", "/account")

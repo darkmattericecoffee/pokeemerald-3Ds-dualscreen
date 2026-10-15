@@ -986,14 +986,11 @@ void CtrStereoMon_EditScan(void)
     closedir(d);
 }
 
-void CtrStereoMon_EditsChanged(void)
+static unsigned sReloads;
+
+/* The picture on show read from the card again (its edit file, else the pack's). */
+static void ReloadShown(void)
 {
-    CtrStereoMon_EditScan();
-    CtrStereoBattle_ForgetPlanes();
-    /* The gallery's picture comes from the card again; one in the editor
-     * keeps what the editor holds (the card's copy is replaced under it,
-     * the one before kept in stereo/backup). */
-    if (!sActive || sEditing) return;
     if (!LoadEdit(sId))
     {
         int index;
@@ -1010,7 +1007,27 @@ void CtrStereoMon_EditsChanged(void)
     else sEdited = true;
     sTexReady = false;
     ++sPlanesVersion;
+    ++sReloads;
 }
+
+void CtrStereoMon_EditsChanged(void)
+{
+    CtrStereoMon_EditScan();
+    CtrStereoBattle_ForgetPlanes();
+    /* The gallery's picture comes from the card again; one in the editor
+     * keeps what the editor holds (the card's copy is replaced under it,
+     * the one before kept in stereo/backup). */
+    if (sActive && !sEditing) ReloadShown();
+}
+
+void CtrStereoMon_ReloadShown(void)
+{
+    CtrStereoMon_EditScan();
+    CtrStereoBattle_ForgetPlanes();
+    if (sActive) ReloadShown();
+}
+
+unsigned CtrStereoMon_ReloadCount(void) { return sReloads; }
 
 bool CtrStereoMon_HasEdit(uint16_t id)
 {
@@ -1534,14 +1551,15 @@ static void DrawHelp(bool right, int y, const Help *help, unsigned count)
         int label = h->button == BTN_START ? CTR_HELP_WORD_START : h->button == BTN_SELECT ? CTR_HELP_WORD_SELECT : -1;
         int labelW = label >= 0 ? HelpWidth((unsigned)label) + 3 : 0;
         int controls = labelW + ButtonWidth(h->button) + (h->hold ? 4 + HelpWidth(CTR_HELP_HOLD) : 0);
-        int bx = right ? CTR_GAME_WIDTH - 6 - controls : 6, wide = HelpWidth(h->cell);
+        int x0 = right ? CTR_GAME_WIDTH - 6 - controls : 6, bx = x0 + labelW, wide = HelpWidth(h->cell);
 
-        if (label >= 0) DrawHelpCell((unsigned)label, bx, y + 3, words);
-        bx += labelW;
+        if (label >= 0) DrawHelpCell((unsigned)label, x0, y + 3, words);
         /* The controls sit in the middle of the row's 18 pixels. */
         DrawButton(h->button, bx, y + (18 - ButtonHeight(h->button)) / 2);
         if (h->hold) DrawHelpCell(CTR_HELP_HOLD, bx + ButtonWidth(h->button) + 4, y + 3, words);
-        DrawHelpCell(h->cell, right ? bx - 8 - wide : bx + controls + 8, y + 3, words);
+        /* The words beside the whole group (START's and SELECT's names
+         * included), never over them. */
+        DrawHelpCell(h->cell, right ? x0 - 8 - wide : x0 + controls + 8, y + 3, words);
     }
 }
 

@@ -287,6 +287,11 @@ bool CtrStereoMon_HasEdit(uint16_t id);
  * 3ds_online.c): scanned again, the battle's planes forgotten, the gallery's
  * picture read again. */
 void CtrStereoMon_EditsChanged(void);
+/* The same for the picture on show even while it is edited (a version
+ * picked on the console); ReloadCount moves on with every such read, for
+ * the editor to take the planes again. */
+void CtrStereoMon_ReloadShown(void);
+unsigned CtrStereoMon_ReloadCount(void);
 /* Appends a line to the Pokémon's edit log (CTR_STEREO_EDIT_DIR/NNN.log). */
 void CtrStereoMon_LogEdit(const char *line);
 
@@ -404,5 +409,9 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held);
 /* The bottom screen's frame while the editor is open: its touches and its
  * drawing. False when the editor is not open (the bottom UI goes on). */
 bool CtrStereoEdit_BottomFrame(void);
+/* After a sync brought pictures (3ds_stereo_mon_game.c): the next open lists
+ * only the new ones (PreferNew); or, open already, it turns to `id`. */
+void CtrStereoEdit_PreferNew(void);
+void CtrStereoEdit_GoTo(uint16_t id, bool newOnes);
 
 #endif

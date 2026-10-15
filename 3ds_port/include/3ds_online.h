@@ -45,6 +45,44 @@ bool CtrOnline_Pair(const char *code);
 bool CtrOnline_Upload(uint16_t id);
 bool CtrOnline_UploadAll(void);
 bool CtrOnline_Sync(void);
+/*
+ * A picture's versions on the server, newest first: who uploaded each, its
+ * votes, whether it is current, one of this account's (at most two)
+ * favourites, the one on the card. Fetched by FetchVersions; UseVersion puts
+ * one on the card (the card's own kept in stereo/backup unless the server
+ * has it); Vote sends the favourites (they decide the current one).
+ */
+#define CTR_ONLINE_MAX_VERSIONS 16
+typedef struct
+{
+    uint32_t version;
+    char author[17];
+    uint16_t revision, votes;
+    bool final, current, favourite, onCard;
+} CtrOnlineVersion;
+typedef struct
+{
+    uint16_t id;
+    uint8_t count, maxFavourites;
+    bool pinned;
+    CtrOnlineVersion v[CTR_ONLINE_MAX_VERSIONS];
+} CtrOnlineVersions;
+bool CtrOnline_FetchVersions(uint16_t id);
+bool CtrOnline_UseVersion(uint16_t id, uint32_t version);
+bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count);
+/* The last list fetched (count 0 before one); returns a serial that moves
+ * on with every new list. */
+unsigned CtrOnline_GetVersions(CtrOnlineVersions *out);
+/*
+ * The pictures the last sync that brought any put on the card (kept in
+ * online_new.txt across starts): up to `max` ids into `out`, the total
+ * returned. NewSerial moves on when a sync brings new ones (to open them).
+ */
+unsigned CtrOnline_NewIds(uint16_t *out, unsigned max);
+unsigned CtrOnline_NewSerial(void);
+bool CtrOnline_IsNew(uint16_t id);
+/* Whether the last job that ended was a sync. */
+bool CtrOnline_LastWasSync(void);
 /* Forgets the token (the website's Account page revokes it for good). */
 void CtrOnline_Unlink(void);
 CtrOnlineStatus CtrOnline_Status(char *text, unsigned size);

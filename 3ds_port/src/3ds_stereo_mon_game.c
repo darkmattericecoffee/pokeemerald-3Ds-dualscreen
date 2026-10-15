@@ -42,6 +42,7 @@
 #include "3ds_input.h"
 #include "3ds_log.h"
 #include "3ds_online.h"
+#include "3ds_platform.h"
 #include "3ds_video.h"
 #include "3ds_stereo_mon.h"
 
@@ -370,6 +371,8 @@ static void Show(u16 id, bool8 gallery)
     }
 }
 
+static void NewFromServer(void);
+
 void CtrStereoMonGame_Frame(void)
 {
     const CtrInput *input = CtrInput_Get();
@@ -381,6 +384,7 @@ void CtrStereoMonGame_Frame(void)
     CtrOnline_Frame();
     if (!CtrStereoMon_Load())
         return;
+    NewFromServer();
     BattleFrame();
     TryBattleFrame();
     if ((held & CTR_KEY_GAME) == CTR_KEY_START && !sGallery)
@@ -501,6 +505,56 @@ void CtrStereoMonGame_OpenEditor(void)
     sGallery = TRUE;
     sOpenEditor = TRUE;
     sMask = 2;
+}
+
+/* The editor on a picture (the first new one after a sync): turned to it
+ * when open already, else opened there, its chooser on the new ones. */
+void CtrStereoMonGame_OpenEditorAt(u16 id, bool8 newOnes)
+{
+    int index;
+
+    if (!CtrStereoMon_Load() || CtrStereoMon_Count() == 0) return;
+    if (CtrStereoEdit_Active())
+    {
+        CtrStereoEdit_GoTo(id, newOnes);
+        return;
+    }
+    index = CtrStereoMon_GalleryIndexOf(id);
+    if (index >= 0) sIndex = (unsigned)index;
+    if (newOnes) CtrStereoEdit_PreferNew();
+    sGallery = TRUE;
+    sOpenEditor = TRUE;
+    sMask = 2;
+}
+
+/* A sync brought pictures: the editor turns to the first, the gallery
+ * shows it, and on the field (OPTIONS' OPEN NEW ONES) the editor opens on
+ * it. Not in a battle or a menu of the game's. */
+static void NewFromServer(void)
+{
+    static bool8 seen;
+    static unsigned serial;
+    unsigned now = CtrOnline_NewSerial();
+    u16 first;
+
+    if (!seen)
+    {
+        seen = TRUE;
+        serial = now;
+        return;
+    }
+    if (now == serial || CtrOnline_NewIds(&first, 1) == 0) return;
+    serial = now;
+    if (CtrStereoEdit_Active())
+        CtrStereoEdit_GoTo(first, TRUE);
+    else if (sGallery)
+    {
+        int index = CtrStereoMon_GalleryIndexOf(first);
+
+        if (index >= 0) sIndex = (unsigned)index;
+    }
+    else if (CtrSettings_GetInt("online_open_new", 1) && CtrGame_IsOverworld() && !CtrStereoMonGame_TryBattleOn())
+        CtrStereoMonGame_OpenEditorAt(first, TRUE);
 }
 
 unsigned CtrStereoMonGame_GalleryIndex(void) { return sIndex; }
