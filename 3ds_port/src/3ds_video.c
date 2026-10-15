@@ -332,6 +332,10 @@ static int sSurfaceH = 256;
  * whole battle flat). The scenery and the slots then start past it.
  */
 #define WORLD_COLUMNS 400
+/* Cleared columns between the picture and what follows: the filter at a
+ * slot's or a cell's left edge reads the column before it (a stripe of the
+ * world beside a Pokémon sliding in). */
+#define WORLD_GAP 8
 static int sSceneColumn;
 /*
  * The GBA line the battle scene is composed down to: the top of the text box
@@ -8114,7 +8118,7 @@ static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
     sLayerShift = 0;
     sHudFlatScene = false;
     /* The scenery and the slots past the world's picture (RenderBattleWorld). */
-    sSceneColumn = world ? WORLD_COLUMNS : 0;
+    sSceneColumn = world ? WORLD_COLUMNS + WORLD_GAP : 0;
     BlendForget();
     /* The scene's placement first: the sprites are clipped to it. */
     sObjWinSlotted = sObjWin.ready;
@@ -9139,7 +9143,7 @@ static void RenderBattleWorld(uint32_t clear, float slider)
      * columns, where RenderBattleStereo copies it behind each eye. */
     C3D_RenderTarget *world = stereo ? sScene : sTop;
 
-    sSceneColumn = stereo ? WORLD_COLUMNS : 0;
+    sSceneColumn = stereo ? WORLD_COLUMNS + WORLD_GAP : 0;
     CtrVoxelBattleIntro intro;
 
     /* The world is BG3: its brightness is BG3's. */
@@ -9168,6 +9172,7 @@ static void RenderBattleWorld(uint32_t clear, float slider)
         /* Its columns only: the scenery beside it may be kept from the
          * last frame (sSceneCached). */
         DrawnClear(sScene, C2D_Color32(0, 0, 0, 255), 0, 0, WORLD_COLUMNS, SCENE_H);
+        DrawnClear(sScene, 0, WORLD_COLUMNS, 0, WORLD_GAP, SCENE_H);
     }
     else
         C2D_TargetClear(world, C2D_Color32(0, 0, 0, 255));
