@@ -618,10 +618,43 @@ static unsigned Shown(Slot *s, const uint8_t *vram, int *frame, const Planes **p
     return SHOWS_NOTHING;
 }
 
+static const CtrVideoMemory *sMem;
+
+/* Every slot and every shown 64x64 OAM entry, for the hardware dump. */
+void CtrStereoBattle_LogState(void)
+{
+    for (unsigned i = 0; i < SLOTS; ++i)
+    {
+        const Slot *s = &sSlots[i];
+
+        CtrLog_Write(CTR_LOG_VIDEO, "DUMP slot %u: set %d player %d tile %u oam %d (%d,%d) shows %u frame %d cut %u "
+                     "mon %04x%s trainer %04x%s back %04x%s buffer=%s composed %d id %04x base %u groups %u",
+                     i, s->set, s->player, s->tileNum, s->oam, s->x, s->y, s->shows, s->frame, s->cut,
+                     s->mon.id, s->mon.ok ? "+" : "-", s->trainer.id, s->trainer.ok ? "+" : "-",
+                     s->playerBack.id, s->playerBack.ok ? "+" : "-",
+                     s->bufferPlanes == &s->mon ? "mon" : s->bufferPlanes == &s->trainer ? "trainer" : "none",
+                     s->composed, s->composedPlanes ? s->composedPlanes->id : 0, s->composedBase, s->composedGroups);
+    }
+    if (sMem == NULL) return;
+    for (unsigned o = 0; o < 128; ++o)
+    {
+        unsigned attr0 = sMem->oam[o * 4], attr1 = sMem->oam[o * 4 + 1], attr2 = sMem->oam[o * 4 + 2];
+        bool affine = (attr0 & 0x100) != 0;
+
+        if (!affine && (attr0 & 0x200)) continue;
+        if ((attr1 >> 14) != 3) continue;
+        CtrLog_Write(CTR_LOG_VIDEO, "DUMP oam %u: %04x %04x %04x x %d y %d tile %u pal %u prio %u%s%s", o, attr0, attr1, attr2,
+                     (int)(attr1 & 511), (int)(attr0 & 255), attr2 & 1023, attr2 >> 12, (attr2 >> 10) & 3,
+                     affine ? " affine" : "", affine && (attr0 & 0x200) ? " x2" : "");
+    }
+}
+
 unsigned CtrStereoBattle_Frame(const void *memory, bool battle, uint32_t skip[4])
 {
     LiveApply();
     const CtrVideoMemory *mem = memory;
+
+    sMem = mem;
     unsigned found = 0, active = 0, groups, base = 0;
     int setting;
     const Planes *shownPlanes[SLOTS] = {NULL, NULL, NULL, NULL};

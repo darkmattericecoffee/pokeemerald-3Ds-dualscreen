@@ -10399,6 +10399,13 @@ static void DumpOnKey(void)
     if (sObjWinTarget) DumpRecord(file, chunk, 'O', sObjWinTex.data, sObjWinTex.width, sObjWinTex.height, TexBytes(&sObjWinTex));
     fclose(file);
     linearFree(chunk);
+    CtrStereoBattle_LogState();
+    for (unsigned k = 0; k < sMonCellCount; ++k)
+        CtrLog_Write(CTR_LOG_VIDEO, "DUMP cell %u: oam %u at (%d,%d) in region %u texels (%d,%d) cell %d", k,
+                     sMonCells[k].oam, sMonCells[k].x, sMonCells[k].y, sMonCells[k].region, sMonCells[k].sx,
+                     sMonCells[k].sy, sMonCells[k].cell);
+    CtrLog_Write(CTR_LOG_VIDEO, "DUMP skip %08lx %08lx %08lx %08lx slots %u mons %u", (unsigned long)sObjSkip[0],
+                 (unsigned long)sObjSkip[1], (unsigned long)sObjSkip[2], (unsigned long)sObjSkip[3], sSlotCount, sMonCount);
     CtrLog_Write(CTR_LOG_VIDEO, "DUMP done");
 }
 

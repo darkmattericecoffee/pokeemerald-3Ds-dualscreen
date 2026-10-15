@@ -333,6 +333,7 @@ void CtrStereoBattle_Reserve(void);
  * OAM is indexed); returns how many. `memory` is the CtrVideoMemory bound.
  */
 unsigned CtrStereoBattle_Frame(const void *memory, bool battle, uint32_t skip[4]);
+void CtrStereoBattle_LogState(void);
 /* The sprite of OAM entry `oam` drawn as planes this frame: its GBA
  * position (the GBA's own wrapping) and its priority. */
 bool CtrStereoBattle_Oam(unsigned oam, int *x, int *y, unsigned *priority);
