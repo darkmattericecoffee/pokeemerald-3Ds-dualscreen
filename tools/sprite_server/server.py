@@ -247,8 +247,8 @@ def csrf_field(req: Request) -> str:
 MESSAGES = {
     "pinned": "That version is now the current one and stays so until unpinned.",
     "unpinned": "Unpinned: the most votes win again (among equals, the newest).",
-    "voted": "Your favourites for this picture are saved.",
-    "twofavourites": "You already have two favourites here: take the star off one first.",
+    "voted": "Your votes for this picture are saved.",
+    "twofavourites": "That is as many votes as one picture takes.",
     "deleted": "The version was deleted.",
     "revoked": "The console was unlinked. Its token no longer works.",
     "password": "Password changed. Other browsers were signed out.",
@@ -392,6 +392,7 @@ def mon_page(req: Request, key: str) -> Response:
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
     admin = req.user["role"] == "admin"
     counts = db.vote_counts(req.conn, key)
+    versions = by_votes(versions, counts)
     mine = db.favourites(req.conn, req.user["id"], key)
     prev, nxt, other = neighbours(key)
     links = []
@@ -444,8 +445,8 @@ def mon_page(req: Request, key: str) -> Response:
         actions = ['<form method="post" action="/mon/%s/vote" class="inline">%s<input type="hidden" name="version" '
                    'value="%d"><button class="small%s" title="%s">%s</button></form>'
                    % (key, csrf_field(req), v["id"], " on" if starred else "",
-                      "Take your vote back" if starred else "One of your two favourites",
-                      "&#9733; Favourite" if starred else "&#9734; Favourite"),
+                      "Take your vote back" if starred else "Vote for this version",
+                      "&#9733; Voted" if starred else "&#9734; Vote"),
                    '<a href="/dl/v%d/%s.bin">Download</a>' % (v["id"], key)]
         if admin and not (is_cur and cur["pinned"]):
             actions.append('<form method="post" action="/mon/%s/pin" class="inline">%s'
@@ -465,15 +466,16 @@ def mon_page(req: Request, key: str) -> Response:
                "%d vote%s" % (counts.get(v["id"], 0), "" if counts.get(v["id"], 0) == 1 else "s"),
                e(utc(v["uploaded_at"])), ago(v["uploaded_at"]), " ".join(actions)))
     table = ('<h2>Versions</h2><table class="versions"><tbody>%s</tbody></table>' % "".join(rows)) if rows else ""
-    rule = ('<p class="muted rule">Everybody picks up to two favourites per picture, here or on the console. The '
-            'version with the most votes is current (among equals, the newest), unless an admin pins one.</p>'
+    rule = ('<p class="muted rule">Vote for as many versions as you like, here or on the console; the front and '
+            'the back are voted on apart. The most votes come first and are current (among equals, the newest), '
+            'unless an admin pins one.</p>'
             if rows else "")
     return Response(page(req, CFG.name(key), head + hero + table + rule, MESSAGES.get(req.q("msg"), "")))
 
 
 @route("POST", r"/mon/" + KEY + r"/vote", "session")
 def vote_post(req: Request, key: str) -> Response:
-    """A favourite's star: on, or off again. A third one is refused."""
+    """A version's vote: on, or off again."""
     try:
         vid = int(req.form.get("version", ""))
     except ValueError:
@@ -776,6 +778,11 @@ def api_upload(req: Request, key: str) -> Response:
                       "sha256": edit.sha256}, 200 if duplicate else 201)
 
 
+def by_votes(rows, counts: dict) -> list:
+    """The most votes first; among equals the newest (rows come newest first)."""
+    return sorted(rows, key=lambda r: -counts.get(r["id"], 0))
+
+
 def _voter(req: Request) -> int:
     return req.device["user_id"] if req.device is not None else req.user["id"]
 
@@ -787,6 +794,7 @@ def _versions_json(req: Request, key: str) -> dict:
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
     counts = db.vote_counts(req.conn, key)
+    rows = by_votes(rows, counts)
     return {"key": key, "current": cur["version_id"] if cur else None, "pinned": bool(cur and cur["pinned"]),
             "favourites": db.favourites(req.conn, _voter(req), key), "max_favourites": db.MAX_FAVOURITES,
             "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],

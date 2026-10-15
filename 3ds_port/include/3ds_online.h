@@ -60,9 +60,9 @@ bool CtrOnline_Delete(uint16_t id, uint32_t version);
 bool CtrOnline_UploadAll(void);
 bool CtrOnline_Sync(void);
 /*
- * A picture's versions on the server, newest first: who uploaded each, its
- * votes, whether it is current, one of this account's (at most two)
- * favourites, the one on the card. Fetched by FetchVersions; UseVersion puts
+ * A picture's versions on the server, the most votes first (among equals
+ * the newest): who uploaded each, its votes, whether it is current, voted
+ * for by this account, the one on the card. Fetched by FetchVersions; UseVersion puts
  * one on the card (the card's own kept in stereo/backup unless the server
  * has it); Vote sends the favourites (they decide the current one).
  */
@@ -83,14 +83,16 @@ typedef struct
 } CtrOnlineVersions;
 bool CtrOnline_FetchVersions(uint16_t id);
 bool CtrOnline_UseVersion(uint16_t id, uint32_t version);
-/* A picture's favourites (0 to 2 version numbers): kept on the card at once
- * (online_votes.txt) and sent when the server can be reached, now or after
- * the next job that reaches it, else tried again every minute; the status
- * reads SENDING VOTE... and VOTE SENT, or SAVED, SENDS LATER. Favourites
- * gives what the console knows (pending: not sent yet); PendingVotes how
- * many pictures wait. */
+/* A picture's votes: the versions this account likes, as many as it has
+ * (up to CTR_ONLINE_MAX_VOTES), kept on the card at once (online_votes.txt)
+ * and sent when the server can be reached, now or after the next job that
+ * reaches it, else tried again every minute; the status reads SENDING
+ * VOTE... and VOTE SENT, or SAVED, SENDS LATER. Favourites gives what the
+ * console knows (pending: not sent yet); PendingVotes how many pictures wait.
+ * A front's and its back's votes are their own. */
+#define CTR_ONLINE_MAX_VOTES CTR_ONLINE_MAX_VERSIONS
 bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count);
-unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[2], bool *pending);
+unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[CTR_ONLINE_MAX_VOTES], bool *pending);
 unsigned CtrOnline_PendingVotes(void);
 /* Per picture: how many versions the server has and whether this account
  * voted for one (the Pokédex's marks), from FetchIndex (a sync fetches it

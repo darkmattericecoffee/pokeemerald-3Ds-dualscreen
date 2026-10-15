@@ -439,6 +439,11 @@ bool CtrStereoEdit_BottomFrame(void);
 void CtrStereoEdit_PreferNew(void);
 /* The next open goes straight to the Pokédex (the new pictures only, or all). */
 void CtrStereoEdit_PreferDex(bool newOnes);
+/* online_test.txt's aids: the versions screen of the picture being edited,
+ * and the bottom screen to a file (RGB565 in the canvas's layout: 320
+ * columns of 240, each from the bottom up). */
+void CtrStereoEdit_TestVersions(void);
+void CtrStereoEdit_TestShot(const char *path);
 void CtrStereoEdit_GoTo(uint16_t id, bool newOnes);
 
 #endif

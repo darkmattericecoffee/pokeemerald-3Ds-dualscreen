@@ -430,6 +430,24 @@ RFC 7748/4231 vectors and each other. The standard server is `http://poke.cloudn
 bare host name typed on the console means `http://`. TEST SERVER shows `HTTP OK`, `HEALTH OK
 API 2` and `LINKED AS <name>` when a signed request and its signed answer went through.
 
+### 7.7 Round six (2026-10-15, after TEST SERVER passed on the New 3DS)
+
+- **Votes**: every row of the versions screen has a see-through VOTE button (gold, a star and
+  VOTED once given); A votes for the row under the cursor too. Vote for as many versions as you
+  like, up to 16 a picture; a front and its back are voted on apart. Lists, on the console and
+  the website, show the most votes first (among equals the newest). online_votes.txt keeps any
+  number per line (`key pending v1 v2 ...`); old two-column lines still read.
+- **Closing the versions screen** (CLOSE, B or START) goes back where it was opened from: the
+  Pokédex (its X or an entry's globe) or the editor (the globe in its bar).
+- **The editor's Pokédex no longer flickers**: the bottom screen's Pokémon icon cache held six
+  icons (the party's), the page shows ten, so every frame loaded one and dropped another. It
+  now holds 40.
+- **The build is "Pokémon Emerald 3D Editor"**, "Editor by darkmatter" (HOME menu / Homebrew
+  Launcher), with a globe-and-pencil icon; the title screen's bottom says "Editor by darkmatter"
+  above the version.
+- Test aids for online_test.txt: `verscreen` opens the versions screen, `shot NAME` and
+  `bottomshot NAME` write the editor's or the bottom screen's canvas to `shot-NAME.bin`.
+
 ## 8. Open questions and risks
 
 | Item | Status |

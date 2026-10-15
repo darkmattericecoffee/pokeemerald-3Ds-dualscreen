@@ -18,6 +18,7 @@ Where every part of Pokémon Emerald 3Ds Dual Screen comes from, and what ships 
 | Plane editor's tool sprites: pencil, bucket, hand, magnifier (`3ds_port/src/3ds_edit_sprites.h`, made by `tools/sprite_editor/gen_sprites.py` from `tools/sprite_editor/sprites/*.png`) | Drawn by the project's author, 16 px | the project's own | n/a | compiled into the 3DSX |
 | Bottom screen column's EDITOR button: palette and brush (`3ds_port/src/3ds_menu_icon.h`, made by `tools/sprite_editor/gen_menu_icon.py` from `tools/sprite_editor/sprites/editor_menu.png`) | Supplied by the project's author, made with PixelLab, 24 px | the project's own | n/a | compiled into the 3DSX |
 | Plane editor's globe button (`3ds_port/src/3ds_menu_icon.h`, from `tools/sprite_editor/sprites/online.png` via `gen_menu_icon.py`) | Supplied by the project's author, 24 px | the project's own | n/a | compiled into the 3DSX |
+| App icon of the editor build, "Pokémon Emerald 3D Editor": a globe with a pencil (`3ds_port/assets/artwork/icon.png`) | Supplied by the project's author (darkmatter), 48 px | the project's own | n/a | the 3DSX's SMDH |
 | Plane editor's button pictures (`3ds_port/src/3ds_button_sprites.h`, made by `tools/sprite_editor/gen_buttons.py` from `tools/sprite_editor/buttons/*.png`) | Drawn by the project's author, 24 px | the project's own | n/a | compiled into the 3DSX |
 | Python, Tk, Pillow, PyInstaller runtime | their projects | PSF / BSD / HPND / GPL+exception | no | inside the builder |
 

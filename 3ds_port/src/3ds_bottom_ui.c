@@ -675,7 +675,7 @@ static struct
     u16 key;
     u32 age;
     u8 tiles[512];
-} sMonIcons[PARTY_SIZE];
+} sMonIcons[MON_ICON_SLOTS];
 
 static const u8 *MonIcon(u16 iconSpecies, bool8 deoxysForm)
 {
@@ -683,7 +683,9 @@ static const u8 *MonIcon(u16 iconSpecies, bool8 deoxysForm)
     int victim = 0;
     const u8 *src;
 
-    for (int i = 0; i < PARTY_SIZE; ++i)
+    /* More slots than a screen shows (the editor's Pokédex: ten), or every
+     * frame would load one and drop another, and the icons would blink. */
+    for (int i = 0; i < MON_ICON_SLOTS; ++i)
     {
         if (sMonIcons[i].key == key && key != 0)
         {
@@ -6310,14 +6312,25 @@ static struct
 /*
  * Under the title screen: the developer's logo in the bottom-left corner and
  * the build's version (CTR_APP_VERSION, the Makefile's APP_VERSION) in the
- * bottom-right one, both in the logo's own grey over black.
+ * bottom-right one with the plane editor's credit above it, all in the
+ * logo's own grey over black.
  */
 #ifndef CTR_APP_VERSION
 #define CTR_APP_VERSION "dev"
 #endif
+#define CTR_EDITOR_CREDIT "Editor by darkmatter"
 #define TITLE_MARGIN_X 16
 #define TITLE_MARGIN_Y 6
 #define TITLE_GREY 100   /* the logo's coverage at its strongest */
+
+void CtrBottom_TestShot(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+
+    if (f == NULL) return;
+    fwrite(sCanvas, sizeof(sCanvas), 1, f);
+    fclose(f);
+}
 
 static void DrawTitleCredit(void)
 {
@@ -6342,6 +6355,10 @@ static void DrawTitleCredit(void)
         InkColumns(&sNormal, str, &ix0, &ix1);
         CapRows(&sNormal, &top, &bottom);
         DrawStr(&sNormal, str, W - TITLE_MARGIN_X - ix1, y0 + 8 + (12 - (bottom - top)) / 2 - top, grey, 0);
+        /* The plane editor's credit, a line above the version. */
+        str = Ascii(CTR_EDITOR_CREDIT);
+        InkColumns(&sNormal, str, &ix0, &ix1);
+        DrawStr(&sNormal, str, W - TITLE_MARGIN_X - ix1, y0 - 8 + (12 - (bottom - top)) / 2 - top, grey, 0);
     }
 }
 

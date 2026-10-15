@@ -36,6 +36,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include "3ds_bottom_draw.h"
 #include "3ds_log.h"
 #include "3ds_online.h"
 #include "3ds_online_crypto.h"
@@ -47,7 +48,7 @@
 #define LINK_PATH DATA_DIR "/online.txt"
 #define SENT_PATH DATA_DIR "/online_sent.txt"
 #define NEW_PATH DATA_DIR "/online_new.txt"
-/* The favourites (votes) per picture, sent or still to send: "key pending v1 v2". */
+/* The votes per picture, sent or still to send: "key pending v1 v2 ...". */
 #define VOTES_PATH DATA_DIR "/online_votes.txt"
 #define MAX_FAVS 800
 #define MAX_INDEX 1024
@@ -136,7 +137,7 @@ struct Fav
     uint16_t id;
     uint8_t n;
     bool pending;
-    uint32_t v[2];
+    uint32_t v[CTR_ONLINE_MAX_VOTES];
 };
 static Fav sFavs[MAX_FAVS];
 static unsigned sFavCount;
@@ -1206,8 +1207,8 @@ static bool ParseVersions(uint16_t id, const char *json)
 {
     CtrOnlineVersions list;
     char shas[CTR_ONLINE_MAX_VERSIONS][65], card[65];
-    long current = 0, pinned = 0, most = 2, fav[4];
-    unsigned favs = JsonNumbers(json, "favourites", fav, 4);
+    long current = 0, pinned = 0, most = CTR_ONLINE_MAX_VOTES, fav[CTR_ONLINE_MAX_VOTES];
+    unsigned favs = JsonNumbers(json, "favourites", fav, CTR_ONLINE_MAX_VOTES);
     const char *p = strstr(json, "\"versions\":[");
 
     if (p == NULL) return false;
@@ -1217,7 +1218,7 @@ static bool ParseVersions(uint16_t id, const char *json)
     JsonNumber(json, "pinned", &pinned);
     JsonNumber(json, "max_favourites", &most);
     list.pinned = pinned != 0;
-    list.maxFavourites = (uint8_t)most;
+    list.maxFavourites = (uint8_t)(most < CTR_ONLINE_MAX_VOTES ? most : CTR_ONLINE_MAX_VOTES);
     CardSha(id, card);
     for (const char *item = strchr(p, '{'); item != NULL && list.count < CTR_ONLINE_MAX_VERSIONS;
          item = strchr(item + 1, '{'))
@@ -1265,7 +1266,10 @@ static bool ParseVersions(uint16_t id, const char *json)
 
         if (fv && fv->pending)
             for (unsigned i = 0; i < list.count; ++i)
-                list.v[i].favourite = (fv->n > 0 && fv->v[0] == list.v[i].version) || (fv->n > 1 && fv->v[1] == list.v[i].version);
+            {
+                list.v[i].favourite = false;
+                for (unsigned k = 0; k < fv->n; ++k) list.v[i].favourite |= fv->v[k] == list.v[i].version;
+            }
     }
     sVersions = list;
     memcpy(sVersionSha, shas, sizeof(shas));
@@ -1370,7 +1374,7 @@ static void DoUse(const Job *job, const Link *link)
 static void ReadFavsLocked(void)
 {
     FILE *f;
-    char line[48];
+    char line[40 + CTR_ONLINE_MAX_VOTES * 12];
 
     if (sFavsRead) return;
     sFavsRead = true;
@@ -1378,21 +1382,23 @@ static void ReadFavsLocked(void)
     if ((f = fopen(VOTES_PATH, "r")) == NULL) return;
     while (sFavCount < MAX_FAVS && fgets(line, sizeof(line), f))
     {
-        char key[16];
+        char key[16], *p;
         unsigned pending = 0;
-        unsigned long a = 0, b = 0;
-        int n = sscanf(line, "%15s %u %lu %lu", key, &pending, &a, &b);
+        int used = 0;
         Fav *fv = &sFavs[sFavCount];
 
-        if (n < 2 || (fv->id = IdOf(key)) == 0) continue;
+        if (sscanf(line, "%15s %u%n", key, &pending, &used) < 2 || (fv->id = IdOf(key)) == 0) continue;
         fv->pending = pending != 0;
-        fv->v[0] = (uint32_t)a;
-        fv->v[1] = (uint32_t)b;
-        fv->n = (uint8_t)((a != 0) + (b != 0));
-        if (fv->v[0] == 0 && fv->v[1] != 0)
+        fv->n = 0;
+        /* The numbers after it (0 is none: the old two-column lines). */
+        for (p = line + used; fv->n < CTR_ONLINE_MAX_VOTES;)
         {
-            fv->v[0] = fv->v[1];
-            fv->v[1] = 0;
+            char *end;
+            unsigned long v = strtoul(p, &end, 10);
+
+            if (end == p) break;
+            p = end;
+            if (v) fv->v[fv->n++] = (uint32_t)v;
         }
         ++sFavCount;
     }
@@ -1413,21 +1419,30 @@ static Fav *FavLocked(uint16_t id, bool create)
 
 static void WriteFavs(void)
 {
-    static char text[MAX_FAVS * 40];
-    size_t n = 0;
+    const size_t per = 16 + CTR_ONLINE_MAX_VOTES * 11;
+    char *text;
+    size_t n = 0, size;
 
     Lock();
+    size = sFavCount * per + 1;
+    if ((text = malloc(size)) == NULL)
+    {
+        Unlock();
+        return;
+    }
     for (unsigned i = 0; i < sFavCount; ++i)
     {
         char key[8];
 
         KeyOf(sFavs[i].id, key, sizeof(key));
-        n += (size_t)snprintf(text + n, sizeof(text) - n, "%s %u %lu %lu\n", key, sFavs[i].pending ? 1u : 0u,
-                              (unsigned long)(sFavs[i].n > 0 ? sFavs[i].v[0] : 0),
-                              (unsigned long)(sFavs[i].n > 1 ? sFavs[i].v[1] : 0));
+        n += (size_t)snprintf(text + n, size - n, "%s %u", key, sFavs[i].pending ? 1u : 0u);
+        for (unsigned k = 0; k < sFavs[i].n; ++k)
+            n += (size_t)snprintf(text + n, size - n, " %lu", (unsigned long)sFavs[i].v[k]);
+        n += (size_t)snprintf(text + n, size - n, "\n");
     }
     Unlock();
     if (!WriteWhole(VOTES_PATH, text, (uint32_t)n)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", VOTES_PATH);
+    free(text);
 }
 
 static unsigned PendingVotes(void)
@@ -1448,8 +1463,8 @@ static void LearnFavouritesLocked(uint16_t id, const long *fav, unsigned favs)
     Fav *fv = FavLocked(id, favs > 0);
 
     if (fv == NULL || fv->pending) return;
-    fv->n = (uint8_t)(favs < 2 ? favs : 2);
-    for (unsigned i = 0; i < 2; ++i) fv->v[i] = i < fv->n ? (uint32_t)fav[i] : 0;
+    fv->n = (uint8_t)(favs < CTR_ONLINE_MAX_VOTES ? favs : CTR_ONLINE_MAX_VOTES);
+    for (unsigned i = 0; i < fv->n; ++i) fv->v[i] = (uint32_t)fav[i];
 }
 
 /* Every vote still on the card to the server, one picture at a time. A
@@ -1462,7 +1477,7 @@ static void DoFlush(const Link *link)
     {
         Fav fv;
         bool found = false;
-        char key[8], path[48], body[64];
+        char key[8], path[48], body[32 + CTR_ONLINE_MAX_VOTES * 11];
         Reply reply;
         int n;
 
@@ -1479,11 +1494,10 @@ static void DoFlush(const Link *link)
         SetStatus(CTR_ONLINE_BUSY, "SENDING VOTE...");
         KeyOf(fv.id, key, sizeof(key));
         snprintf(path, sizeof(path), "/api/mons/%s/votes", key);
-        if (fv.n == 0) n = snprintf(body, sizeof(body), "{\"version_ids\":[]}");
-        else if (fv.n == 1) n = snprintf(body, sizeof(body), "{\"version_ids\":[%lu]}", (unsigned long)fv.v[0]);
-        else
-            n = snprintf(body, sizeof(body), "{\"version_ids\":[%lu,%lu]}", (unsigned long)fv.v[0],
-                         (unsigned long)fv.v[1]);
+        n = snprintf(body, sizeof(body), "{\"version_ids\":[");
+        for (unsigned k = 0; k < fv.n; ++k)
+            n += snprintf(body + n, sizeof(body) - (size_t)n, "%s%lu", k ? "," : "", (unsigned long)fv.v[k]);
+        n += snprintf(body + n, sizeof(body) - (size_t)n, "]}");
         if (!Http(link, HTTPC_METHOD_POST, path, body, (uint32_t)n, "application/json", &reply) || reply.status == 0)
         {
             ReplyFree(&reply);
@@ -1504,7 +1518,7 @@ static void DoFlush(const Link *link)
             Fav *now = FavLocked(fv.id, false);
 
             /* Sent as it stands (the player may have changed it meanwhile). */
-            if (now && now->n == fv.n && now->v[0] == fv.v[0] && now->v[1] == fv.v[1]) now->pending = false;
+            if (now && now->n == fv.n && memcmp(now->v, fv.v, fv.n * sizeof(fv.v[0])) == 0) now->pending = false;
         }
         Unlock();
         if (reply.status == 200)
@@ -2051,8 +2065,8 @@ bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count)
 
         if (fv)
         {
-            fv->n = (uint8_t)(count < 2 ? count : 2);
-            for (unsigned i = 0; i < 2; ++i) fv->v[i] = i < fv->n ? versions[i] : 0;
+            fv->n = (uint8_t)(count < CTR_ONLINE_MAX_VOTES ? count : CTR_ONLINE_MAX_VOTES);
+            for (unsigned i = 0; i < fv->n; ++i) fv->v[i] = versions[i];
             fv->pending = true;
         }
         if (sVersions.id == id)
@@ -2061,13 +2075,13 @@ bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count)
             {
                 bool on = false;
 
-                for (unsigned k = 0; k < count && k < 2; ++k) on |= versions[k] == sVersions.v[i].version;
+                for (unsigned k = 0; k < count && k < CTR_ONLINE_MAX_VOTES; ++k) on |= versions[k] == sVersions.v[i].version;
                 sVersions.v[i].favourite = on;
             }
             ++sVersionsSerial;
         }
         for (unsigned i = 0; i < sIndexCount; ++i)
-            if (sIndex[i].id == id) sIndex[i].mine = (uint8_t)(count < 2 ? count : 2);
+            if (sIndex[i].id == id) sIndex[i].mine = (uint8_t)(count < CTR_ONLINE_MAX_VOTES ? count : CTR_ONLINE_MAX_VOTES);
         ++sIndexSerial;
         busy = sBusy;
     }
@@ -2081,7 +2095,7 @@ bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count)
     return true;
 }
 
-unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[2], bool *pending)
+unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[CTR_ONLINE_MAX_VOTES], bool *pending)
 {
     unsigned n = 0;
 
@@ -2092,8 +2106,7 @@ unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[2], bool *pending)
         if (fv)
         {
             n = fv->n;
-            out[0] = fv->v[0];
-            out[1] = fv->v[1];
+            memcpy(out, fv->v, n * sizeof(out[0]));
             if (pending) *pending = fv->pending;
         }
         else if (pending) *pending = false;
@@ -2366,6 +2379,21 @@ static void TestFrame(void)
         CtrStereoMonGame_OpenEditor();
     }
     else if (strncmp(line, "editor", 6) == 0) CtrStereoMonGame_OpenEditor();
+    else if (strncmp(line, "verscreen", 9) == 0) CtrStereoEdit_TestVersions();
+    else if (strncmp(line, "bottomshot", 10) == 0)
+    {
+        char path[96];
+
+        snprintf(path, sizeof(path), DATA_DIR "/shot-%s.bin", arg);
+        CtrBottom_TestShot(path);
+    }
+    else if (strncmp(line, "shot", 4) == 0)
+    {
+        char path[96];
+
+        snprintf(path, sizeof(path), DATA_DIR "/shot-%s.bin", arg);
+        CtrStereoEdit_TestShot(path);
+    }
     else if (strncmp(line, "testserver", 10) == 0) CtrOnline_TestServer();
     else if (strncmp(line, "index", 5) == 0)
     {
@@ -2382,14 +2410,14 @@ static void TestFrame(void)
     else if (strncmp(line, "count", 5) == 0)
     {
         bool voted;
-        uint32_t fav[2] = {0, 0};
+        uint32_t fav[CTR_ONLINE_MAX_VOTES] = {0};
         bool pending = false;
         unsigned n = CtrOnline_Favourites(IdOf(arg), fav, &pending);
         unsigned count = CtrOnline_VersionCount(IdOf(arg), &voted);
 
-        CtrLog_Write(CTR_LOG_FS, "online test:    %s: %u versions%s, favourites %u (%lu %lu)%s, card version %lu", arg,
+        CtrLog_Write(CTR_LOG_FS, "online test:    %s: %u versions%s, votes %u (%lu %lu %lu)%s, card version %lu", arg,
                      count, voted ? ", voted" : "", n, (unsigned long)fav[0], (unsigned long)fav[1],
-                     pending ? " PENDING" : "", (unsigned long)CtrOnline_CardVersion(IdOf(arg)));
+                     (unsigned long)fav[2], pending ? " PENDING" : "", (unsigned long)CtrOnline_CardVersion(IdOf(arg)));
     }
     else if (strncmp(line, "use", 3) == 0)
     {
@@ -2400,12 +2428,13 @@ static void TestFrame(void)
     }
     else if (strncmp(line, "vote", 4) == 0)
     {
-        unsigned long a = 0, b = 0;
-        uint32_t ids[2];
-        int n = sscanf(line, "%*s %*s %lu %lu", &a, &b);
+        unsigned long a = 0, b = 0, c = 0;
+        uint32_t ids[3];
+        int n = sscanf(line, "%*s %*s %lu %lu %lu", &a, &b, &c);
 
         ids[0] = (uint32_t)a;
         ids[1] = (uint32_t)b;
+        ids[2] = (uint32_t)c;
         CtrOnline_Vote(IdOf(arg), ids, n > 0 ? (unsigned)n : 0);
     }
     if (wait == 0) wait = 1;

@@ -25,10 +25,10 @@ GPUMEM_WRAPPED := vramAlloc vramMemAlign vramAllocAt vramMemAlignAt vramRealloc 
 LDFLAGS += $(foreach f,$(GPUMEM_WRAPPED),-Wl,--wrap=$(f))
 LIBS := -lctru -lm
 TARGET := emerald3ds
-APP_TITLE := Pokemon Emerald 3Ds Dual Screen
+APP_TITLE := Pokémon Emerald 3D Editor
 # File names of the release executable (no spaces).
 APP_FILE := Emerald3DS
-APP_DESCRIPTION := Dual-screen port for Nintendo 3DS
+APP_DESCRIPTION := Editor by darkmatter
 APP_AUTHOR := ZallaxDev
 # The release this build is, shown under the title screen (3ds_bottom_ui.c);
 # tools/build_release.py refuses a --version that differs.

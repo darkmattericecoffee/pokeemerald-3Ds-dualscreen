@@ -337,20 +337,24 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(json.loads(body)["current"], ids[0])
         votes = {v["version_id"]: v["votes"] for v in json.loads(body)["versions"]}
         self.assertEqual(votes, {ids[0]: 2, ids[1]: 1, ids[2]: 0})
+        # The most votes first, then the newest.
+        self.assertEqual([v["version_id"] for v in json.loads(body)["versions"]], ids)
         # A sync reports the change, so other consoles fetch the winner.
         status, _, body = api("GET", "/api/sync?since=0", gina)
         self.assertIn(ids[0], [i["version_id"] for i in json.loads(body)["items"]])
-        # Three are too many; another picture's version is refused.
-        self.assertEqual(api("POST", "/api/mons/030/votes", gina, {"version_ids": ids})[0], 400)
+        # Any number of a picture's versions (up to 16); another picture's version is refused.
+        self.assertEqual(api("POST", "/api/mons/030/votes", gina, {"version_ids": ids})[0], 200)
+        self.assertEqual(api("POST", "/api/mons/030/votes", gina, {"version_ids": list(range(1, 18))})[0], 400)
         self.assertEqual(api("POST", "/api/mons/006/votes", gina, {"version_ids": [ids[0]]})[0], 400)
-        # On the website: a star takes a vote back, a third star is refused.
+        # On the website: Vote takes a vote back, and gives it again.
         csrf = gina_web.csrf("/mon/030")
         status, headers, _ = gina_web.go("POST", "/mon/030/vote", {"version": str(ids[1]), "csrf": csrf})
         self.assertEqual((status, headers["Location"]), (303, "/mon/030?msg=voted"))
-        gina_web.go("POST", "/mon/030/vote", {"version": str(ids[2]), "csrf": csrf})
-        status, headers, _ = gina_web.go("POST", "/mon/030/vote", {"version": str(ids[1]), "csrf": csrf})
-        self.assertEqual(headers["Location"], "/mon/030?msg=twofavourites")
         self.assertEqual(json.loads(api("GET", "/api/mons/030/versions", gina)[2])["favourites"], [ids[0], ids[2]])
+        status, headers, _ = gina_web.go("POST", "/mon/030/vote", {"version": str(ids[1]), "csrf": csrf})
+        self.assertEqual(headers["Location"], "/mon/030?msg=voted")
+        self.assertEqual(json.loads(api("GET", "/api/mons/030/versions", gina)[2])["favourites"],
+                         [ids[0], ids[2], ids[1]])
         status, _, page = gina_web.go("GET", "/mon/030")
         self.assertIn(b"2 votes", page)
         # Each knows its own versions, and only its uploader takes one off the server.
@@ -360,7 +364,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(api("POST", "/api/versions/%d/delete" % ids[2], gina)[0], 403)
         status, _, body = api("POST", "/api/versions/%d/delete" % ids[2], frank)
         self.assertEqual(status, 200)
-        self.assertEqual([v["version_id"] for v in json.loads(body)["versions"]], [ids[1], ids[0]])
+        self.assertEqual([v["version_id"] for v in json.loads(body)["versions"]], [ids[0], ids[1]])
 
     def test_signed_console(self):
         password = self.add_artist("signer")

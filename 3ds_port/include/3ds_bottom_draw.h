@@ -20,6 +20,9 @@ void CtrBottomDraw_Begin(uint16_t *canvas);
 void CtrBottomDraw_End(void);
 /* The regular bottom screen draws itself whole on its next frame. */
 void CtrBottom_ForceRedraw(void);
+/* online_test.txt's aid: the bottom screen's canvas to a file (RGB565,
+ * 320 columns of 240, each from the bottom up). */
+void CtrBottom_TestShot(const char *path);
 
 uint16_t CtrBottomDraw_Rgb565(uint16_t bgr555);
 void CtrBottomDraw_Pixel(int x, int y, uint16_t rgb565);

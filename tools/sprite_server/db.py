@@ -339,11 +339,13 @@ def favourites(conn: sqlite3.Connection, user_id: int, key: str) -> list:
         (user_id, key))]
 
 
-MAX_FAVOURITES = 2
+# Votes per user per picture: any of its versions (front and back are pictures of their own). The
+# console lists 16 versions, so it can always show and send all of a user's votes.
+MAX_FAVOURITES = 16
 
 
 def set_votes(conn: sqlite3.Connection, user_id: int, key: str, version_ids) -> Optional[str]:
-    """Replaces the user's favourites for a picture (0 to MAX_FAVOURITES of its versions); the current
+    """Replaces the user's votes for a picture (0 to MAX_FAVOURITES of its versions); the current
     version follows the votes unless an admin pinned one. An error message, or None."""
     ids = []
     for v in version_ids:
@@ -352,7 +354,7 @@ def set_votes(conn: sqlite3.Connection, user_id: int, key: str, version_ids) -> 
         if v not in ids:
             ids.append(v)
     if len(ids) > MAX_FAVOURITES:
-        return "pick at most %d favourites" % MAX_FAVOURITES
+        return "at most %d votes per picture" % MAX_FAVOURITES
     with Tx(conn):
         for v in ids:
             if conn.execute("SELECT 1 FROM versions WHERE id = ? AND mon_key = ?", (v, key)).fetchone() is None:

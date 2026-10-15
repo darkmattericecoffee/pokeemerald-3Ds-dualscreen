@@ -66,7 +66,8 @@ header shows it working (grey when the server cannot be reached).
 OPTIONS › ONLINE › LINK CONSOLE, then the code from the Account page (the first time also
 the server's address). After that, in the plane editor (the column's EDITOR button): the globe
 opens the versions screen: the server's versions of the Pokémon's front and back, to show,
-vote for (two per picture, kept on the card and sent when the server can be reached), upload
+vote for (each row's VOTE button: as many versions as you like, front and back apart, kept on
+the card and sent when the server can be reached), upload
 your own or delete yours. In the Pokédex (DEX) every entry shows its version counts and
 uploader and has the same globe. OPTIONS › ONLINE has LOAD NEW ONES, SEE AND VOTE and UPLOAD
 ALL EDITS. Details: `3ds_port/src/3ds_online.c` and
@@ -89,8 +90,9 @@ A local file that differs is copied to `stereo/backup/<key>-<time>.bin` first.
 
 ## Which version is current
 
-**Everybody picks up to two favourite versions per picture** (a star on the Pokémon's page,
-or on the console's VERSIONS screen). The version with the most votes is current; among
+**Everybody votes for as many versions of a picture as they like** (up to 16; Vote on the
+Pokémon's page, or the VOTE button on the console's versions screen; a front and its back are
+voted on apart). Lists show the most votes first. The version with the most votes is current; among
 equals, and with no votes at all, the newest. An admin can pin one instead. Admins can also
 delete a version; its votes go with it and the current one is worked out again.
 
@@ -116,8 +118,8 @@ Cloudflare go to HTTPS.
 | `GET /api/versions/<id>` | the `.bin`, with `ETag`, `X-Version-Id`, `X-Sha256` |
 | `GET /api/mons/<key>/current` | the current `.bin`; `If-None-Match` gives 304 |
 | `GET /api/mons` | every Pokémon with a current version: `versions` (how many), `mine` (how many are the caller's favourites) |
-| `GET /api/mons/<key>/versions` | `{"current","pinned","favourites","max_favourites","versions":[{"version_id","author","signed","revision","final","votes","sha256","size","uploaded_at"}]}`, newest first; `favourites` are the caller's |
-| `POST /api/mons/<key>/votes` `{"version_ids":[…]}` | consoles only: the caller's favourites (0 to 2) for the picture, replacing the earlier ones; answers like `…/versions` |
+| `GET /api/mons/<key>/versions` | `{"current","pinned","favourites","max_favourites","versions":[{"version_id","author","signed","revision","final","votes","sha256","size","uploaded_at"}]}`, the most votes first (among equals the newest); `favourites` are the caller's votes |
+| `POST /api/mons/<key>/votes` `{"version_ids":[…]}` | consoles only: the caller's votes (0 to 16 of its versions) for the picture, replacing the earlier ones; answers like `…/versions` |
 | `POST /api/versions/<id>/delete` | consoles only: takes the caller's own version off the server (an admin's console: any); answers like `…/versions` |
 | `GET /api/rev` | `{"rev","seq"}`: `rev` moves on with every upload, vote, pin and delete (the web pages poll it) |
 

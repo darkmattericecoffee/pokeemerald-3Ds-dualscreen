@@ -326,6 +326,7 @@ static struct
     uint32_t sideCard[2];
     uint8_t side;
     bool confirmDelete, versionsAfterBind;
+    bool versionsFromDex;             /* the versions screen was opened from the Pokédex: closing goes back there */
     uint32_t deleteVersion;
     /* The picture the server's words are about (the one edited, or under
      * the Pokédex's cursor), since when, whether its list came; which
@@ -1942,10 +1943,12 @@ static int CardAt(void)
 /* Whether this account voted for that version of the picture. */
 static bool Voted(uint16_t id, uint32_t version)
 {
-    uint32_t fav[2];
+    uint32_t fav[CTR_ONLINE_MAX_VOTES];
     unsigned n = CtrOnline_Favourites(id, fav, NULL);
 
-    return version && ((n > 0 && fav[0] == version) || (n > 1 && fav[1] == version));
+    for (unsigned k = 0; k < n; ++k)
+        if (version && fav[k] == version) return true;
+    return false;
 }
 
 /* The three lines about the version on the card (the top right). */
@@ -2116,11 +2119,12 @@ static void OptionAct(int row, bool rightHalf)
 /*
  * The globe (in the editor's bar, or on a Pokémon in the Pokédex) opens it:
  * the server's versions of the picture's front and of its back, two lists
- * side by side with who made each and its votes. The top screen shows the
- * front and the back next to each other, the side looked at in 3D. UP/DOWN
- * shows a version (it goes on the card; the card's own edit is kept in
- * stereo/backup unless the server has it), LEFT/RIGHT is the front or the
- * back, A (or the star) votes for it, Y animates; UPLOAD MINE sends this
+ * side by side with who made each and its votes, the most votes first. The
+ * top screen shows the front and the back next to each other, both in 3D.
+ * UP/DOWN shows a version (it goes on the card; the card's own edit is kept
+ * in stereo/backup unless the server has it), LEFT/RIGHT is the front or the
+ * back, A (or the row's VOTE button) votes for it or takes the vote back -
+ * as many versions as one likes, front and back apart - Y animates; UPLOAD MINE sends this
  * console's own edits of both sides, DELETE MINE takes this account's
  * version off the server.
  */
@@ -2131,7 +2135,8 @@ static void OptionAct(int row, bool rightHalf)
 #define VER_ROW 32
 #define VER_ROWS 4
 #define VER_COL_W 154
-#define VER_STAR_W 22
+/* Each row's VOTE button, see-through, at its right end. */
+#define VER_VOTE_W 50
 #define VER_CLOSE_W 56
 #define VER_BTN_Y 182
 #define VER_BTN_H 22
@@ -2151,6 +2156,7 @@ static void OpenVersions(void)
     uint16_t other = CtrStereoMon_Counterpart(sE.id);
     bool back = (sE.id & 0xC000) == CTR_STEREO_ID_BACK;
 
+    sE.versionsFromDex = false;
     if (!CtrOnline_Linked())
     {
         sE.screen = S_EDIT;
@@ -2179,11 +2185,32 @@ static void OpenVersions(void)
     CtrStereoMonGame_WantCompanion(true);
 }
 
+void CtrStereoEdit_TestVersions(void)
+{
+    if (sE.active && sE.pl != NULL) OpenVersions();
+}
+
+void CtrStereoEdit_TestShot(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+
+    if (f == NULL) return;
+    fwrite(sCanvas, sizeof(sCanvas), 1, f);
+    fclose(f);
+}
+
+/* Back where the versions screen was opened from: the editor, or the
+ * Pokédex with its cursor on this Pokémon. */
 static void CloseVersions(void)
 {
     sE.screen = S_EDIT;
     sE.confirmDelete = false;
     CtrStereoMonGame_WantCompanion(false);
+    if (sE.versionsFromDex)
+    {
+        sE.versionsFromDex = false;
+        OpenChooser();
+    }
     sE.helpDirty = true;
     sE.dirtyDraw = true;
 }
@@ -2226,12 +2253,13 @@ static void ShowVersion(unsigned i)
     else Toast("BUSY - A MOMENT");
 }
 
-/* A vote for a version of a side, or the vote taken back: two at most per
- * picture, kept on the card and sent now or as soon as the server answers. */
+/* A vote for a version of a side, or the vote taken back: any number of a
+ * picture's versions (the front's and the back's apart), kept on the card
+ * and sent now or as soon as the server answers. */
 static void VoteFor(unsigned side, unsigned i)
 {
     const CtrOnlineVersions *list = &sE.sideList[side];
-    uint32_t fav[2], keep[2], version;
+    uint32_t fav[CTR_ONLINE_MAX_VOTES], keep[CTR_ONLINE_MAX_VOTES], version;
     unsigned n, m = 0;
 
     if (i >= list->count) return;
@@ -2241,9 +2269,9 @@ static void VoteFor(unsigned side, unsigned i)
         if (fav[k] != version) keep[m++] = fav[k];
     if (m == n)
     {
-        if (n >= 2)
+        if (n >= CTR_ONLINE_MAX_VOTES)
         {
-            Toast("TWO VOTES ALREADY: TAKE ONE BACK");
+            Toast("NO MORE VOTES HERE");
             return;
         }
         keep[m++] = version;
@@ -2445,7 +2473,7 @@ static void TouchVersions(const CtrInput *in)
         int cx = x - ColumnX(side);
 
         if (sE.sideId[side] == 0 || i >= sE.sideList[side].count) return;
-        if (cx < VER_STAR_W) VoteFor(side, i);
+        if (cx >= VER_COL_W - 2 - VER_VOTE_W) VoteFor(side, i);
         else if (side != sE.side)
         {
             /* The other side: looked at first, the version shown next. */
@@ -3235,11 +3263,31 @@ static void DrawStar(int x, int y, bool on)
         }
 }
 
+/* A row's VOTE button: see-through glass over the row with a thin rim,
+ * gold with a star and VOTED once this account voted for the version. */
+static void DrawVoteButton(int x, int y, int w, int h, bool voted)
+{
+    uint16_t glass = voted ? Rgb(31, 50, 6) : Rgb(31, 63, 31), rim = voted ? Rgb(20, 30, 2) : Rgb(10, 20, 12);
+
+    FillMix(x + 1, y + 1, w - 2, h - 2, glass, voted ? 3 : 2, 5);
+    FillMix(x + 1, y, w - 2, 1, rim, 3, 5);
+    FillMix(x + 1, y + h - 1, w - 2, 1, rim, 3, 5);
+    FillMix(x, y + 1, 1, h - 2, rim, 3, 5);
+    FillMix(x + w - 1, y + 1, 1, h - 2, rim, 3, 5);
+    if (voted)
+    {
+        DrawStar(x + 4, y + (h - 11) / 2, true);
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "VOTED", x + 18, y + (h - 10) / 2, CTR_DRAW_DARK);
+    }
+    else
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "VOTE", x + w / 2, y + (h - 10) / 2, CTR_DRAW_DARK);
+}
+
 /*
  * The versions screen (VersionsFrame and its friends): the front's list on
  * the left, the back's on the right, the side looked at chosen; each
- * version with its vote star, number, votes, who made it, whether the card
- * shows it and whether it is this account's; UPLOAD MINE, DELETE MINE and
+ * version with its number, votes, who made it (YOU for this account's),
+ * whether the card shows it, and its VOTE button; UPLOAD MINE, DELETE MINE and
  * ANIMATE along the bottom, the server's status under them.
  */
 static void DrawVersions(void)
@@ -3294,19 +3342,18 @@ static void DrawVersions(void)
 
             if (i >= list->count) break;
             CtrBottomDraw_Plate(x, y, VER_COL_W, VER_ROW - 3, chosen ? 1 : 0, false);
-            DrawStar(x + 6, y + 9, Voted(sE.sideId[side], v->version));
             ink = chosen ? CTR_DRAW_WHITE : CTR_DRAW_DARK;
-            snprintf(line, sizeof(line), "%lu  %u VOTE%s%s", (unsigned long)v->version, v->votes, v->votes == 1 ? "" : "S",
-                     v->current ? "  TOP" : "");
-            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + VER_STAR_W, y + 3, ink);
-            snprintf(line, sizeof(line), "BY %s", v->author[0] ? v->author : "?");
-            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + VER_STAR_W, y + 15, chosen ? CTR_DRAW_WHITE : CTR_DRAW_BLUE);
+            snprintf(line, sizeof(line), "%lu  %u VOTE%s", (unsigned long)v->version, v->votes, v->votes == 1 ? "" : "S");
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 6, y + 3, ink);
+            if (v->mine) snprintf(line, sizeof(line), "BY YOU");
+            else snprintf(line, sizeof(line), "BY %s", v->author[0] ? v->author : "?");
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 6, y + 15, chosen ? CTR_DRAW_WHITE : CTR_DRAW_BLUE);
             if (shown)
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "SHOWN", x + VER_COL_W - 6 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "SHOWN"),
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "SHOWN",
+                                   x + VER_COL_W - VER_VOTE_W - 6 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "SHOWN"),
                                    y + 3, chosen ? CTR_DRAW_WHITE : CTR_DRAW_RED);
-            if (v->mine)
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOURS", x + VER_COL_W - 6 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOURS"),
-                                   y + 15, chosen ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+            DrawVoteButton(x + VER_COL_W - 2 - VER_VOTE_W, y + 3, VER_VOTE_W - 2, VER_ROW - 9,
+                           Voted(sE.sideId[side], v->version));
         }
     }
     /* The buttons: send this console's own edit, take this account's off, animate. */
@@ -3920,6 +3967,7 @@ bool CtrStereoEdit_BottomFrame(void)
     {
         sE.versionsAfterBind = false;
         OpenVersions();
+        sE.versionsFromDex = sE.screen == S_VERSIONS;
     }
     if (sE.helpDirty && (sE.pl != NULL || sE.screen == S_CHOOSE || sE.screen == S_VERSIONS))
     {
