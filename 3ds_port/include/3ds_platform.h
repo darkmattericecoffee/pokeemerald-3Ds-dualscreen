@@ -141,8 +141,9 @@ void CtrSettings_SetRunAlways(bool on);
 /* Settings kept by key (the OPTIONS pages of 3ds_extras.c). */
 int CtrSettings_GetInt(const char *key, int fallback);
 void CtrSettings_SetInt(const char *key, int value);
-/* Fast-forward: game frames per shown frame, 1 to 4 (OPTIONS, ZR/ZL). */
-int CtrSettings_Speed(void);
+/* Fast-forward: game frames per shown frame in halves, 2 (1x) to 8 (4x),
+ * 3 being 1.5x (OPTIONS, ZR/ZL). */
+int CtrSettings_SpeedHalves(void);
 /* The game run as fast as the console allows regardless of the speed
  * setting (the plane editor's battle, through its intro). */
 void CtrPlatform_SetTurbo(bool on);

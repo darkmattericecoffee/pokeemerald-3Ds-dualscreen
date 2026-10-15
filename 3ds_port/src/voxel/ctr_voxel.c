@@ -34,6 +34,7 @@
 #include "3ds_log.h"
 #include "3ds_platform.h"
 #include "3ds_daynight.h"
+#include "3ds_gpumem.h"
 #include "3ds_video.h"
 #include "3ds_map_events.h"
 
@@ -140,12 +141,13 @@ typedef struct
 
 /*
  * The night lamps' glass and the pools they cast (UpdateNightLamps): buffers
- * of their own, glass first. 96 KiB of linear memory and 144 KiB of heap,
+ * of their own, glass first. 64 KiB of linear memory and 96 KiB of heap,
  * which an Old 3DS has little of: taken when lamps are first lit and given
- * back once they are not (DAY / NIGHT off, indoors, by day, a battle).
+ * back once they are not (DAY / NIGHT off, indoors, by day, a battle). A pool
+ * is one quad on a street and at most a quad a cell elsewhere (LampGround).
  */
 #define VOXEL_LAMP_RESERVE 2046u
-#define VOXEL_LAMP_GROUND_RESERVE 4092u
+#define VOXEL_LAMP_GROUND_RESERVE 2046u
 #define VOXEL_LAMP_VERTICES (VOXEL_LAMP_RESERVE + VOXEL_LAMP_GROUND_RESERVE)
 #define VOXEL_LAMP_GROUND_FIRST VOXEL_LAMP_RESERVE
 /* Unlit this long, no frame still queued draws from them: freed. */
@@ -172,10 +174,18 @@ typedef struct
     VoxelAtlasMap map;
 } VoxelAtlasSlot;
 
+/* A map composed ahead of time found no free VRAM: none is tried again until
+ * an atlas gives its VRAM back or the player is on another map (its group and
+ * number here), or each try composed a whole atlas to throw it away. */
+static bool sPrefetchBlocked;
+static int sPrefetchBlockedGroup, sPrefetchBlockedNum;
+
 static C3D_Tex *AtlasTex(VoxelAtlasSlot *slot, unsigned page)
 {
     return page == 0 ? &slot->tex : &slot->extra[page - 1u];
 }
+
+static void AtlasPageRelease(C3D_Tex *tex);
 
 static void FreeAtlasTextures(VoxelAtlasSlot *slot)
 {
@@ -183,7 +193,10 @@ static void FreeAtlasTextures(VoxelAtlasSlot *slot)
     {
         C3D_Tex *tex = AtlasTex(slot, page);
         if (tex->data != NULL)
-            C3D_TexDelete(tex);
+        {
+            AtlasPageRelease(tex);
+            sPrefetchBlocked = false;
+        }
         memset(tex, 0, sizeof(*tex));
     }
     slot->valid = false;
@@ -255,15 +268,19 @@ static bool sAtlasUploadPending;
  * buffer and copied into their page by the GPU (VoxelAtlas_AnimatedSlots). */
 #define VOXEL_ANIM_SLOTS 6u
 static VoxelAnimSlot *sAnimOut;
-static uint8_t sAnimDirty[VOXEL_ATLAS_PAGES][128];
+/* The tiles written since each atlas's last pass, by page: the current map's
+ * atlas and those of the maps beside it that share its primary tileset
+ * (AnimateTiles) each take them in their own time. */
+static uint8_t sAnimDirty[VOXEL_ATLAS_SLOTS][VOXEL_ATLAS_PAGES][128];
 /* The pass in progress: the page (+1, 0 for none) of this atlas, the tiles it
  * redraws for - taken from the dirty ones when it began, so what is written
  * meanwhile waits for the next pass - and how far down the ids it is. */
 static unsigned sAnimWorkPage, sAnimCursor;
 static VoxelAtlasSlot *sAnimWorkAtlas;
 static uint8_t sAnimWork[128];
-/* Where the next pass starts looking for a page with dirty tiles. */
-static unsigned sAnimNext;
+/* Where the next pass starts looking for an atlas, and a page of it, with
+ * dirty tiles. */
+static unsigned sAnimNext, sAnimNextAtlas;
 static bool sAnimPending;
 /* The building pages' texels drawn from animated tiles (Rustboro's fountain:
  * its jet, VoxelBuildings_AnimRun): the BG tiles written since they were
@@ -288,8 +305,9 @@ void CtrVoxel_NotifyTilesetAnimWrite(unsigned firstTile, unsigned tileCount)
     if (tileCount > 1024 - firstTile) tileCount = 1024 - firstTile;
     for (unsigned t = firstTile; t < firstTile + tileCount; ++t)
     {
-        for (unsigned page = 0; page < VOXEL_ATLAS_PAGES; ++page)
-            sAnimDirty[page][t >> 3] |= 1u << (t & 7);
+        for (unsigned a = 0; a < VOXEL_ATLAS_SLOTS; ++a)
+            for (unsigned page = 0; page < VOXEL_ATLAS_PAGES; ++page)
+                sAnimDirty[a][page][t >> 3] |= 1u << (t & 7);
         sBuildingAnimDirty[t >> 3] |= 1u << (t & 7);
     }
     sAnimPending = true;
@@ -989,10 +1007,21 @@ static VoxelGpuVertex *sLampGpu;      /* linear, VOXEL_LAMP_VERTICES */
 static uint64_t sLampDrawn;           /* tick of the last draw from sLampGpu */
 static uint32_t sLampRetry;           /* no buffers asked for before this frame */
 static bool sLampNoRoomLogged;
+static C3D_Tex sLampPoolTex;          /* a pool's falloff (MakeLampPool), with the buffers */
 static void LampsRelease(bool now);
 static uint32_t sLampSignature, sLampDigest;
-static int sLampX, sLampZ;
-static int sLampView[4];
+static int sLampX, sLampZ;             /* the lamps' own origin (drawn from it) */
+static int sLampView[4];               /* the rectangle they were built over */
+/*
+ * Built over the view and this many tiles more on each side, and built again
+ * only once the view leaves that (or the maps or their cells change). Built
+ * over the view alone, every tile the camera moved at night rebuilt every
+ * lamp of every map on screen - each pool walking its cells for relief and
+ * light - and a crossing in a lit town was a dropped frame (port.log,
+ * 2026-10-15: sprites=6-9 ms on the crossing frames). Should the wider
+ * rectangle fill the buffers, the lamps are built over the view as before.
+ */
+#define VOXEL_LAMP_PAD 8
 #if CTR_VOXEL_LIGHTING
 static unsigned sShadowVertices;
 #endif
@@ -1019,8 +1048,11 @@ static int sDynamicX, sDynamicZ; /* the billboards' origin this frame */
 /* Pages take their whole power-of-two texture (PageBytes): the Battle
  * Frontier's two halves, in view together, are 512 KiB each. */
 #define VOXEL_PAGE_VRAM_BUDGET (1024u * 1024u)
-/* The arena's pieces: a page's texture and its window mask. */
-#define VOXEL_PAGE_PIECES (VOXEL_BUILDING_PAGES * 2u)
+/* Atlas pages that may borrow a gap of the pages' arena (AtlasPageBorrow). */
+#define VOXEL_ATLAS_BORROW_MAX 2u
+/* The arena's pieces: a page's texture and its window mask, and the
+ * borrowed atlas pages. */
+#define VOXEL_PAGE_PIECES (VOXEL_BUILDING_PAGES * 2u + VOXEL_ATLAS_BORROW_MAX)
 /* A page that found no room is asked for again only after this long. */
 #define VOXEL_PAGE_RETRY_FRAMES 120u
 
@@ -1093,6 +1125,11 @@ static bool sGlowNoRoomLogged[VOXEL_MAX_PAGES];
 /* Windows glow (DAY / NIGHT, outdoors, afternoon to dawn): the pages in
  * view want their masks. */
 static bool sGlowWanted;
+/* Console measurement switches, the scenario settings measure_glow and
+ * measure_lamps (on unless set to 0): the night's lit windows and lamps
+ * left out, to tell what each costs on the hardware. Read once a second. */
+static bool sMeasureGlow = true, sMeasureLamps = true;
+static uint32_t sMeasureRead;
 
 /* A page texture over a piece of the arena. Never C3D_TexDelete'd: that
  * would hand the piece to the console's allocator, which never gave it.
@@ -1109,6 +1146,64 @@ static void PageTexInit(C3D_Tex *tex, void *data, unsigned w, unsigned th)
     tex->param = GPU_TEXTURE_MODE(GPU_TEX_2D);
     C3D_TexSetFilter(tex, GPU_NEAREST, GPU_NEAREST);
     C3D_TexSetWrap(tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+}
+
+/*
+ * An atlas page over a piece of the pages' arena. A battle over the world
+ * frames more maps than the field does, with the battle scene's 512 KiB out
+ * of VRAM: on Route 110 beside Slateport the battle view wanted a fifth atlas
+ * page where VRAM held four, the atlas job waited on it the whole battle and
+ * the chunks behind it were never built - parts of the world missing
+ * (port.log 2026-10-15: pending=61 for the whole battle). The arena had
+ * 480 KiB unused there, as a battle frames few buildings. Borrowed only when
+ * VRAM has no room and no atlas off screen can give its own, and moved back
+ * to VRAM once there is room (AtlasPagesReturn): the field's buildings want
+ * the arena whole.
+ */
+static bool AtlasPageBorrowed(const C3D_Tex *tex)
+{
+    const uint8_t *data = (const uint8_t *)tex->data;
+
+    return sPageBlock != NULL && data >= (const uint8_t *)sPageBlock
+        && data < (const uint8_t *)sPageBlock + VOXEL_PAGE_VRAM_BUDGET;
+}
+
+static void AtlasPageRelease(C3D_Tex *tex)
+{
+    if (tex->data == NULL)
+        return;
+    if (AtlasPageBorrowed(tex))
+        VoxelArena_Free(&sPageArena, tex->data);
+    else
+        C3D_TexDelete(tex);
+    memset(tex, 0, sizeof(*tex));
+}
+
+static unsigned CountBorrowedAtlasPages(void)
+{
+    unsigned count = 0;
+
+    for (unsigned i = 0; i < VOXEL_ATLAS_SLOTS; ++i)
+        for (unsigned p = 0; p < VOXEL_ATLAS_PAGES; ++p)
+            count += AtlasPageBorrowed(AtlasTex(&sAtlases[i], p));
+    return count;
+}
+
+static bool AtlasPageBorrow(C3D_Tex *tex)
+{
+    const uint32_t bytes = VOXEL_ATLAS_PIXELS * sizeof(uint16_t);
+    void *block;
+
+    if (sPageBlock == NULL || CountBorrowedAtlasPages() >= VOXEL_ATLAS_BORROW_MAX)
+        return false;
+    block = VoxelArena_Alloc(&sPageArena, bytes, false);
+    if (block == NULL)
+        return false;
+    PageTexInit(tex, block, VOXEL_ATLAS_W, VOXEL_ATLAS_H);
+    CtrLog_Write(CTR_LOG_VIDEO, "VOXEL: atlas page borrowed from the building pages' arena "
+                 "(VRAM free=%lu, arena gap left %lu KiB)", (unsigned long)vramSpaceFree(),
+                 (unsigned long)(VoxelArena_LargestGap(&sPageArena) >> 10));
+    return true;
 }
 
 /*
@@ -1575,7 +1670,7 @@ static void WantPage(int page, uint32_t keep, bool quiet)
                     ++sStats.errors;
                     CtrLog_Write(CTR_LOG_ERROR, "VOXEL: no room for the %ux%u building page %d "
                                  "(largest gap %lu of %lu KiB); retrying later",
-                                 w, h, page, (unsigned long)VoxelArena_LargestGap(&sPageArena),
+                                 w, h, page, (unsigned long)(VoxelArena_LargestGap(&sPageArena) >> 10),
                                  (unsigned long)(sPageArena.size >> 10));
                 }
             }
@@ -2343,7 +2438,13 @@ static bool AtlasInView(const VoxelAtlasSlot *slot)
     return false;
 }
 
-static bool AllocateAtlasPage(VoxelAtlasSlot *slot, unsigned page)
+/*
+ * `mayEvict`: for a map on screen. One composed ahead of time (the prefetch
+ * ring) takes free VRAM only: allowed to free another atlas, two neighbours
+ * off screen freed each other's for ever, each rebuilt in turn (Slateport
+ * with Routes 109 and 110, twenty rebuilds in forty seconds).
+ */
+static bool AllocateAtlasPage(VoxelAtlasSlot *slot, unsigned page, bool mayEvict)
 {
     C3D_Tex *tex = AtlasTex(slot, page);
     if (tex->data != NULL)
@@ -2367,11 +2468,60 @@ static bool AllocateAtlasPage(VoxelAtlasSlot *slot, unsigned page)
             if (victim == NULL || candidate->stamp < victim->stamp)
                 victim = candidate;
         }
-        if (victim == NULL)
+        if (!mayEvict)
             return false;
+        /* Every atlas holding VRAM is on screen: a gap of the pages' arena,
+         * if there is one, rather than a map left unbuilt. */
+        if (victim == NULL)
+            return CountAllocatedAtlases() < VOXEL_ATLAS_SLOTS && AtlasPageBorrow(tex);
         AnimForget(victim);
         FreeAtlasTextures(victim);
     }
+}
+
+/*
+ * A borrowed atlas page goes back to VRAM as soon as a piece of it is free
+ * (a battle's scene surface given back, a 2D screen's layers): a GPU copy,
+ * queued like an atlas upload, one page a frame.
+ */
+static void AtlasPagesReturn(void)
+{
+    static uint32_t sNextTry;
+    const uint32_t bytes = VOXEL_ATLAS_PIXELS * sizeof(uint16_t);
+
+    if (sFrame < sNextTry || sAtlasUploadPending)
+        return;
+    for (unsigned i = 0; i < VOXEL_ATLAS_SLOTS; ++i)
+        for (unsigned p = 0; p < VOXEL_ATLAS_PAGES; ++p)
+        {
+            C3D_Tex *tex = AtlasTex(&sAtlases[i], p);
+            C3D_Tex home;
+
+            if (tex->data == NULL || !AtlasPageBorrowed(tex))
+                continue;
+            /* Asked of the allocator only when it can answer yes: every
+             * failed request is a GPUMEM line in the log. */
+            if (CtrGpuMem_LargestVram() < bytes
+             || !C3D_TexInitVRAM(&home, VOXEL_ATLAS_W, VOXEL_ATLAS_H, GPU_RGBA5551))
+            {
+                sNextTry = sFrame + 30u;
+                return;
+            }
+            if (!CtrVideo_TryVoxelUpload())
+            {
+                C3D_TexDelete(&home);
+                return;
+            }
+            C3D_TexSetFilter(&home, GPU_NEAREST, GPU_NEAREST);
+            C3D_TexSetWrap(&home, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+            C3D_SyncTextureCopy((u32 *)tex->data, 0, (u32 *)home.data, 0, bytes, 8);
+            sAtlasUploadPending = true;
+            VoxelArena_Free(&sPageArena, tex->data);
+            *tex = home;
+            CtrLog_Write(CTR_LOG_VIDEO, "VOXEL: borrowed atlas page back in VRAM (VRAM free=%lu)",
+                         (unsigned long)vramSpaceFree());
+            return;
+        }
 }
 
 static VoxelAtlasSlot *AcquireAtlas(const VoxelMapInstance *inst, bool mayEvict)
@@ -2414,6 +2564,15 @@ static VoxelAtlasSlot *AcquireAtlas(const VoxelMapInstance *inst, bool mayEvict)
     if (sHasFailed && inst->primaryTileset == sFailedPrimary
      && inst->secondaryTileset == sFailedSecondary)
         return NULL;
+    if (!mayEvict && sPrefetchBlocked)
+    {
+        int group, num;
+
+        VoxelWorld_GetLocation(&group, &num);
+        if (group == sPrefetchBlockedGroup && num == sPrefetchBlockedNum)
+            return NULL;
+        sPrefetchBlocked = false;
+    }
     /* A map on screen does not wait behind one composed ahead of time. */
     if (AtlasJobBusy() && !sAtlasJob.forView && mayEvict)
         AtlasJobCancel();
@@ -2458,7 +2617,7 @@ static VoxelAtlasSlot *AcquireAtlas(const VoxelMapInstance *inst, bool mayEvict)
      * copy does (and faults outright on hardware).
      */
     if (victim->tex.data == NULL
-     && !AllocateAtlasPage(victim, 0))
+     && !AllocateAtlasPage(victim, 0, mayEvict))
     {
         /* Still not a failure: the cache simply holds fewer atlases and
          * recycles the least recently used one. */
@@ -2506,7 +2665,7 @@ static VoxelAtlasSlot *AcquireAtlas(const VoxelMapInstance *inst, bool mayEvict)
         for (unsigned p = 1; p < VOXEL_ATLAS_PAGES; ++p)
         {
             C3D_Tex *tex = AtlasTex(victim, p);
-            if (tex->data != NULL) C3D_TexDelete(tex);
+            AtlasPageRelease(tex);
             memset(tex, 0, sizeof(*tex));
         }
     }
@@ -2555,6 +2714,9 @@ static uint32_t sAtlasProgressFrame;
 static uint32_t sAfterStarvedFrames;
 #define VOXEL_AFTER_STARVED_MS 1.0f
 
+/* The most a slice's cost estimate holds (chunk phases and atlas steps). */
+#define VOXEL_SLICE_CAP_MS 5.0f
+
 static void RunAtlasJob(uint64_t started, float budget, bool inFrame)
 {
     VoxelAtlasJob *job = &sAtlasJob.job;
@@ -2574,12 +2736,24 @@ static void RunAtlasJob(uint64_t started, float budget, bool inFrame)
         VoxelAtlas_JobNextPage(job);
     while (!sAtlasJob.ready)
     {
-        if (MsSince(started) >= budget && !(sAtlasJob.forView && steps == 0 && budget > 0.0f))
+        /*
+         * A step costs what the last ones of its phase did: started with any
+         * time left at all, a 3-3.5 ms composing step ran past the after-submit
+         * budget, by up to 6 ms (port.log, 2026-10-15: after=14.7/9.0). The
+         * first step for the map on screen still always runs.
+         */
+        static float sAtlasStepMs[4];
+        unsigned phase = job->phase;
+        float *estimate = &sAtlasStepMs[phase & 3u];
+
+        if (MsSince(started) + *estimate > budget && !(sAtlasJob.forView && steps == 0 && budget > 0.0f))
             return;
         uint64_t stepStart = svcGetSystemTick();
-        unsigned phase = job->phase;
         sAtlasJob.ready = VoxelAtlas_JobStep(job, 24);
         float stepMs = MsSince(stepStart);
+        float capped = stepMs < VOXEL_SLICE_CAP_MS ? stepMs : VOXEL_SLICE_CAP_MS;
+
+        *estimate = capped > *estimate ? capped : *estimate * 0.75f + capped * 0.25f;
         static uint32_t lastSlow;
         if (stepMs > 2.0f && (!lastSlow || sFrame - lastSlow >= 120))
         {
@@ -2601,9 +2775,18 @@ static void RunAtlasJob(uint64_t started, float budget, bool inFrame)
             AtlasFailed(job->mapGroup, job->mapNum, job->primary, job->secondary);
         return;
     }
-    if (!AllocateAtlasPage(slot, job->page))
+    if (!AllocateAtlasPage(slot, job->page, sAtlasJob.forView))
     {
-        sAtlasCapacityBlocked = sAtlasJob.forView;
+        if (!sAtlasJob.forView)
+        {
+            /* Ahead of time and no room: not now (the map, once on screen,
+             * asks again and may take a slot). */
+            AtlasJobCancel();
+            sPrefetchBlocked = true;
+            VoxelWorld_GetLocation(&sPrefetchBlockedGroup, &sPrefetchBlockedNum);
+            return;
+        }
+        sAtlasCapacityBlocked = true;
         CtrVideo_RequestPlaneRelease();
         return; /* Keep the completed page: retry without recomposing it. */
     }
@@ -3516,10 +3699,26 @@ static bool SiteVisible(const ChunkSite *site, const VoxelChunk *chunk)
                       (float)site->x1, base + VOXEL_UNBUILT_HIGH, (float)site->y1);
 }
 
-static void Draw(const VoxelChunk *chunk, int worldX, int worldZ)
+static void Draw(VoxelChunk *chunk, int worldX, int worldZ)
 {
-    if (chunk->count == 0 || sDrawCount >= VOXEL_DRAW_MAX)
+    if (chunk->count == 0)
         return;
+    if (sDrawCount >= VOXEL_DRAW_MAX)
+    {
+        static bool told;
+
+        if (!told)
+        {
+            told = true;
+            ++sStats.errors;
+            CtrLog_Write(CTR_LOG_ERROR, "VOXEL: draw list full (%u), chunks left out", VOXEL_DRAW_MAX);
+        }
+        return;
+    }
+    /* On the draw list, so on screen this frame: a later view job's eviction
+     * (OldestChunk) must not empty a slot sDraws points at - an ahead job's
+     * chunk drawn here kept an older viewStamp. */
+    chunk->viewStamp = sFrame;
     sDraws[sDrawCount].chunk = chunk;
     sDraws[sDrawCount].worldX = worldX;
     sDraws[sDrawCount].worldZ = worldZ;
@@ -3977,7 +4176,6 @@ static float SpareMs(void)
  */
 static float sPhaseMs[JOB_DONE + 1];
 static uint32_t sPhaseFrame[JOB_DONE + 1];
-#define VOXEL_SLICE_CAP_MS 5.0f
 
 /* An idle phase must age without executing: otherwise a 5 ms outlier
  * permanently excludes prefetch from the usual 1-4 ms post-submit window.
@@ -4323,6 +4521,7 @@ static void UpdateView(float playerX, float playerZ, bool crossed, bool cut)
          && sAfterStarvedFrames >= VOXEL_STARVE_FRAMES)
             atlasMs = VOXEL_STARVE_MS;
         RunAtlasJob(started, atlasMs, true);
+        AtlasPagesReturn();
     }
     sRebuildStamp = sAtlasStamp;
     sDrawCount = 0;
@@ -4445,11 +4644,31 @@ void CtrVoxel_Idle(void)
     LampsRelease(false);
 }
 
+/*
+ * The last frame's real tail: from the end of AfterSubmit to the next
+ * FrameBegin. gameMs + vblankMs left out the bottom screen, the compositor's
+ * preparation and whatever else ran there; on an Old 3DS the tail was ~3 ms
+ * against ~0.9 counted, the builds took the difference, and the CPU came
+ * back to the VBlank at 17 ms - a dropped frame in every twenty (port.log,
+ * 2026-10-15). Measured only across two consecutive voxel frames.
+ */
+static uint64_t sAfterEndTick;
+static float sTailMs;
+
+void CtrVoxel_NoteFrameWait(uint64_t waitTick)
+{
+    sTailMs = sAfterEndTick && waitTick > sAfterEndTick ? TicksMs(waitTick - sAfterEndTick) : 0.0f;
+    sAfterEndTick = 0;
+}
+
 void CtrVoxel_AfterSubmit(uint64_t frameBeginTick)
 {
     static float sOthersMs;
     const CtrTiming *timing = CtrPlatform_GetTiming();
     float others = timing->gameMs + timing->vblankMs;
+
+    if (sTailMs > others)
+        others = sTailMs;
     float budget, aheadMs;
     uint64_t started;
 
@@ -4473,7 +4692,10 @@ void CtrVoxel_AfterSubmit(uint64_t frameBeginTick)
     else
         sAfterStarvedFrames = 0;
     if (budget < 0.5f)
+    {
+        sAfterEndTick = started;
         return;
+    }
     aheadMs = sFrame < sAheadBackoff ? 0.0f : budget;
     /* The asset payloads the builds resolve are the ones the frame's own
      * update resolved: nothing has run in between that retires one. */
@@ -4484,6 +4706,7 @@ void CtrVoxel_AfterSubmit(uint64_t frameBeginTick)
     RunJobs(started, budget, aheadMs, false, false, NULL);
     sStats.afterMs = MsSince(started);
     sLastBuildMs += sStats.afterMs;
+    sAfterEndTick = svcGetSystemTick();
 }
 
 /* ── Map changes ────────────────────────────────────────────────────────── */
@@ -4775,8 +4998,46 @@ static void LampsRelease(bool now)
     free(sLampScratch);
     sLampGpu = NULL;
     sLampScratch = NULL;
+    if (sLampPoolTex.data != NULL)
+    {
+        C3D_TexDelete(&sLampPoolTex);
+        memset(&sLampPoolTex, 0, sizeof(sLampPoolTex));
+    }
     sLampReady = false;
     sLampVertices = sLampGroundVertices = 0;
+}
+
+/*
+ * A lamp's pool of light: a disc filling the texture, brightest in the middle
+ * and gone at its rim, (1 - r^2)^2 - the falloff the pools used to carry in
+ * their vertices, now per pixel. L8, filtered, its border black so clamping
+ * leaves the corners of a pool's quads unlit. 4 KiB, with the lamps' buffers;
+ * without it the pools are not drawn, the glass still is.
+ */
+#define VOXEL_LAMP_POOL_DIM 64
+static void MakeLampPool(void)
+{
+    uint8_t *texels;
+
+    if (!C3D_TexInit(&sLampPoolTex, VOXEL_LAMP_POOL_DIM, VOXEL_LAMP_POOL_DIM, GPU_L8))
+    {
+        memset(&sLampPoolTex, 0, sizeof(sLampPoolTex));
+        return;
+    }
+    texels = sLampPoolTex.data;
+    for (unsigned y = 0; y < VOXEL_LAMP_POOL_DIM; ++y)
+        for (unsigned x = 0; x < VOXEL_LAMP_POOL_DIM; ++x)
+        {
+            float dx = ((float)x + 0.5f) / (VOXEL_LAMP_POOL_DIM / 2) - 1.0f;
+            float dy = ((float)y + 0.5f) / (VOXEL_LAMP_POOL_DIM / 2) - 1.0f;
+            float w = 1.0f - (dx * dx + dy * dy);
+
+            texels[CtrVideo_Texel(x, y, VOXEL_LAMP_POOL_DIM)] =
+                w > 0.0f ? (uint8_t)(w * w * 255.0f + 0.5f) : 0;
+        }
+    C3D_TexSetFilter(&sLampPoolTex, GPU_LINEAR, GPU_LINEAR);
+    C3D_TexSetWrap(&sLampPoolTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+    C3D_TexFlush(&sLampPoolTex);
 }
 
 /* The lamps' buffers, for the first lamps lit: whether they are there. When
@@ -4802,6 +5063,7 @@ static bool LampsTake(void)
         sLampNoRoomLogged = true;
         return false;
     }
+    MakeLampPool();
     sLampReady = false;
     return true;
 }
@@ -4809,7 +5071,7 @@ static bool LampsTake(void)
 /* The lamps on screen and the light they cast, rebuilt when the view moves. */
 static void UpdateNightLamps(void)
 {
-    if (!CtrGame_IsOutdoor() || CtrDayNight_Get()->glow <= 0.0f)
+    if (!sMeasureLamps || !CtrGame_IsOutdoor() || CtrDayNight_Get()->glow <= 0.0f)
     {
         sLampReady = false;
         sLampVertices = sLampGroundVertices = 0;
@@ -4822,17 +5084,31 @@ static void UpdateNightLamps(void)
         return;
     }
     if (sLampReady && sLampSignature == sInstanceSignature && sLampDigest == sLiveDigest
-        && sLampX == sDynamicX && sLampZ == sDynamicZ
-        && memcmp(sLampView, sViewRect, sizeof(sLampView)) == 0)
+        && sLampView[0] <= sViewRect[0] - 3 && sLampView[1] <= sViewRect[1] - 3
+        && sLampView[2] >= sViewRect[2] + 3 && sLampView[3] >= sViewRect[3] + 3)
         return;
     VoxelBuilder glass, ground;
-    VoxelBuilder_Init(&glass, sLampScratch, VOXEL_LAMP_RESERVE);
-    VoxelBuilder_Init(&ground, sLampScratch + VOXEL_LAMP_GROUND_FIRST, VOXEL_LAMP_GROUND_RESERVE);
-    VoxelBuilder_SetOrigin(&glass, sDynamicX, sDynamicZ);
-    VoxelBuilder_SetOrigin(&ground, sDynamicX, sDynamicZ);
-    for (unsigned index = 0; index < VoxelWorld_InstanceCount(); ++index)
-        VoxelSign_EmitNight(&glass, &ground, VoxelWorld_Instance(index),
-                           sViewRect[0] - 3, sViewRect[1] - 3, sViewRect[2] + 3, sViewRect[3] + 3);
+    int pad = 3 + VOXEL_LAMP_PAD;
+
+    for (;;)
+    {
+        VoxelBuilder_Init(&glass, sLampScratch, VOXEL_LAMP_RESERVE);
+        VoxelBuilder_Init(&ground, sLampScratch + VOXEL_LAMP_GROUND_FIRST, VOXEL_LAMP_GROUND_RESERVE);
+        VoxelBuilder_SetOrigin(&glass, sDynamicX, sDynamicZ);
+        VoxelBuilder_SetOrigin(&ground, sDynamicX, sDynamicZ);
+        sLampView[0] = sViewRect[0] - pad;
+        sLampView[1] = sViewRect[1] - pad;
+        sLampView[2] = sViewRect[2] + pad;
+        sLampView[3] = sViewRect[3] + pad;
+        for (unsigned index = 0; index < VoxelWorld_InstanceCount(); ++index)
+            VoxelSign_EmitNight(&glass, &ground, VoxelWorld_Instance(index),
+                               sLampView[0], sLampView[1], sLampView[2], sLampView[3]);
+        /* Near full: some lamp may have been left out (EmitNight stops at
+         * the capacity). Over the view alone, as before the padding. */
+        if (pad == 3 || (glass.capacity - glass.count >= 64u && ground.capacity - ground.count >= 64u))
+            break;
+        pad = 3;
+    }
     sLampVertices = glass.count;
     sLampGroundVertices = ground.count;
     PackDynamic(sLampScratch, glass.count, sLampGpu);
@@ -4841,7 +5117,6 @@ static void UpdateNightLamps(void)
     sLampDigest = sLiveDigest;
     sLampX = sDynamicX;
     sLampZ = sDynamicZ;
-    memcpy(sLampView, sViewRect, sizeof(sLampView));
     sLampReady = true;
 }
 
@@ -4853,10 +5128,24 @@ static void UpdateNightLamps(void)
  * nothing but those 512 bytes a slot is flushed or copied: the page used to be
  * read back into a CPU copy, recomposed and written out whole, which was 6-7 ms
  * of a frame whenever it came round.
+ *
+ * The maps beside it in view are drawn from atlases of their own tileset pair
+ * (Route 107's Dewford pair beside Route 108's Slateport one): those that
+ * share its primary tileset take their turn too, for the metatiles drawn from
+ * primary tiles alone - the sea, the shore, the flowers. Only the current map
+ * had its pass, and the sea of the route just left stood still beside the
+ * moving sea of the new one.
  */
+static bool AnimShares(const VoxelAtlasSlot *atlas, const VoxelAtlasSlot *active)
+{
+    return atlas == active
+        || (atlas->valid && atlas->primaryTileset == active->primaryTileset && AtlasInView(atlas));
+}
+
 static void AnimateTiles(const VoxelMapInstance *inst)
 {
-    VoxelAtlasSlot *active;
+    VoxelAtlasSlot *active, *work;
+    VoxelMapInstance pair;
     unsigned pages, page, room, count;
 
     if (!sAnimPending || sAnimOut == NULL || sAtlasUploadPending || AtlasJobBusy())
@@ -4864,49 +5153,83 @@ static void AnimateTiles(const VoxelMapInstance *inst)
     active = FindAtlas(inst);
     if (active == NULL || !active->valid)
         return;
-    if (sAnimWorkPage != 0 && sAnimWorkAtlas != active)
+    if (sAnimWorkPage != 0 && (sAnimWorkAtlas == NULL || !AnimShares(sAnimWorkAtlas, active)))
         sAnimWorkPage = 0; /* the map changed pair mid-pass: its next write redraws */
-    pages = VoxelAtlas_PageCount(&active->map);
     if (sAnimWorkPage == 0)
     {
         bool any = false;
 
+        /* the atlases in turn, from the one after the last pass's */
         page = 0;
-        for (unsigned step = 0; step < pages && !any; ++step)
+        work = NULL;
+        for (unsigned k = 0; k < VOXEL_ATLAS_SLOTS && !any; ++k)
         {
-            unsigned p = (sAnimNext + step) % pages;
+            unsigned a = (sAnimNextAtlas + k) % VOXEL_ATLAS_SLOTS;
+            VoxelAtlasSlot *atlas = &sAtlases[a];
 
-            for (unsigned i = 0; i < sizeof(sAnimDirty[p]); ++i)
+            if (!AnimShares(atlas, active))
+                continue;
+            pages = VoxelAtlas_PageCount(&atlas->map);
+            for (unsigned step = 0; step < pages && !any; ++step)
             {
-                sAnimDirty[p][i] &= active->map.tileMask[p][i];
-                any = any || sAnimDirty[p][i] != 0;
+                unsigned p = (sAnimNext + step) % pages;
+
+                for (unsigned i = 0; i < sizeof(sAnimDirty[a][p]); ++i)
+                {
+                    sAnimDirty[a][p][i] &= atlas->map.tileMask[p][i];
+                    /* tiles 512 on: BG VRAM holds the current map's secondary */
+                    if (atlas != active && i >= 512u / 8u)
+                        sAnimDirty[a][p][i] = 0;
+                    any = any || sAnimDirty[a][p][i] != 0;
+                }
+                if (any)
+                {
+                    page = p;
+                    work = atlas;
+                    sAnimNextAtlas = (a + 1u) % VOXEL_ATLAS_SLOTS;
+                    sAnimNext = (p + 1u) % pages;
+                }
             }
-            if (any)
-                page = p;
         }
         if (!any)
         {
             sAnimPending = false;
             return;
         }
-        memcpy(sAnimWork, sAnimDirty[page], sizeof(sAnimWork));
-        memset(sAnimDirty[page], 0, sizeof(sAnimDirty[page]));
+        memcpy(sAnimWork, sAnimDirty[work - sAtlases][page], sizeof(sAnimWork));
+        memset(sAnimDirty[work - sAtlases][page], 0, sizeof(sAnimDirty[work - sAtlases][page]));
         sAnimWorkPage = page + 1u;
-        sAnimWorkAtlas = active;
+        sAnimWorkAtlas = work;
         sAnimCursor = 0;
-        sAnimNext = (page + 1u) % pages;
     }
+    work = sAnimWorkAtlas;
     page = sAnimWorkPage - 1u;
     room = CtrVideo_VoxelUploadsLeft() / 2u; /* a slot is two copies */
     if (room > VOXEL_ANIM_SLOTS)
         room = VOXEL_ANIM_SLOTS;
-    if (room == 0 || AtlasTex(active, page)->data == NULL)
+    if (AtlasTex(work, page)->data == NULL && work != active)
+    {
+        /* a page the map beside has given up: its pass with it */
+        sAnimWorkPage = 0;
+        sAnimWorkAtlas = NULL;
         return;
-    count = VoxelAtlas_AnimatedSlots(inst, &active->map, page, CtrVideo_GetBgVram(), sAnimWork,
-                                     &sAnimCursor, sAnimOut, room);
+    }
+    if (room == 0 || AtlasTex(work, page)->data == NULL)
+        return;
+    if (work == active)
+        count = VoxelAtlas_AnimatedSlots(inst, &work->map, page, CtrVideo_GetBgVram(), sAnimWork,
+                                         &sAnimCursor, sAnimOut, room);
+    else
+    {
+        memset(&pair, 0, sizeof(pair));
+        pair.primaryTileset = work->primaryTileset;
+        pair.secondaryTileset = work->secondaryTileset;
+        count = VoxelAtlas_SharedAnimatedSlots(&pair, &work->map, page, CtrVideo_GetBgVram(), sAnimWork,
+                                               &sAnimCursor, sAnimOut, room);
+    }
     if (count != 0)
     {
-        uint8_t *dest = (uint8_t *)AtlasTex(active, page)->data;
+        uint8_t *dest = (uint8_t *)AtlasTex(work, page)->data;
 
         GSPGPU_FlushDataCache(sAnimOut, count * sizeof(VoxelAnimSlot));
         for (unsigned i = 0; i < count; ++i)
@@ -4990,6 +5313,18 @@ static void AnimateBuildings(const VoxelMapInstance *inst)
     }
 }
 
+static void DropTileAnimation(void)
+{
+    if (sAnimPending || sAnimWorkPage != 0)
+        memset(sAnimDirty, 0, sizeof(sAnimDirty));
+    sAnimPending = false;
+    sAnimWorkPage = 0;
+    sAnimWorkAtlas = NULL;
+    if (sBuildingAnimPending)
+        memset(sBuildingAnimDirty, 0, sizeof(sBuildingAnimDirty));
+    sBuildingAnimPending = false;
+}
+
 bool CtrVoxel_Update(void)
 {
     const VoxelMapInstance *inst;
@@ -5066,7 +5401,13 @@ bool CtrVoxel_Update(void)
 
     /* The window masks take VRAM only while they light anything (GlowWant):
      * none with DAY / NIGHT off, indoors, or from dawn to the afternoon. */
-    sGlowWanted = CtrDayNight_Get()->glow > 0.0f;
+    if (sFrame >= sMeasureRead || sMeasureRead - sFrame > 64u)
+    {
+        sMeasureGlow = CtrSettings_GetInt("measure_glow", 1) != 0;
+        sMeasureLamps = CtrSettings_GetInt("measure_lamps", 1) != 0;
+        sMeasureRead = sFrame + 64u;
+    }
+    sGlowWanted = sMeasureGlow && CtrDayNight_Get()->glow > 0.0f;
 
 #if CTR_VOXEL_LIGHTING
     {
@@ -5203,8 +5544,21 @@ bool CtrVoxel_Update(void)
     {
         uint64_t animStart = svcGetSystemTick();
 
-        AnimateTiles(inst);
-        AnimateBuildings(inst);
+        /*
+         * The passes read the tiles from BG VRAM, which in a battle holds the
+         * battle's: a pass still pending when one began redrew the sea from
+         * them - transparent, the whole battle, as no tile animation runs
+         * there to draw it again (Route 110's canal, the Cycling Road's sea,
+         * port.log 2026-10-15). Dropped instead: back on the field, the
+         * tileset animation writes every frame again and each pass with it.
+         */
+        if (VoxelBattle_GameInBattle())
+            DropTileAnimation();
+        else
+        {
+            AnimateTiles(inst);
+            AnimateBuildings(inst);
+        }
         sStats.animMs = MsSince(animStart);
     }
 
@@ -5356,7 +5710,7 @@ unsigned long CtrVoxel_ReleaseIdleVram(void)
             continue;
         unsigned pages = 0;
         for (unsigned p = 0; p < VOXEL_ATLAS_PAGES; ++p)
-            pages += AtlasTex(slot, p)->data != NULL;
+            pages += AtlasTex(slot, p)->data != NULL && !AtlasPageBorrowed(AtlasTex(slot, p));
         FreeAtlasTextures(slot);
         AnimForget(slot);
         memset(&slot->tex, 0, sizeof(slot->tex));
@@ -6468,6 +6822,13 @@ static void BuildingGlowEnv(C3D_Tex *mask, float strength)
     C3D_TexEnvColor(env, 0xFFA0D8FFu);
 }
 
+/*
+ * The lamps' glass: their warm colour laid over the lantern. Their pools: light
+ * added to the ground in proportion to the ground's own colour (blended
+ * ground x (1 + light), light = the warm colour x the pool's falloff), so the
+ * paving shows through brighter and warmer instead of under a flat orange.
+ */
+#define VOXEL_LAMP_POOL_GAIN 0.5f
 static void LampTexEnv(float strength, bool ground)
 {
     C3D_TexEnv *env;
@@ -6475,20 +6836,26 @@ static void LampTexEnv(float strength, bool ground)
     TerrainTexEnv(NULL);
     env = C3D_GetTexEnv(0);
     C3D_TexEnvInit(env);
-    C3D_TexEnvSrc(env, C3D_RGB, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
-    C3D_TexEnvFunc(env, C3D_RGB, GPU_REPLACE);
-    C3D_TexEnvSrc(env, C3D_Alpha, ground ? GPU_PRIMARY_COLOR : GPU_CONSTANT,
-                  GPU_CONSTANT, GPU_CONSTANT);
     if (ground)
     {
-        C3D_TexEnvOpAlpha(env, GPU_TEVOP_A_SRC_R, GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_SRC_ALPHA);
-        C3D_TexEnvFunc(env, C3D_Alpha, GPU_MODULATE);
-        C3D_TexEnvScale(env, C3D_Alpha, GPU_TEVSCALE_2);
-    }
-    else
+        float k = strength * VOXEL_LAMP_POOL_GAIN;
+
+        C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_CONSTANT, GPU_CONSTANT);
+        C3D_TexEnvFunc(env, C3D_RGB, GPU_MODULATE);
+        C3D_TexEnvSrc(env, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
         C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
-    C3D_TexEnvColor(env, ((uint32_t)(strength * (ground ? 75.0f : 220.0f) + 0.5f) << 24)
-                         | 0x006BBFFFu);
+        C3D_TexEnvColor(env, 0xFF000000u | (uint32_t)(k * 60.0f + 0.5f) << 16
+                             | (uint32_t)(k * 150.0f + 0.5f) << 8 | (uint32_t)(k * 255.0f + 0.5f));
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_DST_COLOR, GPU_ONE, GPU_ZERO, GPU_ONE);
+        return;
+    }
+    C3D_TexEnvSrc(env, C3D_RGB, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_REPLACE);
+    C3D_TexEnvSrc(env, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+    C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+    C3D_TexEnvColor(env, ((uint32_t)(strength * 220.0f + 0.5f) << 24) | 0x006BBFFFu);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ZERO, GPU_ONE);
 }
 
 static void HazeTexEnv(uint32_t colour)
@@ -7155,8 +7522,7 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, int eye)
     for (unsigned pass = 0; pass < VOXEL_ATLAS_PAGES + 2u; ++pass)
     {
         const C3D_Tex *boundTex = NULL;
-        bool glowing = pass == VOXEL_ATLAS_PAGES + 1u && !indoor
-                    && CtrDayNight_Get()->glow > 0.0f;
+        bool glowing = pass == VOXEL_ATLAS_PAGES + 1u && !indoor && sGlowWanted;
 
         C3D_AlphaTest(true, GPU_GREATER, 0);
 
@@ -7222,12 +7588,14 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, int eye)
         C3D_AlphaTest(false, GPU_ALWAYS, 0);
         C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_COLOR);
         C3D_DepthMap(true, -1.0f, 3.0f / 65535.0f);
-        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD,
-                      GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ZERO, GPU_ONE);
+        /* From the origin they were built at, kept while the camera moves. */
+        SetModelView(&view, sLampX, sLampZ);
         BindVertices(sLampGpu);
         sLampDrawn = svcGetSystemTick();
-        if (sLampGroundVertices != 0)
+        if (sLampGroundVertices != 0 && sLampPoolTex.data != NULL)
         {
+            /* the sprites, shadows and reflections bind their atlas again */
+            C3D_TexBind(0, &sLampPoolTex);
             LampTexEnv(strength, true);
             C3D_DrawArrays(GPU_TRIANGLES, VOXEL_LAMP_GROUND_FIRST, sLampGroundVertices);
         }
@@ -7236,6 +7604,7 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, int eye)
             LampTexEnv(strength, false);
             C3D_DrawArrays(GPU_TRIANGLES, 0, sLampVertices);
         }
+        SetModelView(&view, sDynamicX, sDynamicZ);
         BindVertices(sDynamic);
         C3D_DepthMap(true, -1.0f, 0.0f);
         C3D_AlphaTest(true, GPU_GREATER, 0);

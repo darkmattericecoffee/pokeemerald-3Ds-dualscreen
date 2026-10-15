@@ -52,36 +52,36 @@ static int ReadFileTest(const char *path)
     if (fread(data, 1, size, fp) != (size_t)size) { printf("short read\n"); return 1; }
     fclose(fp);
     CHECK(CtrStereoMon_ParseHeader(data, (uint32_t)size, &h));
-    printf("%s: %u Pokemon, %u planes, %u frames\n", path, h.count, h.planes, h.frames);
+    printf("%s: %u pictures, %u planes, up to %u frames\n", path, h.count, h.planes, h.frames);
     for (unsigned i = 0; i < h.count; ++i)
     {
         uint16_t national;
         const uint8_t *planes;
-        unsigned used[CTR_STEREO_MON_MAX_PLANES + 1] = {0}, opaque = 0;
+        unsigned used[CTR_STEREO_MON_MAX_PLANES + 1] = {0}, outline = 0;
+        CtrStereoMonHeader eh = h;
 
         CHECK(CtrStereoMon_Entry(data, (uint32_t)size, &h, i, &national, &planes));
         CHECK(CtrStereoMon_Find(data, (uint32_t)size, &h, national) == (int)i);
-        for (unsigned y = 0; y < 64; ++y)
-            for (unsigned x = 0; x < 64; ++x)
-            {
-                unsigned p = CtrStereoMon_Plane(planes, &h, 0, x, y);
-                ++used[p];
-                opaque += p != CTR_STEREO_MON_NONE;
-            }
-        /* Small sprites and coherent coplanar anatomy are valid. The first
-         * pose must contain art; later unused ROM pose slots may be empty. */
-        CHECK(opaque > 0);
-        unsigned distinct = 0;
-        for (unsigned p = 0; p < h.planes; ++p) distinct += used[p] != 0;
-        CHECK(distinct >= 1);
-        for (unsigned frame = 0; frame < h.frames; ++frame)
+        /* The entry's own frames (a backs file's entries have their own). */
+        eh.frames = CtrStereoMon_EntryFrames(data, (uint32_t)size, &h, i);
+        /* A pack carries depth only: every pixel of every frame has a plane
+         * and none is transparent (15). There is no outline in the file;
+         * the game's own picture says which pixels are drawn. */
+        for (unsigned frame = 0; frame < eh.frames; ++frame)
             for (unsigned y = 0; y < 64; ++y)
                 for (unsigned x = 0; x < 64; ++x)
                 {
-                    unsigned p = CtrStereoMon_Plane(planes, &h, frame, x, y);
-                    CHECK(p == CTR_STEREO_MON_NONE || p < h.planes);
+                    unsigned p = CtrStereoMon_Plane(planes, &eh, frame, x, y);
+
+                    ++used[p];
+                    outline += p == CTR_STEREO_MON_NONE;
                 }
-        if (shown++ < 3) printf("  #%u: %u opaque pixels, %u planes in use\n", national, opaque, distinct);
+        CHECK(outline == 0);
+        unsigned distinct = 0;
+        for (unsigned p = 0; p < h.planes; ++p) distinct += used[p] != 0;
+        CHECK(distinct >= 1);
+        if (outline != 0 && shown < 3) printf("  #%04x: %u transparent pixels\n", national, outline);
+        if (shown++ < 3) printf("  #%04x: %u frames, %u planes in use\n", national, eh.frames, distinct);
     }
     free(data);
     return 0;
@@ -139,6 +139,8 @@ int main(int argc, char **argv)
     CHECK(CtrStereoMon_EntryFrames(f, size, &h, 0) == 2);
     Put16(f + 16 + 2, 0);
 
+    /* The picture's own transparent pixel (3, 20) lies on plane 1: the
+     * planes have no outline, the picture's 0 is what stays transparent. */
     for (unsigned i = 0; i < 64 * 64; ++i) picture[i] = (uint16_t)(0x8000 | i | 1);
     picture[3 * 64 + 20] = 0;
     memset(texture, 0xaa, sizeof(texture));
@@ -179,8 +181,9 @@ int main(int argc, char **argv)
     CHECK(texture[CtrVideo_Texel(0, 0, 256)] == 0);
     free(f);
 
-    if (argc > 1 && ReadFileTest(argv[1]))
-        ++sFailures;
+    for (int a = 1; a < argc; ++a)
+        if (ReadFileTest(argv[a]))
+            ++sFailures;
     printf(sFailures ? "stereo_mon_test: %d FAILED\n" : "stereo_mon_test: PASS\n", sFailures);
     return sFailures != 0;
 }

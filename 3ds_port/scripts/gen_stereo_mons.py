@@ -38,7 +38,11 @@ Output (little endian): b"EM3DSTM1", u16 count, u8 planes, u8 frames, u16
 width, u16 height, then count index entries (u16 national, u16 reserved, u32
 offset), then per entry frames x (width*height/2) bytes: one nibble per
 pixel, rows top to bottom, the even column in the low nibble; 0 is the
-farthest plane, planes-1 the nearest, 15 a transparent pixel.
+farthest plane, planes-1 the nearest. The output holds no transparent
+pixel (15) and so no outline: once the planes are made, each transparent
+pixel takes the plane of its nearest opaque one (collapse_stereo_planes.
+fill_transparent), and the game's own picture tells at run time which are
+drawn.
 """
 import argparse, hashlib, json, math, os, statistics, struct, sys
 from PIL import Image, ImageSequence
@@ -461,7 +465,8 @@ def build(national, name, args):
         planes = [[-1 if p == 15 else p for p in pixels[f*4096:(f+1)*4096]] for f in range(len(frames))]
     if args.preview:
         preview(os.path.join(args.preview, f"{national}.png"), frames, planes, args.planes)
-    data = b"".join(pack(p) for p in planes)
+    from collapse_stereo_planes import fill_transparent
+    data = fill_transparent(b"".join(pack(p) for p in planes))
     method = "anatomy masks" if has_anatomy else "legacy colour transfer"
     return data, f"overlap {overlap:.3f} at ({ox:+d},{oy:+d}); {method}"
 

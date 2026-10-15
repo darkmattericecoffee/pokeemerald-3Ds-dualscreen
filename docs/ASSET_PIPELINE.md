@@ -14,7 +14,7 @@ same relative paths.
 | MP2K songs | reserved region | `sound/songs.bin` | same bundle mechanism |
 | All other read-only game data (tables, text, samples, map events) | `.gamedata`, reserved NOLOAD | `gamedata/gamedata.bin` | linker script `emerald3ds.ld.in`; two links with the same layout, contents from the image link (`scripts/gen_gamedata_bundle.py`) |
 | Voxel data | nothing | `voxel/{regions,signposts,buildings,relief}.bin` | generated on the host from the maps' own art |
-| Stereoscopic viewer's depth planes | nothing | `stereo/mons.bin` (engine file) | `scripts/gen_stereo_mons.py` from the Sprite Stereo Lab's depth maps (`STEREO_WORK` in `local.mk`), or a finished pack copied as it is (`STEREO_PACK`); plane numbers only, no picture |
+| Stereoscopic battle's depth planes | nothing | `stereo/mons.bin` (engine file) | `scripts/gen_stereo_mons.py` from the Sprite Stereo Lab's depth maps (`STEREO_WORK` in `local.mk`), a finished collection collapsed to four planes (`STEREO_PACK`), or the release's four-plane packs copied as they are (`STEREO_MONS_PACK`, `STEREO_BACKS_PACK`); a depth plane number for every pixel of every 64x64 frame and nothing else: no colours and no outline (no transparent pixel); the picture and which of its pixels are drawn are the game's own |
 
 The relocation tables (`*.rel`), the asset index and the ABI are **engine
 files**: they describe the executable, not the game, and ship inside the
@@ -87,6 +87,22 @@ the current file format still renders uniformly spaced planes. Independent
 per-plane spacing is not implemented. Existing depth controls scale spacing
 uniformly. The editor can still add planes, and saved SD card edits override
 the pack; reset only when intentionally discarding them to reload the pack.
+uniformly.
+
+### No outline in the packs
+
+The last step of every export (`collapse_stereo_planes.py`, `gen_stereo_mons.py`,
+`gen_stereo_backs.py`) fills each transparent pixel (plane 15) with the plane
+of its nearest opaque pixel (chessboard distance, a flood from all opaque
+pixels at once), so a finished pack is a full 64x64 depth field per frame and
+carries no sprite outline. The grouping before it still reads the sources'
+transparent pixels; the fill comes after it. A finished four-plane pack given
+to `collapse_stereo_planes.py` keeps its planes and is only filled. At run
+time the composition masks every plane with the game's own picture (a pixel
+is drawn where the ROM picture is not 0), and the battle tells whether a
+position's picture buffer holds the Pokémon or the trainer by comparing it
+with the game's own pictures of both, not with the planes.
+`make verify` checks that the built `mons.bin` and `backs.bin` hold no 15.
 
 Run `python3 3ds_port/tests/stereo_collapse_test.py` and
 `python3 3ds_port/tests/stereo_depth_groups_test.py` for conversion checks.

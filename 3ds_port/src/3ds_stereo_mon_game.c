@@ -134,13 +134,13 @@ static void DecodeTiles(const u8 *tiles, unsigned frames, const u16 *pal, u16 *o
 }
 
 /* The picture an id names (CTR_STEREO_ID_*): a species' front (Castform's
- * has four frames, every other one or two; the viewer takes two) or back,
- * a trainer's front, or a player's back (an uncompressed sheet of up to
- * five frames). Returns its frames, 0 without a picture. */
-static unsigned DecodePicture(u16 id, u16 *out)
+ * has four frames, every other one or two; the viewer and the battle take
+ * two) or back, a trainer's front, or a player's back (an uncompressed
+ * sheet of up to five frames), as the game's 4bpp tiles (`*tilesOut`, valid
+ * until the next call) and its palette. Returns its frames, 0 without one. */
+static unsigned LoadPicture(u16 id, const u8 **tilesOut, u16 *pal)
 {
     static u8 tiles[CTR_STEREO_MON_MAX_FRAMES * FRAME_BYTES];
-    static u16 pal[16];
     unsigned kind = id & 0xC000, number = id & 0x3FFF, frames = 0;
     const void *tilesLz = NULL, *palLz = NULL;
     u32 size;
@@ -164,29 +164,64 @@ static unsigned DecodePicture(u16 id, u16 *out)
         const u8 *sheet = Port_ResolveAssetPointer(gTrainerBackPicTable[number].data);
 
         size = gTrainerBackPicTable[number].size;
-        if (sheet == NULL || size < FRAME_BYTES || Unlz(gTrainerBackPicPaletteTable[number].data, pal, sizeof(pal)) != sizeof(pal))
+        if (sheet == NULL || size < FRAME_BYTES || Unlz(gTrainerBackPicPaletteTable[number].data, pal, 32) != 32)
             return 0;
         frames = size / FRAME_BYTES;
         if (frames > CTR_STEREO_MON_MAX_FRAMES) frames = CTR_STEREO_MON_MAX_FRAMES;
-        DecodeTiles(sheet, frames, pal, out);
+        *tilesOut = sheet;
         return frames;
     }
     size = Unlz(tilesLz, tiles, sizeof(tiles));
-    if (size >= FRAME_BYTES && Unlz(palLz, pal, sizeof(pal)) == sizeof(pal))
+    if (size >= FRAME_BYTES && Unlz(palLz, pal, 32) == 32)
     {
         frames = size >= 2 * FRAME_BYTES ? 2 : 1;
-        DecodeTiles(tiles, frames, pal, out);
-        /* Deoxys: the game shows the second 64x64 of both sheets (its
-         * form) and never the first (DuplicateDeoxysTiles): one frame. */
-        if ((kind == 0 || kind == CTR_STEREO_ID_BACK) && number == 386 && frames == 2)
-        {
-            memmove(out, out + CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM, CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM * sizeof(*out));
-            frames = 1;
-        }
+        *tilesOut = tiles;
     }
     else
         CtrLog_Write(CTR_LOG_ERROR, "stereo: id %04x has no picture (%lu bytes)", id, (unsigned long)size);
     return frames;
+}
+
+/* The same as RGBA5551 frames for the viewer (64x64, rows top to bottom). */
+static unsigned DecodePicture(u16 id, u16 *out)
+{
+    static u16 pal[16];
+    const u8 *tiles = NULL;
+    unsigned kind = id & 0xC000, number = id & 0x3FFF, frames = LoadPicture(id, &tiles, pal);
+
+    if (frames == 0) return 0;
+    DecodeTiles(tiles, frames, pal, out);
+    /* Deoxys: the game shows the second 64x64 of both sheets (its form) and
+     * never the first (DuplicateDeoxysTiles): one frame. */
+    if ((kind == 0 || kind == CTR_STEREO_ID_BACK) && number == 386 && frames == 2)
+    {
+        memmove(out, out + CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM, CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM * sizeof(*out));
+        frames = 1;
+    }
+    return frames;
+}
+
+/* The first frame of an id's own picture for a position's candidate (0 the
+ * Pokémon, 1 the trainer): the compositor tells by it which of the two the
+ * position's buffer holds, the planes having no outline. Decoded once per
+ * id; NULL without one. */
+static const u8 *ReferenceOf(unsigned position, unsigned which, u16 id)
+{
+    static u8 sReference[CTR_STEREO_SLOTS][2][FRAME_BYTES];
+    static u16 sReferenceId[CTR_STEREO_SLOTS][2];
+    static bool8 sReferenceOk[CTR_STEREO_SLOTS][2];
+
+    if (id == 0) return NULL;
+    if (sReferenceId[position][which] != id)
+    {
+        const u8 *tiles = NULL;
+        u16 pal[16];
+
+        sReferenceId[position][which] = id;
+        sReferenceOk[position][which] = LoadPicture(id, &tiles, pal) != 0;
+        if (sReferenceOk[position][which]) memcpy(sReference[position][which], tiles, FRAME_BYTES);
+    }
+    return sReferenceOk[position][which] ? sReference[position][which] : NULL;
 }
 
 /* A game string in ASCII capitals, from the game's own character set. */
@@ -851,13 +886,13 @@ static void BattleFrame(void)
 
         if (battler >= gBattlersCount || (right && !(gBattleTypeFlags & BATTLE_TYPE_DOUBLE)))
         {
-            CtrStereoBattle_SetSlot(position, 0, NULL, 0, 0, 0, 0, NULL, 0);
+            CtrStereoBattle_SetSlot(position, 0, NULL, 0, 0, 0, NULL, NULL, 0, NULL, 0);
             continue;
         }
         spriteId = gBattlerSpriteIds[battler];
         if (spriteId >= MAX_SPRITES || !gSprites[spriteId].inUse)
         {
-            CtrStereoBattle_SetSlot(position, 0, NULL, 0, 0, 0, 0, NULL, 0);
+            CtrStereoBattle_SetSlot(position, 0, NULL, 0, 0, 0, NULL, NULL, 0, NULL, 0);
             continue;
         }
         if (player)
@@ -872,9 +907,13 @@ static void BattleFrame(void)
                 playerId = CTR_STEREO_ID_PLAYER | backPic;
             }
         }
-        CtrStereoBattle_SetSlot(position, gSprites[spriteId].oam.tileNum, gMonSpritesGfxPtr->sprites.ptr[position],
-                                CTR_STEREO_BUFFER_FRAMES, MonIdOf(battler, player), player ? 0 : TrainerIdOf(position),
-                                playerId, backSheet, backFrames);
+        {
+            u16 monId = MonIdOf(battler, player), trainerId = player ? 0 : TrainerIdOf(position);
+
+            CtrStereoBattle_SetSlot(position, gSprites[spriteId].oam.tileNum, gMonSpritesGfxPtr->sprites.ptr[position],
+                                    CTR_STEREO_BUFFER_FRAMES, monId, trainerId, ReferenceOf(position, 0, monId),
+                                    ReferenceOf(position, 1, trainerId), playerId, backSheet, backFrames);
+        }
     }
 }
 

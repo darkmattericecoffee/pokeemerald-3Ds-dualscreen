@@ -77,8 +77,6 @@ void CtrPlatform_NoteBottom(float ms) { sTiming.bottomMs = ms; }
 
 bool CtrPlatform_Init(void)
 {
-    /* A New 3DS runs at 804 MHz with its L2 cache; an Old 3DS ignores this. */
-    osSetSpeedupEnable(true);
     /* The bottom screen at RGB565 from the start: its frame buffers live in
      * the linear heap, and gfxInitDefault made them BGR8 (450 KiB) before
      * CtrLog_Init turned the screen to 565, which never shrinks them. The
@@ -212,8 +210,10 @@ bool CtrPlatform_BeginFrame(void)
 }
 
 /*
- * Fast-forward (CtrSettings_Speed). Of every `speed` game frames only the last
- * is presented and waits for the display; the others run back to back. Only
+ * Fast-forward (CtrSettings_SpeedHalves). Each game frame earns two halves;
+ * a frame is presented and waits for the display once `speed` halves have
+ * been earned, the others run back to back: at 2x one frame in two is shown,
+ * at 1.5x two in three. Only
  * a presented frame ticks the sound engine (CtrPlatform_SoundTick), so music
  * and effects keep their speed while the game runs faster. A frame is also
  * presented as soon as one more hidden frame and the present would no longer
@@ -223,6 +223,8 @@ bool CtrPlatform_BeginFrame(void)
  */
 #define FRAME_MS (1000.0f / 60)
 static bool sSoundTick = true;
+static unsigned sEarned;
+/* Real-time pacing's hidden frame (PaceBehind): never two in a row. */
 static unsigned sHidden;
 static uint64_t sShownTick;
 static float sPresentMs = 4.0f;
@@ -291,10 +293,10 @@ static bool FrameShown(uint64_t now)
 {
     /* In a local wireless session everyone plays at the same speed: the link
      * code times out on a partner that runs slower. */
-    int speed = sTurbo ? 8 : LocalLink_InSession() ? 1 : CtrSettings_Speed();
+    unsigned speed = sTurbo ? 8 : LocalLink_InSession() ? 2 : CtrSettings_SpeedHalves();
     float since = sShownTick ? (now - sShownTick) * 1000.0f / SYSCLOCK_ARM11 : FRAME_MS;
 
-    if (sPace && speed <= 1)
+    if (sPace && speed <= 2)
     {
         bool behind = PaceBehind(now);
 
@@ -306,9 +308,15 @@ static bool FrameShown(uint64_t now)
         sHidden = 0;
         return true;
     }
-    if (speed <= 1 || ++sHidden >= (unsigned)speed || since + sTiming.gameMs + sPresentMs > FRAME_MS)
+    sEarned += 2;
+    if (speed <= 2 || since + sTiming.gameMs + sPresentMs > FRAME_MS)
     {
-        sHidden = 0;
+        sEarned = 0;
+        return true;
+    }
+    if (sEarned >= speed)
+    {
+        sEarned -= speed;
         return true;
     }
     return false;
@@ -357,8 +365,8 @@ void CtrPlatform_EndFrame(void)
         sHooks.vblank();
     uint64_t presentStart = svcGetSystemTick();
     /* Before the present, which reads them: its DROP line is about the frame
-     * that just ran, and the voxel builds after FrameEnd estimate the next. */
-    sTiming.gameMs = (endStart - sWorkStart) * 1000.0f / SYSCLOCK_ARM11;
+     * that just ran, and the voxel builds after FrameEnd estimate the next
+     * (gameMs is already this frame's, from above). */
     sTiming.vblankMs = (presentStart - endStart) * 1000.0f / SYSCLOCK_ARM11;
     /* FrameEnd(0) also flushes the console's linear LCD buffer. Calling
      * gfxFlushBuffers here would flush BOTH screens again, not just bottom. */
@@ -545,7 +553,7 @@ void Port_ProfBegin(void)
 {
     if (sProfFrames >= 600)
     {
-        char text[256];
+        char text[256] = "";   /* no bucket named: logged empty, not garbage */
         size_t used = 0;
 
         for (unsigned i = 0; i < PROF_BUCKETS && sProf[i].name != NULL && used < sizeof(text) - 32; ++i)

@@ -53,6 +53,9 @@ static bool C3D_TexInitVRAM(C3D_Tex *tex, unsigned w, unsigned h, int fmt) {
     ++allocated; tex->data = &allocated; return true;
 }
 static void C3D_TexDelete(C3D_Tex *tex) { assert(tex->data && allocated); --allocated; tex->data = NULL; }
+/* The pages' arena is not part of this test: nothing is borrowed from it. */
+static void AtlasPageRelease(C3D_Tex *tex) { if (tex->data) C3D_TexDelete(tex); memset(tex, 0, sizeof(*tex)); }
+static bool AtlasPageBorrow(C3D_Tex *tex) { (void)tex; return false; }
 static void C3D_TexSetFilter(C3D_Tex *t, int a, int b) { (void)t; (void)a; (void)b; }
 static void C3D_TexSetWrap(C3D_Tex *t, int a, int b) { (void)t; (void)a; (void)b; }
 typedef struct { bool draft; } VoxelChunk;
@@ -87,6 +90,7 @@ static void JobStart(const ChunkSite *s, VoxelAtlasSlot *a, uint32_t h, void *c,
 typedef struct { unsigned maxEntries, numEntries; } gxCmdQueue_s;
 static gxCmdQueue_s *sFrameQueue;
 static unsigned sUploadCommands, sRenderReserve;
+static bool sPrefetchBlocked;
 '''
     for signature in ['static unsigned WaitBucket(', 'static unsigned RequestWait(', 'static bool RequestOverdue(', 'static int CompareRequests(', 'static bool StartNextJob(', 'static bool JobSort(', 'static float PhaseCost(', 'static float PhaseCostInFrame(', 'static void NotePhaseCost(']:
         source += function(voxel, signature)
@@ -128,6 +132,8 @@ typedef struct { float gameMs, vblankMs; } CtrTiming;
 static CtrTiming timing;
 static struct { float afterMs, afterBudgetMs; } sStats;
 static bool sReady, sViewReady, sCrossingSoon;
+static uint64_t sAfterEndTick;
+static float sTailMs;
 static unsigned sAheadBackoff, postStarts;
 static float sLastBuildMs, sInFrameBuildMs;
 typedef struct { float cpuMs, gpuMs, gpuStartMs; bool voxelFrame; } CtrVideoStats;
@@ -160,6 +166,7 @@ static unsigned RunJobs(uint64_t a, float holes, float ahead, bool inFrame, bool
 }
 '''
     source += function(voxel, 'static float InFrameBudget(')
+    source += function(voxel, 'void CtrVoxel_NoteFrameWait(')
     source += function(voxel, 'void CtrVoxel_AfterSubmit(')
     source += function(voxel, 'static void JobStep(')
     source += function(video, 'bool CtrVideo_TryVoxelUpload(')
@@ -250,6 +257,16 @@ int main(void) {
     CtrVoxel_AfterSubmit(0); assert(postStarts == 2 && !sRequests[0].done);
     sViewReady = true; testTick = 1;
     CtrVoxel_AfterSubmit(1); assert(postStarts == 3);
+    /* The frame's real tail (end of AfterSubmit to the next FrameBegin) is
+     * left free when it is longer than the game and the audio counted:
+     * 16.7 - 0 elapsed - 12 tail (the cap) - 1 margin. Read once only. */
+    assert(sAfterEndTick == testTick);
+    CtrVoxel_NoteFrameWait(sAfterEndTick + 20); assert(sTailMs == 20.0f && sAfterEndTick == 0);
+    sViewReady = true; sJob.active = true;
+    CtrVoxel_AfterSubmit(1); assert(sStats.afterBudgetMs > 3.6f && sStats.afterBudgetMs < 3.8f);
+    CtrVoxel_NoteFrameWait(testTick + 5); assert(sTailMs == 5.0f);
+    CtrVoxel_NoteFrameWait(testTick + 5); assert(sTailMs == 0.0f);
+    sJob.active = false;
     sHolesOnly = true;
     sRequestCount = 3;
     for (unsigned i = 0; i < 3; ++i) {
@@ -293,12 +310,12 @@ int main(void) {
     sAtlases[0].primaryTileset = &pairA; sAtlases[1].primaryTileset = &pairB;
     sAtlases[2].primaryTileset = &pairOld; sAtlases[2].valid = true;
     for (unsigned a = 0; a < 3; ++a)
-        for (unsigned p = 0; p < 2; ++p) assert(AllocateAtlasPage(&sAtlases[a], p));
+        for (unsigned p = 0; p < 2; ++p) assert(AllocateAtlasPage(&sAtlases[a], p, true));
     assert(allocated == 6 && CountAllocatedAtlases() == 6);
-    assert(AllocateAtlasPage(&sAtlases[0], 2));
+    assert(AllocateAtlasPage(&sAtlases[0], 2, true));
     assert(!sAtlases[2].valid && sAtlases[2].generation == 1 && allocated == 5);
-    assert(AllocateAtlasPage(&sAtlases[0], 3));
-    assert(!AllocateAtlasPage(&sAtlases[1], 2) && allocated == 6);
+    assert(AllocateAtlasPage(&sAtlases[0], 3, true));
+    assert(!AllocateAtlasPage(&sAtlases[1], 2, true) && allocated == 6);
     assert(sAtlases[0].generation == 0 && sAtlases[1].generation == 0);
     /* Production phase transitions must cover each cell once and capture
      * terrainCount once, before the first cell of the tree pass. */

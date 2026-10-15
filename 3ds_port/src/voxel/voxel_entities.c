@@ -45,6 +45,8 @@ typedef struct
 {
     bool valid;
     u16 tileNum, paletteNum;
+    /* The ext palette it was drawn with (sprite.c), 0xFF for paletteNum. */
+    u8 extPalette;
     u8 shape, size;
     bool flipX, flipY, color256;
     int width, height;
@@ -451,6 +453,7 @@ static bool RefreshSlot(unsigned index, const struct Sprite *sprite, const struc
     bool flipY = sprite->oam.affineMode == ST_OAM_AFFINE_OFF
               && (sprite->oam.matrixNum & 0x10) != 0;
     u32 sourceBytes, paletteBytes;
+    u8 extPalette = color256 ? 0xFF : GetSpriteExtPalette(sprite);
     bool changed;
 
     PictureSize(sprite, obj, &w, &h);
@@ -459,8 +462,12 @@ static bool RefreshSlot(unsigned index, const struct Sprite *sprite, const struc
 
     sourceBytes = GatherSource(sprite, w, h, color256, source);
     paletteBytes = color256 ? 256 * 2 : 16 * 2;
-    /* OBJ palettes are the second half of PLTT; 8bpp uses it as one bank. */
-    memcpy(palette, PLTT + 0x200 + (color256 ? 0 : sprite->oam.paletteNum * 32), paletteBytes);
+    /* OBJ palettes are the second half of PLTT; 8bpp uses it as one bank.
+     * One given an ext palette shows that, as the 2D compositor does. */
+    if (extPalette != 0xFF)
+        memcpy(palette, CtrVideo_ExtPalette(extPalette), paletteBytes);
+    else
+        memcpy(palette, PLTT + 0x200 + (color256 ? 0 : sprite->oam.paletteNum * 32), paletteBytes);
 
     changed = !slot->valid
            || slot->width != w || slot->height != h
@@ -468,6 +475,7 @@ static bool RefreshSlot(unsigned index, const struct Sprite *sprite, const struc
            || slot->flipX != flipX || slot->flipY != flipY
            || slot->tileNum != sprite->oam.tileNum
            || slot->paletteNum != sprite->oam.paletteNum
+           || slot->extPalette != extPalette
            || slot->sourceBytes != sourceBytes
            || memcmp(slot->source, source, sourceBytes) != 0
            || memcmp(slot->palette, palette, paletteBytes) != 0;
@@ -482,6 +490,7 @@ static bool RefreshSlot(unsigned index, const struct Sprite *sprite, const struc
     slot->flipY = flipY;
     slot->tileNum = sprite->oam.tileNum;
     slot->paletteNum = sprite->oam.paletteNum;
+    slot->extPalette = extPalette;
     slot->shape = sprite->oam.shape;
     slot->size = sprite->oam.size;
     slot->sourceBytes = sourceBytes;
@@ -597,9 +606,22 @@ static float ModelPush(float cx, float cz, float halfW)
  * the ground; a field effect that belongs to an object is drawn in that
  * object's place, moved from it as it is on the GBA screen.
  */
+/* A sprite drawn on an OAM matrix (a visible wild Pokemon growing in,
+ * wild_encounter.c) is that much smaller or larger; the matrix maps the
+ * screen onto the picture, so its size is one over the matrix's. */
+static float SpriteScale(const struct Sprite *sprite)
+{
+    s16 a;
+
+    if (!(sprite->oam.affineMode & ST_OAM_AFFINE_ON_MASK))
+        return 1.0f;
+    a = (s16)gOamMatrices[sprite->oam.matrixNum & (OAM_MATRIX_COUNT - 1)].a;
+    return a > 0 ? 256.0f / a : 1.0f;
+}
+
 static void EmitBillboard(VoxelBuilder *builder, const VoxelSpriteSlot *slot, unsigned index,
                           float cx, float cz, float offX, float offZ, float rise, float deck,
-                          float rightX, float rightZ, float stretch, float shade)
+                          float rightX, float rightZ, float stretch, float shade, float scale)
 {
     unsigned baseX = (index % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
     unsigned baseY = (index / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
@@ -609,8 +631,8 @@ static void EmitBillboard(VoxelBuilder *builder, const VoxelSpriteSlot *slot, un
     /* Row 0 in memory is v=1, the convention the whole port uses. */
     float v0 = 1.0f - baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
     float v1 = 1.0f - (baseY + rows) / (float)VOXEL_SPRITE_ATLAS_DIM;
-    float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.5f;
-    float height = rows / VOXEL_PIXELS_PER_TILE * stretch;
+    float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.5f * scale;
+    float height = rows / VOXEL_PIXELS_PER_TILE * stretch * scale;
     /* On relief the sprite stands where its cell was lifted to, and rides
      * the lattice between cells, so a flight of stairs is climbed. */
     float lift = VoxelRelief_LiftAt(cx, cz) + rise + deck;
@@ -1358,7 +1380,7 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
                            rightX, rightZ, stretch);
         unsigned first = builder->count;
         EmitBillboard(builder, &sSlots[i], i, card->worldX + 0.5f, card->worldZ + 0.5f,
-                      0.0f, 0.0f, rise, card->deck, rightX, rightZ, stretch, card->shade * dusk);
+                      0.0f, 0.0f, rise, card->deck, rightX, rightZ, stretch, card->shade * dusk, 1.0f);
         if (i == gPlayerAvatar.objectEventId && builder->count == first + 6)
             sPlayerVertexFirst = (int)first;
     }
@@ -1411,7 +1433,7 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
             EmitBillboard(builder, &sSlots[effect->slot], effect->slot,
                           object->worldX + 0.5f, object->worldZ + 0.5f,
                           rightX * along + towardX * depth, rightZ * along + towardZ * depth,
-                          rise, object->deck, rightX, rightZ, stretch, object->shade);
+                          rise, object->deck, rightX, rightZ, stretch, object->shade, SpriteScale(sprite));
             continue;
         }
         /* On its own: placed from the player, whose feet are on the centre of
@@ -1462,7 +1484,7 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
                 continue;
             EmitBillboard(builder, &sSlots[effect->slot], effect->slot, cx, cz, 0.0f, 0.0f,
                           -sprite->y2 * pixel, reference->deck, rightX, rightZ, stretch,
-                          reference->shade);
+                          reference->shade, SpriteScale(sprite));
         }
     }
     return updates;

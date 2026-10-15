@@ -337,7 +337,8 @@ void CtrStereoMon_LogEdit(const char *line);
 #define CTR_STEREO_BUFFER_FRAMES 2
 #define CTR_STEREO_BACK_FRAMES 5
 void CtrStereoBattle_SetSlot(unsigned position, unsigned tileNum, const uint8_t *buffer, unsigned bufferFrames,
-                             uint16_t monId, uint16_t trainerId, uint16_t playerId, const uint8_t *backSheet,
+                             uint16_t monId, uint16_t trainerId, const uint8_t *monPicture,
+                             const uint8_t *trainerPicture, uint16_t playerId, const uint8_t *backSheet,
                              unsigned backFrames);
 void CtrStereoBattle_ClearBattlers(void);
 /* The planes read for the battle are forgotten: the next battle reads them
@@ -382,7 +383,7 @@ void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eye
 
 /* The wild Pokémon to meet instead of `species` when CHEATS' 3D WILD ONLY is
  * on: one that has planes (so the 3D battle can be tried anywhere); else
- * `species` itself. Called by CreateWildMon (patch 0042). */
+ * `species` itself. Called by CreateWildMon (patch 0057). */
 uint16_t CtrStereoMonGame_WildSpecies(uint16_t species);
 
 /* Once per frame, after input is scanned and before the game reads its

@@ -138,19 +138,23 @@ ROMFS_SHADER_OUTS += romfs/stage/leaves.bin
 ROMFS_SHADER_OUTS += romfs/bottom/battle.bin
 # The battle's info boxes and text box: the port's own art (scripts/gen_battle_hud.py).
 ROMFS_SHADER_OUTS += romfs/battle/hud.bin
-# The stereoscopic Pokémon viewer's depth planes (scripts/gen_stereo_mons.py), from
-# the Sprite Stereo Lab's work directory named in STEREO_WORK (local.mk); without
-# one the file is empty and the viewer stays off. STEREO_PACK names a finished
-# planes file instead (the full collection), collapsed into four depth groups.
-# STEREO_ANNOTATIONS maps sprite IDs to anatomical masks for semantic grouping.
+# The stereoscopic Pokémon planes (scripts/gen_stereo_mons.py), from the
+# Sprite Stereo Lab's work directory named in STEREO_WORK (local.mk); without
+# one the file is a header alone and the battle draws its sprites as before. STEREO_PACK names a finished
+# planes file instead (the full collection), collapsed into four depth groups;
+# STEREO_MONS_PACK a four-plane file ready to go (a release asset), copied as
+# it is but for the same fill. STEREO_ANNOTATIONS maps sprite IDs to anatomical masks for semantic
+# grouping.
 STEREO_WORK ?=
 STEREO_ANNOTATIONS ?=
 STEREO_PACK ?=
+STEREO_MONS_PACK ?=
 ROMFS_SHADER_OUTS += romfs/stereo/mons.bin
 # The battle's other pictures (scripts/gen_stereo_backs.py): Pokémon backs,
 # trainers' fronts and the players' backs, from the authored collection in
 # STEREO_BACKS (its extraction/manifest.json and work/ folders; local.mk).
-# STEREO_BACKS_PACK names a finished backs file instead, copied as it is.
+# STEREO_BACKS_PACK names a finished backs file instead, its transparent
+# pixels filled (no outline) on the way in.
 STEREO_BACKS ?=
 STEREO_BACKS_PACK ?=
 ROMFS_SHADER_OUTS += romfs/stereo/backs.bin
@@ -500,16 +504,20 @@ romfs/battle/hud.bin: scripts/gen_battle_hud.py
 	"$(PYTHON)" scripts/gen_battle_hud.py --output $@
 .PHONY: FORCE_STEREO
 ifneq ($(STEREO_BACKS_PACK),)
-romfs/stereo/backs.bin: $(STEREO_BACKS_PACK)
+romfs/stereo/backs.bin: $(STEREO_BACKS_PACK) scripts/collapse_stereo_planes.py
 	@mkdir -p $(@D)
-	cp "$(STEREO_BACKS_PACK)" $@
+	"$(PYTHON)" scripts/collapse_stereo_planes.py --fill-only --input "$(STEREO_BACKS_PACK)" --output $@
 else
 romfs/stereo/backs.bin: scripts/gen_stereo_backs.py scripts/collapse_stereo_planes.py scripts/stereo_depth_groups.py $(if $(STEREO_BACKS),FORCE_STEREO,) $(if $(STEREO_BACKS),$(wildcard $(STEREO_BACKS)/work/*/depth-frames.bin) $(STEREO_BACKS)/extraction/manifest.json,)
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_stereo_backs.py --smart --cleanup $(if $(STEREO_BACKS),--work "$(STEREO_BACKS)",) --root $(ROOT) --output $@
 endif
 
-ifneq ($(STEREO_PACK),)
+ifneq ($(STEREO_MONS_PACK),)
+romfs/stereo/mons.bin: $(STEREO_MONS_PACK) scripts/collapse_stereo_planes.py
+	@mkdir -p $(@D)
+	"$(PYTHON)" scripts/collapse_stereo_planes.py --fill-only --input "$(STEREO_MONS_PACK)" --output $@
+else ifneq ($(STEREO_PACK),)
 romfs/stereo/mons.bin: $(STEREO_PACK) scripts/collapse_stereo_planes.py scripts/stereo_depth_groups.py $(if $(STEREO_ANNOTATIONS),$(STEREO_ANNOTATIONS) FORCE_STEREO,)
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/collapse_stereo_planes.py --input "$(STEREO_PACK)" --output $@ --planes 4 --smart --cleanup $(if $(STEREO_ANNOTATIONS),--annotations "$(STEREO_ANNOTATIONS)",)
@@ -628,7 +636,7 @@ check-voxel-relief:
 .PHONY: verify-voxel-relief
 verify: verify-voxel-relief
 verify-voxel-relief: build/voxel_relief_test.exe romfs/voxel/relief.bin
-	./build/voxel_relief_test.exe $$("$(PYTHON)" -c "import json; l = json.load(open('$(ROOT)/data/layouts/layouts.json'))['layouts']; ids = [e['id'] for e in l]; print(ids.index('LAYOUT_ROUTE101') + 1, ids.index('LAYOUT_ROUTE116') + 1, ids.index('LAYOUT_RUSTURF_TUNNEL') + 1)")
+	./build/voxel_relief_test.exe $$("$(PYTHON)" -c "import json; l = json.load(open('$(ROOT)/data/layouts/layouts.json'))['layouts']; ids = [e['id'] for e in l]; print(ids.index('LAYOUT_ROUTE101') + 1, ids.index('LAYOUT_ROUTE116') + 1, ids.index('LAYOUT_RUSTURF_TUNNEL') + 1, ids.index('LAYOUT_ROUTE108') + 1)")
 
 build/voxel_relief_test.exe: tests/voxel_relief_test.c src/voxel/voxel_relief.c src/voxel/voxel_relief.h
 	@mkdir -p $(@D)
@@ -682,12 +690,17 @@ verify-voxel-building-anim: romfs/voxel/buildings.bin
 # with a reason for each, and the verdict that fails the build on the rest,
 # and on an entry in it that finds no fault; and the parts that make them right (casings,
 # tables on legs, tops flat against a wall, pieces cut by their outlines,
-# frames seen through, domes) still exact at 45 degrees.
+# frames seen through, domes) still exact at 45 degrees. And what of a
+# model's texture the export puts on its page: every texel its faces read,
+# clear ones too, so that none reads the next image packed beside it (the
+# laboratory's desk tops in a strip on its floor); a floor decal's quads
+# only over its marks.
 .PHONY: verify-voxel-interior-lint
 verify: verify-voxel-interior-lint
 verify-voxel-interior-lint:
 	"$(PYTHON)" -B tests/voxel_interior_lint_test.py
 	"$(PYTHON)" -B tests/voxel_interior_parts_test.py
+	"$(PYTHON)" -B tests/voxel_building_crop_test.py
 
 .PHONY: verify-pokedex-capture verify-voxel-dewford
 verify: verify-pokedex-capture verify-voxel-dewford

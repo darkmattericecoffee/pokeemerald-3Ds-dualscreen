@@ -9,7 +9,8 @@ pixel per 64x64 frame, rows top to bottom, even column in the low nibble,
 manifest.json names each asset) packed into the viewer's container
 (EM3DSTM1, see gen_stereo_mons.py) with one difference: an entry has its
 own number of frames in the index's reserved word, and its planes are
-frames x 2048 bytes. Ids: a Pokemon's back is 0x8000 | national (canonical
+frames x 2048 bytes, and like it holds no 15: the transparent pixels take
+the plane of their nearest opaque one once the planes are grouped. Ids: a Pokemon's back is 0x8000 | national (canonical
 form only), a trainer's front 0x4000 | TRAINER_PIC_<name>, a player's back
 0xC000 | TRAINER_BACK_PIC_<name> (the constants of include/constants/
 trainers.h under --root). Nothing here comes from the ROM: plane numbers
@@ -17,7 +18,7 @@ only. Without --work the output is an empty container.
 """
 import argparse, json, os, re, struct, sys
 
-from collapse_stereo_planes import collapse_pixels
+from collapse_stereo_planes import collapse_pixels, fill_transparent
 from stereo_depth_groups import smart_pixels
 
 FRAME_BYTES = 64 * 64 // 2
@@ -78,6 +79,8 @@ def main():
                 reports.append(dict(id=ident, name=a['name'], **report))
             else:
                 data = collapse_pixels(data, 10, args.planes)
+            # No outline in the file: the game's picture is the silhouette.
+            data = fill_transparent(data)
             entries.append((ident, frames, data))
     if args.report:
         os.makedirs(os.path.dirname(args.report) or '.', exist_ok=True)

@@ -1,5 +1,5 @@
 /*
- * The stereoscopic Pokémon viewer's file and composition, SDK-free: parsed
+ * The stereoscopic Pokémon planes file and composition, SDK-free: parsed
  * on the console and in the host test (tests/stereo_mon_test.c). The format
  * is described in scripts/gen_stereo_mons.py.
  */

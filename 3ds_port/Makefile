@@ -250,7 +250,23 @@ EMBED_MARKER :=
 $(shell rm -f romfs/data.embedded)
 endif
 
-$(TARGET).3dsx: build/$(TARGET)_3dsx.elf $(TARGET).smdh romfs/boot.txt $(ROMFS_DATA_OUTS) romfs/engine/abi.bin romfs/engine/build_id.bin $(EMBED_MARKER)
+# The follower sprites and texts (../builder/emerald3ds_builder/followers.py),
+# optional data outside the ABI: from the private workspace's copy, never the
+# network, and only where that copy is (the public repository has none: there
+# is no follower and the visible wild Pokemon keep their icons). staging.py
+# keeps them out of a release.
+FOLLOWERS_SRC ?= ../private_assets/hgss_followers
+FOLLOWERS_PY := ../builder/emerald3ds_builder/followers.py
+ifneq ($(wildcard $(FOLLOWERS_SRC)/pokeheartgold),)
+ROMFS_FOLLOWERS := romfs/followers/sources.txt
+$(ROMFS_FOLLOWERS): $(FOLLOWERS_PY) ../builder/emerald3ds_builder/followers_sources.py
+	"$(PYTHON)" $(FOLLOWERS_PY) --sources $(FOLLOWERS_SRC) --out romfs --offline
+else
+ROMFS_FOLLOWERS :=
+endif
+
+$(TARGET).3dsx: build/$(TARGET)_3dsx.elf $(TARGET).smdh romfs/boot.txt $(ROMFS_DATA_OUTS) romfs/engine/abi.bin romfs/engine/build_id.bin $(EMBED_MARKER) \
+	$(ROMFS_FOLLOWERS)
 	$(DEVKITPRO)/tools/bin/3dsxtool $< $@ --smdh=$(TARGET).smdh --romfs=romfs
 
 # Release: the executable with engine files only. Its game data is the data
@@ -342,7 +358,7 @@ build/pak_test.exe: tests/pak_test.c src/3ds_pak.c include/3ds_pak.h
 	@mkdir -p build
 	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Iinclude tests/pak_test.c src/3ds_pak.c -o $@
 
-# The stereoscopic viewer's planes file and composition; the built file, when there is one.
+# The stereoscopic planes file and composition; the built file, when there is one.
 verify: verify-stereo
 .PHONY: verify-stereo
 verify-stereo: build/stereo_mon_test.exe

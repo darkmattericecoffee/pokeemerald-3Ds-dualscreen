@@ -96,8 +96,12 @@ typedef struct
     uint8_t *back;          /* BACK_FRAMES * FRAME_BYTES, player slots only */
     /* The planes the buffer could be showing, and the back's. */
     Planes mon, trainer, playerBack;
-    /* Which of mon and trainer the buffer holds (by silhouette), or NULL,
-     * and the candidates' state it was decided on. */
+    /* The first frame of the Pokémon's and the trainer's own pictures
+     * (SetSlot), whether each was given; which of mon and trainer the
+     * buffer holds (by silhouette), or NULL, and the candidates' state it
+     * was decided on. */
+    uint8_t monPicture[FRAME_BYTES], trainerPicture[FRAME_BYTES];
+    bool hasMonPicture, hasTrainerPicture;
     const Planes *bufferPlanes;
     uint32_t silhouetteKey;
     /* This frame: the OAM entry (-1 none), what it shows and which frame,
@@ -352,23 +356,20 @@ static unsigned CutOf(const uint8_t *vram, const uint8_t *tiles)
     return FRAME_BYTES - same;
 }
 
-/* Whether a 4bpp frame's silhouette is a planes frame's: opaque where the
- * plane is not 15, transparent where it is. */
-static bool SilhouetteMatches(const uint8_t *tiles, const Planes *p, const CtrStereoMonHeader *h)
+/* Whether a 4bpp frame has the silhouette of a picture's (opaque where its
+ * pixel is not 0, both in GBA tile order), whose planes are in. The game's
+ * own picture, not the planes: they carry no outline. Pixel values may
+ * differ (Spinda's spots), the silhouette may not; a Substitute's doll, a
+ * Transform's other species or a trainer's picture do not match. */
+static bool SilhouetteMatches(const uint8_t *tiles, const uint8_t *picture, bool given, const Planes *p)
 {
-    CtrStereoMonHeader hdr;
+    if (!p->ok || !given) return false;
+    for (unsigned i = 0; i < FRAME_BYTES; ++i)
+    {
+        uint8_t a = tiles[i], b = picture[i];
 
-    if (!p->ok || h == NULL) return false;
-    hdr = *h;
-    hdr.frames = p->frames;
-    for (unsigned y = 0; y < DIM; ++y)
-        for (unsigned x = 0; x < DIM; ++x)
-        {
-            unsigned tile = (y / 8) * 8 + x / 8;
-            bool opaque = ((tiles[tile * 32 + (y & 7) * 4 + (x & 7) / 2] >> ((x & 1) * 4)) & 15) != 0;
-
-            if (opaque != (CtrStereoMon_Plane(p->planes, &hdr, 0, x, y) != CTR_STEREO_MON_NONE)) return false;
-        }
+        if (((a & 15) != 0) != ((b & 15) != 0) || ((a >> 4) != 0) != ((b >> 4) != 0)) return false;
+    }
     return true;
 }
 
@@ -378,11 +379,12 @@ static const CtrStereoMonHeader *HeaderOf(const Planes *p)
 }
 
 void CtrStereoBattle_SetSlot(unsigned position, unsigned tileNum, const uint8_t *buffer, unsigned bufferFrames,
-                             uint16_t monId, uint16_t trainerId, uint16_t playerId, const uint8_t *backSheet,
+                             uint16_t monId, uint16_t trainerId, const uint8_t *monPicture,
+                             const uint8_t *trainerPicture, uint16_t playerId, const uint8_t *backSheet,
                              unsigned backFrames)
 {
     Slot *s;
-    bool bufferChanged;
+    bool bufferChanged, picturesChanged = false;
 
     SlotsInit();
     if (position >= SLOTS) return;
@@ -412,6 +414,22 @@ void CtrStereoBattle_SetSlot(unsigned position, unsigned tileNum, const uint8_t 
         memcpy(s->buffer, buffer, bufferFrames * FRAME_BYTES);
         s->bufferFrames = bufferFrames;
     }
+    /* The pictures change with the ids, which the key below holds; copied
+     * only when they do. */
+    if ((monPicture != NULL) != s->hasMonPicture
+        || (monPicture != NULL && memcmp(s->monPicture, monPicture, FRAME_BYTES) != 0))
+    {
+        s->hasMonPicture = monPicture != NULL;
+        if (monPicture != NULL) memcpy(s->monPicture, monPicture, FRAME_BYTES);
+        picturesChanged = true;
+    }
+    if ((trainerPicture != NULL) != s->hasTrainerPicture
+        || (trainerPicture != NULL && memcmp(s->trainerPicture, trainerPicture, FRAME_BYTES) != 0))
+    {
+        s->hasTrainerPicture = trainerPicture != NULL;
+        if (trainerPicture != NULL) memcpy(s->trainerPicture, trainerPicture, FRAME_BYTES);
+        picturesChanged = true;
+    }
     PlanesFor(&s->mon, monId, BUFFER_FRAMES);
     PlanesFor(&s->trainer, trainerId, 1);
     if (s->player && backSheet != NULL && backFrames != 0)
@@ -431,12 +449,13 @@ void CtrStereoBattle_SetSlot(unsigned position, unsigned tileNum, const uint8_t 
     {
         uint32_t key = ((uint32_t)s->mon.id << 16) | s->trainer.id | (s->mon.ok ? 1u << 15 : 0) | (s->trainer.ok ? 1u << 14 : 0);
 
-        if (bufferChanged || !s->set || key != s->silhouetteKey)
+        if (bufferChanged || picturesChanged || !s->set || key != s->silhouetteKey)
         {
             s->silhouetteKey = key;
             s->bufferPlanes = NULL;
-            if (SilhouetteMatches(s->buffer[0], &s->mon, HeaderOf(&s->mon))) s->bufferPlanes = &s->mon;
-            else if (SilhouetteMatches(s->buffer[0], &s->trainer, HeaderOf(&s->trainer))) s->bufferPlanes = &s->trainer;
+            if (SilhouetteMatches(s->buffer[0], s->monPicture, s->hasMonPicture, &s->mon)) s->bufferPlanes = &s->mon;
+            else if (SilhouetteMatches(s->buffer[0], s->trainerPicture, s->hasTrainerPicture, &s->trainer))
+                s->bufferPlanes = &s->trainer;
         }
     }
     s->set = true;
