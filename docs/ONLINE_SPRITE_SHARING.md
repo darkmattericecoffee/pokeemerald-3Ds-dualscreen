@@ -119,8 +119,23 @@ Cloudflare terminates TLS. Measured from the Mac against a `trycloudflare.com` q
   the console needs GlobalSign Root CA added with `httpcAddTrustedRootCA`.
 - Plain `http://` through the tunnel also answers 200, so §3 option 3 stays available.
 
-Whether the console's `sslc` actually completes this handshake is what `tools/tlsprobe`
-measures on hardware.
+**Hardware result (New 3DS, system 11.17.0-50E, 2026-10-15,
+`docs/probe-results/tlsprobe-2026-10-15-new3ds.txt`):**
+
+| Through the Cloudflare tunnel | Result |
+|---|---|
+| default roots | fails, `D8A0A03C` |
+| + ISRG Root X1 | fails, `D8A0A03C` |
+| **+ GlobalSign Root CA** | **200 OK, fully verified, ~1.2 s** |
+| verification off | 200 OK |
+| plain http | 200 OK |
+
+letsencrypt.org and digicert.com fail even with verification off, so `D8A0A03C` also covers
+handshakes the console cannot do (modern-only TLS); Cloudflare's edge is the exception that
+still serves old clients. **Decision: §3 option 1.** Embed GlobalSign Root CA (DER, 889 bytes,
+SHA-256 `EBD41040…331C99`) and call `httpcAddTrustedRootCA` on every context. The root expires
+2028-01-28; ship GTS Root R1's other cross-signs as a second root before then, and keep the
+verify-off switch in `online.txt` for debugging.
 
 ## 4. What travels
 

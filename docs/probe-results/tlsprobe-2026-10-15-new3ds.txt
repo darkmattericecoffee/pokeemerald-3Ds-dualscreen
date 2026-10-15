@@ -1,0 +1,26 @@
+== tlsprobe ==
+model 0, system 11.17.0-50E
+wifi status 1 (res 00000000)
+3 URLs from urls.txt
+ISRG Root X1: loaded (1391 bytes)
+sd root.der: loaded (889 bytes)
+httpcInit 00000000
+https://observation-antivirus-advertisement-sustainability.trycloudflare.com/probe
+  default verify  status    FAILED d8a0a03c 91ms
+  +ISRG Root X1   status    FAILED d8a0a03c 314ms
+  +sd root.der    OK status 200, 27 bytes, 1244ms: emerald3ds probe ok /probe.
+  verify OFF      OK status 200, 27 bytes, 4088ms: emerald3ds probe ok /probe.
+  plain http      OK status 200, 27 bytes, 3800ms: emerald3ds probe ok /probe.
+https://letsencrypt.org/
+  default verify  status    FAILED d8a0a03c 10795ms
+  +ISRG Root X1   status    FAILED d8a0a03c 75ms
+  +sd root.der    status    FAILED d8a0a03c 4603ms
+  verify OFF      status    FAILED d8a0a03c 75ms
+  plain http      OK status 301, 39 bytes, 3101ms: Redirecting to https://letsencrypt.org/
+https://www.digicert.com/
+  default verify  status    FAILED d8a0a03c 68ms
+  +ISRG Root X1   status    FAILED d8a0a03c 65ms
+  +sd root.der    status    FAILED d8a0a03c 61ms
+  verify OFF      status    FAILED d8a0a03c 1365ms
+  plain http      OK status 301, 0 bytes, 59ms: 
+== done: START exits ==
