@@ -3460,10 +3460,11 @@ static void DrawChooser(void)
         cur = pos == sE.chooseCursor;
         CtrStereoMonGame_Name(id, name, sizeof(name));
         CtrBottomDraw_Plate(x + 2, y, W / CH_COLS - 4, CH_ROW_H - 2, cur ? 1 : 0, cur);
-        /* A Pokémon's icon (front or back); a trainer's or a player's kind. */
+        /* A Pokémon's icon (front or back), up in the row so YOU fits under
+         * it; a trainer's or a player's kind. */
         if (kind == 0 || kind == CTR_STEREO_ID_BACK)
         {
-            if (!CtrBottomDraw_MonIcon(number, x + 2, y + 2)) sE.iconsMissing = true;
+            if (!CtrBottomDraw_MonIcon(number, x + 2, y - 6)) sE.iconsMissing = true;
         }
         else
             CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, kind == CTR_STEREO_ID_TRAINER ? "TR" : "PL", x + 18, y + 12,
@@ -3490,17 +3491,16 @@ static void DrawChooser(void)
             }
             else snprintf(line, sizeof(line), "%s", CtrOnline_Linked() ? "NOT ON THE SERVER" : "");
             CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 13, cur ? CTR_DRAW_WHITE : nf || nb ? CTR_DRAW_BLUE : CTR_DRAW_OFF);
-            /* The card's own edit: a smile and YOU, a flag once it is FINAL;
-             * else who made the server's current version. */
+            /* The card's own edit: YOU under the icon, a flag once it is
+             * FINAL; else who made the server's current version. */
             if (edited)
             {
-                uint16_t ink = cur ? Rgb(31, 63, 31) : Rgb(24, 6, 6);
-                int ax = x + 36 + ICON_SMALL + 2;
+                int w = CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOU");
+                bool final = CtrStereoMon_IsFinal(front);
+                int ax = x + 2 + (32 - (w + (final ? 2 + ICON_SMALL : 0))) / 2;
 
-                Icon(ICON_SMILE, false, x + 36, y + 23, ink);
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 24, cur ? CTR_DRAW_WHITE : CTR_DRAW_RED);
-                if (CtrStereoMon_IsFinal(front))
-                    Icon(ICON_FLAG, false, ax + CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOU") + 5, y + 23, ink);
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 22, cur ? CTR_DRAW_WHITE : CTR_DRAW_RED);
+                if (final) Icon(ICON_FLAG, false, ax + w + 2, y + 20, cur ? Rgb(31, 63, 31) : Rgb(24, 6, 6));
             }
             else if (CtrOnline_CurrentAuthor(front, author, sizeof(author)) || (back && CtrOnline_CurrentAuthor(back, author, sizeof(author))))
             {

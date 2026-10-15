@@ -116,16 +116,8 @@ const ICONS = [
     ['CROSS', 'cross'],
     ['FLAG', 'flag'],
     ['SWAP', 'arrows-horizontal'],
-    // The OPTIONS screen's ONLINE tab (3ds_bottom_ui.c), drawn at 24 px.
+    // The OPTIONS screen's ONLINE tab (3ds_bottom_ui.c): the STATUS row's fetch button, 24 px.
     ['REFRESH', 'refresh'],
-    ['UPLOAD', 'upload'],
-    ['DOWNLOAD', 'download'],
-    ['LINK', 'link'],
-    ['UNLINK', 'unlink'],
-    ['SERVER', 'server'],
-    ['HEART', 'heart'],
-    // The editor's Pokédex: "yours" next to a picture the card has its own edit of.
-    ['SMILE', 'smile'],
 ];
 
 // The icon's 24x24 grid as an array of 0/1, straight from a 1:1 resvg render.

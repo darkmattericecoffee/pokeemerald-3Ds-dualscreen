@@ -4794,37 +4794,6 @@ static void DrawPixelIcon(int icon, int x, int y, u16 ink)
                 Put(x + c, y + r, ink);
 }
 
-/* The ONLINE tab's cells that carry an icon (by the extra's key), -1 for none. */
-static int ExtraIcon(const CtrExtra *extra)
-{
-    static const struct { const char *key; int icon; } icons[] = {
-        {"online_sync", ICON_DOWNLOAD}, {"online_new", ICON_HEART}, {"online_server", ICON_SERVER},
-        {"online_standard", ICON_SERVER}, {"online_test", ICON_CHECK}, {"online_name", ICON_USER},
-        {"online_upload", ICON_UPLOAD}, {"online_link", ICON_LINK}, {"online_unlink", ICON_UNLINK},
-    };
-
-    for (unsigned i = 0; extra->key && i < ARRAY_COUNT(icons); ++i)
-        if (strcmp(extra->key, icons[i].key) == 0) return icons[i].icon;
-    return -1;
-}
-
-/* An action cell with its icon at the left and its two lines beside it. */
-static void DrawIconCell(int x, int y, int icon, const u8 *name, const u8 *value, bool8 on)
-{
-    u16 nameFg = on ? TXT_WHITE : TXT_DARK, nameSh = on ? sLook.chosenShadow : TXT_LIGHT;
-    u16 valueFg = on ? TXT_WHITE : TXT_RED, valueSh = on ? sLook.chosenShadow : TXT_LRED;
-    int capTop, capBottom, cap, line, dy = on, left = x + 4 + ICON_LARGE + 2;
-
-    DrawPlate(x, y, OPT_CELL_W, OPT_CELL_H, on ? &sLook.chosen : &sLook.plate, 0, on);
-    DrawPixelIcon(icon, x + 4, y + (OPT_CELL_H - 4 - ICON_LARGE) / 2 + 1 + dy, on ? TXT_WHITE : TXT_DARK);
-    CapRows(&sSmall, &capTop, &capBottom);
-    cap = capBottom - capTop;
-    line = y + 1 + (28 - (2 * cap + 3)) / 2 + dy;
-    DrawStrIn(&sSmall, name, left, x + OPT_CELL_W - 3, line, line + cap, nameFg, nameSh);
-    line += cap + 3;
-    DrawStrIn(&sSmall, value, left, x + OPT_CELL_W - 3, line, line + cap, valueFg, valueSh);
-}
-
 /*
  * The EDITOR tab's status (3ds_online.c), the whole first row: the last
  * job's progress or result, and after a sync the little pictures of what
@@ -4937,10 +4906,7 @@ static void DrawExtraCell(const ViewState *s, int row, const CtrExtra *extra)
     int x, y;
 
     OptionCell(row, &x, &y);
-    if (!arrows && ExtraIcon(extra) >= 0)
-        DrawIconCell(x, y, ExtraIcon(extra), Ascii(extra->name), extra->text ? extra->text() : Ascii(value), on);
-    else
-        DrawCellPlate(x, y, Ascii(extra->name), extra->text ? extra->text() : Ascii(value), TRUE, on, arrows);
+    DrawCellPlate(x, y, Ascii(extra->name), extra->text ? extra->text() : Ascii(value), TRUE, on, arrows);
     if (arrows)
         AddHit(x, y, OPT_CELL_W / 2, OPT_CELL_H, HIT_OPTION + HIT_OPTION_BACK + row);
     AddHit(x + (arrows ? OPT_CELL_W / 2 : 0), y, arrows ? OPT_CELL_W / 2 : OPT_CELL_W, OPT_CELL_H,
