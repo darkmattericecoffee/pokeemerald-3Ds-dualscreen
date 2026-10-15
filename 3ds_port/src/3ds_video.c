@@ -842,6 +842,7 @@ static void StereoWhy(unsigned why)
 }
 static float BattleSpriteShift(int centre);
 static void SceneOn(C3D_RenderTarget *target);
+static void DrawnClear(C3D_RenderTarget *target, uint32_t color, float x, float y, float w, float h);
 static float BattleSceneryShift(void);
 static bool sObjMaskOn;
 /* The eye being composed: +slider for the left, -slider for the right. */
@@ -6470,14 +6471,8 @@ static void SceneComposeInto(C3D_RenderTarget *target, int column, int left, int
     }
     else
     {
+        DrawnClear(target, 0, column, 0, width, height);
         C2D_SceneBegin(target);
-        C2D_ViewReset();
-        C2D_Flush();
-        C3D_AlphaTest(false, GPU_ALWAYS, 0);
-        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
-        C2D_DrawRectSolid(column, 0, 0, width, height, 0);
-        C2D_Flush();
-        BlendForget();
     }
     Blend(5, false, false);
     sLayerExclude = exclude;
@@ -7757,15 +7752,59 @@ static bool SlotsPack(void)
 
 /* A rectangle of a target set to one colour by drawing it, not clearing:
  * no command split, which with the GPU started early costs a cache flush. */
+/*
+ * Drawn as a picture, not Citro2D's solid rectangle: on hardware the solid
+ * rectangle wrote nothing into the battle scene surface (the dumps of
+ * frames 1705 and 2343: a Pokémon's slot composed over the planes' cell of
+ * frames before, which came back lit through the premultiplied placement -
+ * the copy of the player's Pokémon over the opponent at a battle's end),
+ * while every textured draw into the same target landed. Azahar drew the
+ * rectangle. An 8x8 texture of the colour, stretched over the rectangle,
+ * takes the path the sprites take. One texture a colour, a few of them:
+ * the GPU may still be reading an earlier one when the next is wanted.
+ */
+#define CLEAR_TEXTURES 4
+static struct { C3D_Tex tex; uint32_t color; bool made; } sClearTex[CLEAR_TEXTURES];
+static unsigned sClearTexNext;
+
+static C3D_Tex *ClearTexFor(uint32_t color)
+{
+    unsigned i;
+
+    for (i = 0; i < CLEAR_TEXTURES; ++i)
+        if (sClearTex[i].made && sClearTex[i].color == color) return &sClearTex[i].tex;
+    i = sClearTexNext;
+    sClearTexNext = (sClearTexNext + 1) % CLEAR_TEXTURES;
+    if (!sClearTex[i].made)
+    {
+        if (!C3D_TexInit(&sClearTex[i].tex, 8, 8, GPU_RGBA8)) return NULL;
+        C3D_TexSetFilter(&sClearTex[i].tex, GPU_NEAREST, GPU_NEAREST);
+        C3D_TexSetWrap(&sClearTex[i].tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+        sClearTex[i].made = true;
+    }
+    {
+        uint32_t *texels = sClearTex[i].tex.data, texel = __builtin_bswap32(color);
+
+        for (unsigned t = 0; t < 64; ++t) texels[t] = texel;
+        C3D_TexFlush(&sClearTex[i].tex);
+    }
+    sClearTex[i].color = color;
+    return &sClearTex[i].tex;
+}
+
 static void DrawnClear(C3D_RenderTarget *target, uint32_t color, float x, float y, float w, float h)
 {
+    static const Tex3DS_SubTexture whole = {8, 8, 0.0f, 1.0f, 1.0f, 0.0f};
+    C3D_Tex *tex = ClearTexFor(color);
+
     BlendForget();
     SceneOn(target);
     C2D_ViewReset();
     C2D_Flush();
     C3D_AlphaTest(false, GPU_ALWAYS, 0);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
-    C2D_DrawRectSolid(x, y, 0, w, h, color);
+    if (tex) C2D_DrawImageAt((C2D_Image){tex, &whole}, x, y, 0, NULL, w / 8.0f, h / 8.0f);
+    else C2D_DrawRectSolid(x, y, 0, w, h, color);
     C2D_Flush();
     BlendForget();
 }
