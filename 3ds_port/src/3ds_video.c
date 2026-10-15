@@ -8132,6 +8132,34 @@ static bool BattleMonsPatches(void)
 /* The stereo battle's scene composed whole, its sprites at the scenery's depth. */
 static bool sHudFlatScene;
 
+/*
+ * The text box's band of the logical surface on the eye being drawn, at
+ * BATTLE_TEXT_DEPTH, nearest of all (the left eye sees it shifted right).
+ * The strip its shift uncovers at the screen's edge is the box's own edge
+ * column again, so the box stays full width in both eyes. With `above`,
+ * the rows above the band first, unshifted: the surface composed whole
+ * (the frames a sprite blends), so that the box keeps its depth there too
+ * instead of dropping to the screen for the animation.
+ */
+static void BattleTextBand(bool above)
+{
+    const float top = BATTLE_BAND_TOP * sZoom + sOffY;
+    const float h = CTR_GAME_HEIGHT - top, shift = sEyeParallax * BATTLE_TEXT_DEPTH;
+    const Tex3DS_SubTexture upper = {CTR_GAME_WIDTH, (u16)top, 0, 1, CTR_GAME_WIDTH / 512.0f, 1 - top / 256.0f};
+    const Tex3DS_SubTexture band = {CTR_GAME_WIDTH, (u16)h, 0, 1 - top / 256.0f,
+        CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
+    const Tex3DS_SubTexture leftEdge = {1, (u16)h, 0, 1 - top / 256.0f, 1 / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
+    const Tex3DS_SubTexture rightEdge = {1, (u16)h, (CTR_GAME_WIDTH - 1) / 512.0f, 1 - top / 256.0f,
+        CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
+
+    if (above) C2D_DrawImageAt((C2D_Image){&sSurface, &upper}, 0, 0, 0, NULL, 1, 1);
+    C2D_DrawImageAt((C2D_Image){&sSurface, &band}, shift, top, 0, NULL, 1, 1);
+    if (shift > 0)
+        C2D_DrawImageAt((C2D_Image){&sSurface, &leftEdge}, 0, top, 0, NULL, shift, 1);
+    else if (shift < 0)
+        C2D_DrawImageAt((C2D_Image){&sSurface, &rightEdge}, CTR_GAME_WIDTH + shift, top, 0, NULL, -shift, 1);
+}
+
 static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
 {
     const Tex3DS_SubTexture logical = {CTR_GAME_WIDTH, CTR_GAME_HEIGHT, 0, 1,
@@ -8317,7 +8345,11 @@ static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
                 if (world) BattleWorldEye(target, world);
                 else DrawnClear(target, clear, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT);
                 Blend(5, false, false);
-                C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
+                /* The text box at its own depth here too (BattleTextBand):
+                 * drawn whole at the screen, it dropped a plane for every
+                 * stat change's blending frames. */
+                if (textOnce && !sTextAbove) BattleTextBand(true);
+                else C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
                 C2D_Flush();
                 C3D_FrameSplit(0);
             }
@@ -8418,21 +8450,7 @@ static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
          * strip its shift uncovers at the screen's edge is the box's own
          * edge column again, so the box stays full width in both eyes. */
         if (textOnce && !sTextAbove)
-        {
-            const float top = BATTLE_BAND_TOP * sZoom + sOffY;
-            const float h = CTR_GAME_HEIGHT - top, shift = sEyeParallax * BATTLE_TEXT_DEPTH;
-            const Tex3DS_SubTexture band = {CTR_GAME_WIDTH, (u16)h, 0, 1 - top / 256.0f,
-                CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-            const Tex3DS_SubTexture leftEdge = {1, (u16)h, 0, 1 - top / 256.0f, 1 / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-            const Tex3DS_SubTexture rightEdge = {1, (u16)h, (CTR_GAME_WIDTH - 1) / 512.0f, 1 - top / 256.0f,
-                CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-
-            C2D_DrawImageAt((C2D_Image){&sSurface, &band}, shift, top, 0, NULL, 1, 1);
-            if (shift > 0)
-                C2D_DrawImageAt((C2D_Image){&sSurface, &leftEdge}, 0, top, 0, NULL, shift, 1);
-            else if (shift < 0)
-                C2D_DrawImageAt((C2D_Image){&sSurface, &rightEdge}, CTR_GAME_WIDTH + shift, top, 0, NULL, -shift, 1);
-        }
+            BattleTextBand(false);
         else
             C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
         C2D_Flush();
