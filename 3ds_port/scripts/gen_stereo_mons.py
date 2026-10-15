@@ -452,7 +452,10 @@ def build(national, name, args):
         planes = [propagate(kf, kp, f, source_planes) for f in frames]
     if smart:
         from stereo_depth_groups import smart_pixels, unpack
-        doc = json.load(open(anatomy)) if has_anatomy else None
+        doc = None
+        if has_anatomy:
+            with open(anatomy) as f:
+                doc = json.load(f)
         converted, _ = smart_pixels(b''.join(pack(p) for p in planes), source_planes, args.planes, doc, getattr(args, 'cleanup', False))
         pixels = unpack(converted)
         planes = [[-1 if p == 15 else p for p in pixels[f*4096:(f+1)*4096]] for f in range(len(frames))]
