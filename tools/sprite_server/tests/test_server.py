@@ -23,6 +23,7 @@ import client  # noqa: E402
 import db  # noqa: E402
 import editfile  # noqa: E402
 import server  # noqa: E402
+import signing  # noqa: E402
 
 
 def make_edit(key: str, planes: int = 4, frames: int = 2, seed: int = 0, meta: bool = True, author: str = "TESTER",
@@ -74,6 +75,57 @@ class Browser:
         return status
 
 
+class SignedConsole:
+    """What 3ds_online.c does over plain HTTP: linking by X25519, signed requests, signed answers checked."""
+
+    def __init__(self, base: str, token: str = ""):
+        self.base, self.token = base, token
+
+    def raw(self, method: str, path: str, body: bytes = b"", headers=None):
+        req = urllib.request.Request(self.base + path, data=body if method == "POST" else None, method=method,
+                                     headers=headers or {})
+        try:
+            with urllib.request.build_opener(NoRedirect).open(req, timeout=10) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as err:
+            return err.code, dict(err.headers), err.read()
+
+    def pair(self, code: str, name: str = "New 3DS"):
+        import hashlib
+        code = db.normalise_code(code)
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
+        secret, pub = signing.x25519_keypair()
+        body = json.dumps({"pub": pub.hex(), "proof": signing.pair_proof(code_hash, pub.hex()),
+                           "console_name": name}).encode()
+        status, _, out = self.raw("POST", "/api/pair2", body, {"Content-Type": "application/json"})
+        if status != 200:
+            return status, None
+        ans = json.loads(out)
+        token = signing.pair_token(signing.x25519(secret, bytes.fromhex(ans["pub"])), pub.hex(), ans["pub"], code_hash)
+        assert ans["confirm"] == signing.pair_confirm(token, pub.hex(), ans["pub"], ans["user"]), "not confirmed"
+        self.token = token
+        return status, ans["user"]
+
+    def headers(self, method: str, path: str, body: bytes, when=None, nonce=None):
+        import hashlib
+        import secrets as rnd
+        import time as clock
+        key = hashlib.sha256(self.token.encode()).digest()
+        when = str(int(clock.time()) if when is None else when)
+        nonce = nonce or rnd.token_hex(8)
+        sign = signing.request_mac(key, method, path, when, nonce, body)
+        return key, sign, {signing.KEY_HEADER: signing.key_id(key), signing.TIME_HEADER: when,
+                           signing.NONCE_HEADER: nonce, signing.SIGN_HEADER: sign}
+
+    def call(self, method: str, path: str, body: bytes = b"", extra=None, **kw):
+        key, sign, h = self.headers(method, path, body, **kw)
+        h.update(extra or {})
+        status, headers, out = self.raw(method, path, body, h)
+        got = {k.lower(): v for k, v in headers.items()}.get(signing.SIGN_HEADER.lower())  # Cloudflare lowercases
+        good = got == signing.reply_mac(key, sign, status, out)
+        return status, out, good, h
+
+
 class ServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -95,6 +147,9 @@ class ServerTest(unittest.TestCase):
         cls.httpd.server_close()
         shutil.rmtree(cls.tmp)
         server.LIMITS.hits.clear()
+
+    def setUp(self):
+        server.LIMITS.hits.clear()  # every test may link and sign in a few times
 
     # helpers
     def add_artist(self, name: str) -> str:
@@ -306,6 +361,50 @@ class ServerTest(unittest.TestCase):
         status, _, body = api("POST", "/api/versions/%d/delete" % ids[2], frank)
         self.assertEqual(status, 200)
         self.assertEqual([v["version_id"] for v in json.loads(body)["versions"]], [ids[1], ids[0]])
+
+    def test_signed_console(self):
+        password = self.add_artist("signer")
+        b = Browser(self.base)
+        self.assertEqual(b.login("signer", password), 303)
+        console = SignedConsole(self.base)
+        self.assertEqual(console.pair("WRONGCOD")[0], 403)
+        code = self.pairing_code(b)
+        self.assertEqual(console.pair(code), (200, "signer"))
+        self.assertEqual(SignedConsole(self.base).pair(code)[0], 403)  # used once
+        status, _, out = console.raw("GET", "/api/health")
+        self.assertEqual(json.loads(out)["api"], server.API_VERSION)
+        self.assertGreater(json.loads(out)["time"], 1700000000)
+        status, out, good, _ = console.call("GET", "/api/me")
+        self.assertEqual((status, json.loads(out)["user"], good), (200, "signer", True))
+        # An upload: the body is signed too.
+        edit = make_edit("025", author="SIGNER")
+        status, out, good, _ = console.call("POST", "/api/mons/025/versions", edit,
+                                            {"Content-Type": "application/octet-stream"})
+        self.assertEqual((status, good), (201, True), out)
+        status, out, good, _ = console.call("GET", "/api/sync?since=0")
+        self.assertTrue(good)
+        self.assertIn(b"025", out)
+        # The same request again, a changed body, a bad clock, an unknown key: refused.
+        key, sign, h = console.headers("GET", "/api/me", b"")
+        self.assertEqual(console.raw("GET", "/api/me", b"", h)[0], 200)
+        self.assertEqual(console.raw("GET", "/api/me", b"", h)[0], 401)
+        _, _, h = console.headers("POST", "/api/mons/025/versions", edit)
+        h["Content-Type"] = "application/octet-stream"
+        self.assertEqual(console.raw("POST", "/api/mons/025/versions", edit[:-1] + b"x", h)[0], 401)
+        self.assertEqual(console.call("GET", "/api/me", when=1000)[0], 401)
+        self.assertEqual(SignedConsole(self.base, "f" * 64).call("GET", "/api/me")[0], 401)
+        # A console linked the old way (bearer token) signs with the same token.
+        _, cfg = self.linked_client("oldstyle")
+        old = SignedConsole(self.base, cfg["token"])
+        status, out, good, _ = old.call("GET", "/api/me")
+        self.assertEqual((status, json.loads(out)["user"], good), (200, "oldstyle", True))
+        # Through Cloudflare over plain HTTP: no bearer tokens, and browsers go to HTTPS.
+        edge = {"Cf-Visitor": '{"scheme":"http"}', "Authorization": "Bearer " + cfg["token"]}
+        self.assertEqual(old.raw("GET", "/api/me", b"", edge)[0], 401)
+        self.assertEqual(old.call("GET", "/api/me", extra={"Cf-Visitor": '{"scheme":"http"}'})[0], 200)
+        status, headers, _ = old.raw("GET", "/account", b"", {"Cf-Visitor": '{"scheme":"http"}'})
+        self.assertEqual(status, 301)
+        self.assertTrue(headers["Location"].startswith("https://"))
 
     def test_unlinking_a_console(self):
         b, cfg = self.linked_client("dave")

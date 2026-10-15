@@ -35,8 +35,10 @@ from urllib.parse import parse_qs, quote, urlsplit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 import editfile  # noqa: E402
+import signing  # noqa: E402
 
-API_VERSION = 1
+# 2: signed plain HTTP for consoles (signing.py), /api/pair2, the clock in /api/health.
+API_VERSION = 2
 DEFAULT_DATA = os.path.expanduser("~/emerald3ds-sprite-server")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 STATIC_FILES = {"style.css": "text/css; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
@@ -164,6 +166,10 @@ class Request:
         self.device = None
         self.session_token = None
         self._form = None
+        self.target = path      # the path with its query, as sent (what a console signs)
+        self.sign_key = None    # a signed request's device key and MAC: the answer is signed back
+        self.sign = None
+        self.plain_edge = False # came over plain HTTP through Cloudflare
 
     def q(self, name: str, default: str = "") -> str:
         return self.query.get(name, [default])[0]
@@ -718,7 +724,8 @@ def admin_user(req: Request, uid: str, act: str) -> Response:
 
 @route("GET", r"/api/health")
 def api_health(req: Request) -> Response:
-    return json_resp({"ok": True, "api": API_VERSION})
+    # The clock: what signed requests carry (a console's own is whatever its owner set).
+    return json_resp({"ok": True, "api": API_VERSION, "time": int(time.time())})
 
 
 @route("POST", r"/api/pair")
@@ -731,6 +738,20 @@ def api_pair(req: Request) -> Response:
     if token is None:
         return api_error(403, "that code is wrong, used or expired")
     return json_resp({"token": token, "user": user})
+
+
+@route("POST", r"/api/pair2")
+def api_pair_signed(req: Request) -> Response:
+    """Linking over plain HTTP: an X25519 exchange proven with the code, which is not sent (signing.py)."""
+    if not LIMITS.allow("pair:" + req.ip, 10, 600):
+        return api_error(429, "too many tries; wait ten minutes")
+    body = req.json()
+    name = "".join(c for c in str(body.get("console_name", "")) if c.isprintable()).strip()
+    pub = str(body.get("pub", "")).lower()
+    server_pub, token, user = db.pair_signed(req.conn, pub, str(body.get("proof", "")).lower(), name or "3DS")
+    if token is None:
+        return api_error(403, "that code is wrong, used or expired")
+    return json_resp({"pub": server_pub, "user": user, "confirm": signing.pair_confirm(token, pub, server_pub, user)})
 
 
 @route("GET", r"/api/me", "device")
@@ -871,6 +892,48 @@ SECURITY_HEADERS = [
 ]
 
 
+class Nonces:
+    """Signed requests seen within the clock window: none is taken twice."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.seen: Dict[str, float] = {}
+
+    def fresh(self, kid: str, nonce: str) -> bool:
+        t = time.time()
+        with self.lock:
+            if len(self.seen) > 50000 or (self.seen and len(self.seen) % 1000 == 0):
+                self.seen = {k: v for k, v in self.seen.items() if v > t}
+            if (kid + nonce) in self.seen:
+                return False
+            self.seen[kid + nonce] = t + 2 * signing.CLOCK_WINDOW
+            return True
+
+
+NONCES = Nonces()
+
+
+def check_signed(req: Request) -> Optional[Response]:
+    """A console's signed request (signing.py): who it is, or the 401 that says why not."""
+    h = req.headers
+    kid, when, nonce, sign = (h.get(signing.KEY_HEADER, ""), h.get(signing.TIME_HEADER, ""),
+                              h.get(signing.NONCE_HEADER, ""), h.get(signing.SIGN_HEADER, "").lower())
+    if not (re.fullmatch(r"[0-9a-f]{16}", kid) and re.fullmatch(r"\d{1,12}", when)
+            and re.fullmatch(r"[0-9a-f]{8,64}", nonce) and re.fullmatch(r"[0-9a-f]{64}", sign)):
+        return api_error(401, "malformed signature")
+    device, key = db.device_for_key_id(req.conn, kid)
+    if device is None:
+        return api_error(401, "this console is not linked (or was unlinked)")
+    if not secrets.compare_digest(signing.request_mac(key, req.method, req.target, when, nonce, req.body), sign):
+        return api_error(401, "bad signature")
+    if abs(int(when) - time.time()) > signing.CLOCK_WINDOW:
+        return api_error(401, "clock: the request's time is too far from the server's")
+    if not NONCES.fresh(kid, nonce):
+        return api_error(401, "replayed request")
+    req.device, req.sign_key, req.sign = device, key, sign
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "emerald3ds-sprites/1"
     protocol_version = "HTTP/1.1"
@@ -902,8 +965,16 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         https = (self.headers.get("X-Forwarded-Proto", "") == "https"
                  or '"https"' in self.headers.get("Cf-Visitor", ""))
+        # Plain HTTP through Cloudflare is for signed console requests only:
+        # browsers go to HTTPS, and a bearer token sent in the clear is not taken.
+        plain_edge = '"http"' in self.headers.get("Cf-Visitor", "")
+        if plain_edge and not url.path.startswith("/api/") and self.headers.get("Host"):
+            return self.send(Response(b"", 301, "text/plain",
+                                      [("Location", "https://%s%s" % (self.headers["Host"], self.path))]), head, started)
         conn = db.connect(CFG.db_path)
         req = Request(method, url.path, parse_qs(url.query), self.headers, body, self.client_ip(), https, conn)
+        req.target = self.path
+        req.plain_edge = plain_edge
         try:
             resp = self.handle_request(req)
         except Exception:
@@ -920,7 +991,11 @@ class Handler(BaseHTTPRequestHandler):
             req.session_token = cookie[COOKIE].value
             req.user, req.csrf = db.session_user(req.conn, req.session_token)
         auth = req.headers.get("Authorization", "")
-        if auth.startswith("Bearer ") and len(auth) < 200:
+        if req.headers.get(signing.SIGN_HEADER):
+            refused = check_signed(req)
+            if refused is not None:
+                return refused
+        elif auth.startswith("Bearer ") and len(auth) < 200 and not req.plain_edge:
             req.device = db.device_for_token(req.conn, auth[7:].strip())
         allowed = False
         for method, pattern, fn, need in ROUTES:
@@ -944,6 +1019,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(resp.body)))
         for k, v in resp.headers:
             self.send_header(k, v)
+        if req is not None and req.sign_key is not None:
+            self.send_header(signing.SIGN_HEADER, signing.reply_mac(req.sign_key, req.sign, resp.status, resp.body))
         for k, v in SECURITY_HEADERS:
             self.send_header(k, v)
         if resp.ctype.startswith("text/html"):

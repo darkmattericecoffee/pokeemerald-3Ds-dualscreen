@@ -392,6 +392,44 @@ pinned GlobalSign root, and a version made on the PC synced down. Then, on the u
   The Pokémon Center theme plays meanwhile and the map's music comes back on closing
   (`editor: the world waits` in port.log). The editor's own BATTLE preview lets the game run.
 
+### 7.6 Signed plain HTTP (2026-10-15)
+
+The standard server, poke.cloudnoud.nl, is a Free-plan Cloudflare zone: its edge certificate is
+ECDSA only (P-256, WE1 -> GTS Root R4 -> GlobalSign), and every RSA cipher suite is refused. The
+3DS was only ever seen to finish a handshake with an RSA certificate (the quick tunnel's), and an
+RSA edge certificate costs a paid plan. So consoles speak **plain HTTP** to the same hostname
+(Cloudflare passes `http://` through: "Always Use HTTPS" is off) and nothing secret travels:
+
+- **Linking** (`POST /api/pair2 {"pub","proof","console_name"}` -> `{"pub","user","confirm"}`):
+  an X25519 exchange. The console sends its public key and an HMAC of it keyed with SHA-256 of
+  the pairing code (what `pairing_codes.code_hash` keeps); the code is not sent. Both sides make
+  the token as HMAC(shared secret, both public keys and the code hash); `confirm` (keyed with
+  SHA-256 of that token) shows the console the server had the code. An onlooker sees two public
+  keys and learns nothing; someone in the middle would have to guess the code (2^40) while the
+  console waits.
+- **Requests**: `X-Em3ds-Key` (16 hex: a hash of the device key), `X-Em3ds-Time` (the server's
+  clock, fetched from `/api/health` at the start of every job and every 10 minutes: the console's
+  own is whatever its owner set), `X-Em3ds-Nonce` and `X-Em3ds-Sign` = HMAC-SHA256(device key,
+  `EM3DS1\n<method>\n<path with query>\n<time>\n<nonce>\n<SHA-256 of the body>`). The device
+  key is SHA-256 of the token, which is exactly `devices.token_hash`: consoles linked the old way
+  keep working, and stop sending their token. The server refuses a wrong MAC, a time more than
+  5 minutes off and a nonce it has seen (401).
+- **Answers** to a signed request carry `X-Em3ds-Sign` = HMAC(device key, `EM3DS1 reply\n<the
+  request's MAC>\n<status>\n<SHA-256 of the body>`). The console takes no 2xx answer without
+  it (`ANSWER NOT SIGNED`), so nobody on the way can feed it pictures or votes.
+- **Browsers**: a non-API request that came over plain HTTP through Cloudflare (`Cf-Visitor`
+  says http) is sent to HTTPS (301), and a bearer token arriving that way is not taken.
+- What an onlooker still sees: which pictures a console fetches and uploads (public anyway).
+  Whoever holds the database can sign as any console (it keeps the keys' hashes, which are the
+  keys); revoking a console on the website still ends it.
+
+Code: `3ds_port/src/3ds_online_crypto.c` (SHA-256, HMAC, TweetNaCl's X25519) and
+`tools/sprite_server/signing.py` (the same in Python); `make verify-online` checks them against
+RFC 7748/4231 vectors and each other. The standard server is `http://poke.cloudnoud.nl`; an
+`https://` server still works as before (TLS with GlobalSign pinned, plus the signatures), and a
+bare host name typed on the console means `http://`. TEST SERVER shows `HTTP OK`, `HEALTH OK
+API 2` and `LINKED AS <name>` when a signed request and its signed answer went through.
+
 ## 8. Open questions and risks
 
 | Item | Status |

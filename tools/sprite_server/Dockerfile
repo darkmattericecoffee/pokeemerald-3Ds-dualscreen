@@ -2,7 +2,7 @@
 #   docker compose up -d          (see docker-compose.yml and README.md, "Docker")
 FROM python:3.12-slim
 WORKDIR /app
-COPY server.py db.py editfile.py sprites.py client.py ./
+COPY server.py db.py signing.py editfile.py sprites.py client.py ./
 COPY static ./static
 # The database and the exported game pictures live here (a volume); back up sprites.db.
 VOLUME /data

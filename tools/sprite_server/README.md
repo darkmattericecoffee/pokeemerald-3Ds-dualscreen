@@ -96,13 +96,20 @@ delete a version; its votes go with it and the current one is worked out again.
 
 ## API (what the 3DS client will call)
 
-Consoles send `Authorization: Bearer <token>`. Bodies are raw bytes or JSON. Every response
-has a `Content-Length`. There are no redirects.
+Consoles sign every request instead of sending their token, so they can use plain HTTP
+(`signing.py`; docs/ONLINE_SPRITE_SHARING.md section 7.6): `X-Em3ds-Key`, `X-Em3ds-Time` (the
+server's clock, from `/api/health`), `X-Em3ds-Nonce` and `X-Em3ds-Sign`, and every answer to a
+signed request carries the server's `X-Em3ds-Sign`. The PC client still sends
+`Authorization: Bearer <token>`, over HTTPS only (a bearer token that came over plain HTTP
+through Cloudflare is ignored). Bodies are raw bytes or JSON. Every response has a
+`Content-Length`. API calls are never redirected; web pages reached over plain HTTP through
+Cloudflare go to HTTPS.
 
 | Call | Does |
 |---|---|
-| `GET /api/health` | `{"ok":true,"api":1}`, no sign-in |
-| `POST /api/pair` `{"code","console_name"}` | `{"token","user"}`, or 403 |
+| `GET /api/health` | `{"ok":true,"api":2,"time":<unix seconds>}`, no sign-in |
+| `POST /api/pair2` `{"pub","proof","console_name"}` | consoles: `{"pub","user","confirm"}` (an X25519 exchange proven with the code, which is not sent), or 403 |
+| `POST /api/pair` `{"code","console_name"}` | the PC client, over HTTPS: `{"token","user"}`, or 403 |
 | `GET /api/me` | `{"user","role","console_name","seq"}` |
 | `POST /api/mons/<key>/versions` (the `.bin`) | 201 `{"version_id","current","duplicate","sha256"}`; 200 if already there; 400 with `error` if malformed |
 | `GET /api/sync?since=<seq>` | `{"seq","items":[{"key","version_id","sha256","size","revision","final"}]}`: what changed since `seq` |

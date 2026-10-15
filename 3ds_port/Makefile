@@ -51,7 +51,7 @@ SOURCES += src/3ds_video.c src/3ds_video_decode.c src/3ds_bottom_screen.c
 SOURCES += src/3ds_stereo_mon.c src/3ds_stereo_mon_decode.c src/3ds_stereo_battle.c
 # Sharing plane edits over Wi-Fi (include/3ds_online.h). ONLINE_SERVER=https://...
 # compiles in the server's address; sdmc:/3ds/emerald3ds/online.txt's server= wins.
-SOURCES += src/3ds_online.c
+SOURCES += src/3ds_online.c src/3ds_online_crypto.c
 ifdef ONLINE_SERVER
 CPPFLAGS += -DCTR_ONLINE_SERVER=\"$(ONLINE_SERVER)\"
 endif
@@ -369,6 +369,17 @@ verify-stereo: build/stereo_mon_test.exe
 build/stereo_mon_test.exe: tests/stereo_mon_test.c src/3ds_stereo_mon_decode.c src/3ds_video_decode.c include/3ds_stereo_mon.h
 	@mkdir -p build
 	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Iinclude tests/stereo_mon_test.c src/3ds_stereo_mon_decode.c src/3ds_video_decode.c -o $@
+
+# Plane sharing's signatures and key exchange, and Python's side of them.
+verify: verify-online
+.PHONY: verify-online
+verify-online: build/online_crypto_test.exe
+	./build/online_crypto_test.exe
+	"$(PYTHON)" tests/online_crypto_test.py build/online_crypto_test.exe
+
+build/online_crypto_test.exe: tests/online_crypto_test.c src/3ds_online_crypto.c include/3ds_online_crypto.h
+	@mkdir -p build
+	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Iinclude tests/online_crypto_test.c src/3ds_online_crypto.c -o $@
 
 clean:
 	rm -rf build dist $(TARGET).elf $(TARGET).3dsx $(TARGET).smdh

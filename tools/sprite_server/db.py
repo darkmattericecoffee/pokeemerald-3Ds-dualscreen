@@ -11,6 +11,8 @@ import sqlite3
 import time
 from typing import Optional
 
+import signing
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY,
@@ -232,6 +234,55 @@ def pair(conn: sqlite3.Connection, code: str, console_name: str):
         conn.execute("INSERT INTO devices (user_id, token_hash, console_name, created) VALUES (?, ?, ?, ?)",
                      (row["user_id"], sha(token), console_name[:40] or "3DS", now()))
         return token, row["user_name"]
+
+
+def pair_signed(conn: sqlite3.Connection, console_pub: str, proof: str, console_name: str):
+    """Linking over plain HTTP (signing.py): the console's X25519 key and a MAC of it made with the code.
+    (server public key hex, token, user) for a good, unused, unexpired code; (None, None, None) otherwise."""
+    try:
+        pub = bytes.fromhex(console_pub)
+    except ValueError:
+        return None, None, None
+    if len(pub) != 32 or len(proof) != 64:
+        return None, None, None
+    with Tx(conn):
+        rows = conn.execute(
+            "SELECT p.*, u.name AS user_name FROM pairing_codes p JOIN users u ON u.id = p.user_id "
+            "WHERE p.used = 0 AND p.expires > ? AND u.disabled = 0", (now(),)).fetchall()
+        row = next((r for r in rows if hmac.compare_digest(signing.pair_proof(r["code_hash"], console_pub), proof)),
+                   None)
+        if row is None:
+            return None, None, None
+        secret, server_pub = signing.x25519_keypair()
+        shared = signing.x25519(secret, pub)
+        if shared == bytes(32):
+            return None, None, None
+        conn.execute("UPDATE pairing_codes SET used = 1 WHERE code_hash = ?", (row["code_hash"],))
+        token = signing.pair_token(shared, console_pub, server_pub.hex(), row["code_hash"])
+        conn.execute("INSERT INTO devices (user_id, token_hash, console_name, created) VALUES (?, ?, ?, ?)",
+                     (row["user_id"], sha(token), console_name[:40] or "3DS", now()))
+        return server_pub.hex(), token, row["user_name"]
+
+
+_KEY_IDS = {}  # key id -> token_hash, for signed requests (filled on a miss)
+
+
+def device_for_key_id(conn: sqlite3.Connection, kid: str):
+    """The (live) device whose signing key has this id, with its key: (row, key) or (None, None)."""
+    token_hash = _KEY_IDS.get(kid)
+    if token_hash is None:
+        for r in conn.execute("SELECT token_hash FROM devices WHERE revoked = 0"):
+            _KEY_IDS[signing.key_id(signing.device_key(r["token_hash"]))] = r["token_hash"]
+        token_hash = _KEY_IDS.get(kid)
+        if token_hash is None:
+            return None, None
+    row = conn.execute(
+        "SELECT d.*, u.name AS user_name, u.role AS role FROM devices d JOIN users u ON u.id = d.user_id "
+        "WHERE d.token_hash = ? AND d.revoked = 0 AND u.disabled = 0", (token_hash,)).fetchone()
+    if row is None:
+        return None, None
+    conn.execute("UPDATE devices SET last_seen = ? WHERE id = ?", (now(), row["id"]))
+    return row, signing.device_key(token_hash)
 
 
 def device_for_token(conn: sqlite3.Connection, token: str):

@@ -3,18 +3,23 @@
  * console side of tools/sprite_server, docs/ONLINE_SPRITE_SHARING.md
  * section 7.
  *
- * http:C (libctru's httpc) does DNS, TCP and TLS in a system module. The
- * server sits behind a Cloudflare Tunnel whose edge still speaks the TLS the
- * 3DS knows, with a certificate that chains to GlobalSign Root CA; that root
- * is not among the console's own, so it is added to every HTTPS context
- * (3ds_online_root.h). The calls block, so every job runs on a worker thread
+ * http:C (libctru's httpc) does DNS, TCP and, for an https:// server, TLS
+ * in a system module. The standard server sits behind a Cloudflare Tunnel
+ * whose free edge certificate is ECDSA, which the console's TLS may not take,
+ * so it is spoken to over plain HTTP and nothing secret travels: requests are
+ * signed with a key only the console and the server know, and every answer is
+ * signed back (section 7.6; 3ds_online_crypto.c, the server's signing.py).
+ * An https:// server still works, with GlobalSign Root CA added to every
+ * context (3ds_online_root.h). The calls block, so every job runs on a worker thread
  * of its own and the game only ever reads a status word. httpc is set up at
  * the start of a job and given back at its end: nothing of it is held while
  * the game plays. The console is kept awake while a job runs (closing the
  * lid would drop Wi-Fi in the middle of a transfer).
  *
  * The jobs, against the server's API (tools/sprite_server/README.md):
- *   pair    POST /api/pair {code, console_name} -> {token, user}
+ *   pair    POST /api/pair2 {pub, proof, console_name} -> {pub, user, confirm}:
+ *           an X25519 exchange; the token comes from the shared secret and
+ *           the pairing code proves both sides, without being sent
  *   upload  POST /api/mons/<key>/versions (the edit file as it is)
  *   sync    GET /api/sync?since=<seq>, then GET /api/versions/<id> for each
  *           picture whose current version differs from the card's; a card
@@ -33,6 +38,7 @@
 #include <time.h>
 #include "3ds_log.h"
 #include "3ds_online.h"
+#include "3ds_online_crypto.h"
 #include "3ds_platform.h"
 #include "3ds_stereo_mon.h"
 #include "3ds_online_root.h"
@@ -52,7 +58,7 @@
 #define BACKUP_DIR EDIT_DIR "/backup"
 /* The address used when online.txt names none (make ONLINE_SERVER=...). */
 #ifndef CTR_ONLINE_SERVER
-#define CTR_ONLINE_SERVER "https://poke.cloudnoud.nl"
+#define CTR_ONLINE_SERVER "http://poke.cloudnoud.nl"
 #endif
 #define USER_AGENT "emerald3ds/1"
 /* http:C's shared memory, for request bodies (an edit is at most ~11 KiB). */
@@ -68,6 +74,10 @@
 #define WORKER_STACK (32 * 1024)
 /* http:C's "the certificate could not be verified" (and handshakes it cannot do). */
 #define RESULT_TLS 0xD8A0A03C
+/* Ours: an answer to a signed request without the server's signature. */
+#define RESULT_UNSIGNED 0xE3D50001
+/* The server's clock is asked for again after this long (requests carry it). */
+#define TIME_REFRESH_MS (10 * 60 * 1000)
 
 typedef struct
 {
@@ -278,77 +288,13 @@ static bool WriteWhole(const char *path, const void *data, uint32_t size)
 
 /* ── SHA-256 (FIPS 180-4), for what the server already has ──────────── */
 
-typedef struct
-{
-    uint32_t h[8];
-    uint64_t length;
-    uint8_t block[64];
-    unsigned used;
-} Sha256;
-
-static const uint32_t sK[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-};
-
-#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
-
-static void ShaBlock(Sha256 *s, const uint8_t *p)
-{
-    uint32_t w[64], a, b, c, d, e, f, g, h;
-
-    for (unsigned i = 0; i < 16; ++i)
-        w[i] = ((uint32_t)p[4 * i] << 24) | ((uint32_t)p[4 * i + 1] << 16) | ((uint32_t)p[4 * i + 2] << 8) | p[4 * i + 3];
-    for (unsigned i = 16; i < 64; ++i)
-    {
-        uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
-        uint32_t s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
-
-        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-    }
-    a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3], e = s->h[4], f = s->h[5], g = s->h[6], h = s->h[7];
-    for (unsigned i = 0; i < 64; ++i)
-    {
-        uint32_t t1 = h + (ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25)) + ((e & f) ^ (~e & g)) + sK[i] + w[i];
-        uint32_t t2 = (ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
-
-        h = g, g = f, f = e, e = d + t1, d = c, c = b, b = a, a = t1 + t2;
-    }
-    s->h[0] += a, s->h[1] += b, s->h[2] += c, s->h[3] += d, s->h[4] += e, s->h[5] += f, s->h[6] += g, s->h[7] += h;
-}
-
 /* The digest of `data` as 64 lower-case hex digits. */
 static void Sha256Hex(const uint8_t *data, uint32_t size, char hex[65])
 {
-    static const uint32_t start[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-                                      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    Sha256 s;
-    uint8_t tail[8];
+    uint8_t digest[32];
 
-    memcpy(s.h, start, sizeof(start));
-    s.length = (uint64_t)size * 8;
-    s.used = 0;
-    for (; size >= 64; data += 64, size -= 64) ShaBlock(&s, data);
-    memcpy(s.block, data, size);
-    s.used = size;
-    s.block[s.used++] = 0x80;
-    if (s.used > 56)
-    {
-        memset(s.block + s.used, 0, 64 - s.used);
-        ShaBlock(&s, s.block);
-        s.used = 0;
-    }
-    memset(s.block + s.used, 0, 56 - s.used);
-    for (unsigned i = 0; i < 8; ++i) tail[i] = (uint8_t)(s.length >> (56 - 8 * i));
-    memcpy(s.block + 56, tail, 8);
-    ShaBlock(&s, s.block);
-    for (unsigned i = 0; i < 8; ++i) snprintf(hex + 8 * i, 9, "%08lx", (unsigned long)s.h[i]);
+    CtrSha256_Digest(data, size, digest);
+    CtrHex(digest, 32, hex);
 }
 
 /* ── The link (online.txt) ──────────────────────────────────────────── */
@@ -383,11 +329,12 @@ static void ReadLinkLocked(void)
     fclose(f);
     /* No slash at the end: paths start with one. */
     for (size_t n = strlen(sLink.server); n && sLink.server[n - 1] == '/'; --n) sLink.server[n - 1] = 0;
-    /* A quick tunnel's address (the first tests') is gone for good: the
-     * standard server instead, the token kept (the data moved with it). */
-    if (strstr(sLink.server, ".trycloudflare.com"))
+    /* A quick tunnel's address (the first tests') is gone for good, and the
+     * standard server over HTTPS is the same server: the standard server
+     * instead, the token kept (the data moved with it). */
+    if (strstr(sLink.server, ".trycloudflare.com") || strcmp(sLink.server, "https://poke.cloudnoud.nl") == 0)
     {
-        CtrLog_Write(CTR_LOG_FS, "online: %s was a quick tunnel; the standard server %s instead", sLink.server,
+        CtrLog_Write(CTR_LOG_FS, "online: %s: the standard server %s instead", sLink.server,
                      CTR_ONLINE_SERVER);
         snprintf(sLink.server, sizeof(sLink.server), "%s", CTR_ONLINE_SERVER);
     }
@@ -531,22 +478,106 @@ static void ReplyFree(Reply *reply)
     reply->body = NULL;
 }
 
+static bool JsonNumber(const char *json, const char *name, long *out);
+
+/* ── Randomness, the server's clock, signatures ─────────────────────── */
+
+static bool sPsReady;
+static long long sServerTime; /* seconds, as the server said at sServerTimeAt */
+static uint64_t sServerTimeAt;
+static bool sTimeKnown;
+
+/* ps:ps's random bytes (the keys and nonces); a hash of the tick counter
+ * only when it is not there (logged: a link made so is weaker). */
+static void Random(void *out, uint32_t size)
+{
+    static unsigned counter;
+    uint8_t digest[32];
+
+    if (sPsReady && R_SUCCEEDED(PS_GenerateRandomBytes(out, size))) return;
+    CtrLog_Write(CTR_LOG_ERROR, "online: no ps:ps random bytes; the tick counter instead");
+    for (uint32_t n = 0; n < size; n += 32)
+    {
+        uint64_t seed[3] = {svcGetSystemTick(), osGetTime(), ++counter};
+
+        CtrSha256_Digest(seed, sizeof(seed), digest);
+        memcpy((uint8_t *)out + n, digest, size - n < 32 ? size - n : 32);
+    }
+}
+
+/* The key a linked console signs with: SHA-256 of its token (what the
+ * server keeps of it). */
+static void DeviceKey(const Link *link, uint8_t key[32])
+{
+    CtrSha256_Digest(link->token, (uint32_t)strlen(link->token), key);
+}
+
+static void Mac(const uint8_t key[32], const char *text, char hex[65])
+{
+    CtrHmac m;
+    uint8_t mac[32];
+
+    CtrHmac_Init(&m, key, 32);
+    CtrHmac_Update(&m, text, (uint32_t)strlen(text));
+    CtrHmac_Final(&m, mac);
+    CtrHex(mac, 32, hex);
+}
+
+static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path, const void *body, uint32_t bodyLength,
+                 const char *contentType, Reply *reply);
+
+/* The server's clock (GET /api/health), which signed requests carry: the
+ * console's own is whatever its owner set. */
+static bool FetchTime(const Link *link, Reply *failed)
+{
+    Reply reply;
+    long when = 0;
+
+    if (!Http(link, HTTPC_METHOD_GET, "/api/health", NULL, 0, NULL, &reply))
+    {
+        *failed = reply;
+        return false;
+    }
+    if (reply.status != 200 || !JsonNumber((const char *)reply.body, "time", &when) || when <= 0)
+    {
+        CtrLog_Write(CTR_LOG_ERROR, "online: %s/api/health gives no time (HTTP %d): a server from before signed "
+                     "requests", link->server, reply.status);
+        if (reply.status == 200) reply.status = 426;
+        *failed = reply;
+        return false;
+    }
+    ReplyFree(&reply);
+    sServerTime = when;
+    sServerTimeAt = CtrPlatform_Milliseconds();
+    sTimeKnown = true;
+    return true;
+}
+
 /*
  * One request. `body` (with its content type) for a POST. The answer's body
  * is read whole (it carries a Content-Length, as the server always sends).
+ * A linked console's requests are signed (but for the clock and linking),
+ * and then only a 2xx answer the server signed back counts.
  * Logs what happened, with the time it took.
  */
 static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path, const void *body, uint32_t bodyLength,
                  const char *contentType, Reply *reply)
 {
-    char url[SERVER_MAX + 96], bearer[TOKEN_MAX + 8];
+    const char *verb = method == HTTPC_METHOD_POST ? "POST" : "GET";
+    char url[SERVER_MAX + 96], text[SERVER_MAX + 256], kid[65], when[24], nonce[17], bodySha[65], sign[65] = "",
+        answerSign[80] = "";
+    uint8_t key[32] = {0}, random[8], digest[32];
     httpcContext ctx;
     uint64_t t0 = CtrPlatform_Milliseconds();
     u32 status = 0, total = 0, before = 0, now = 0, capacity;
     Result r;
-    bool https;
+    bool https, signing;
 
     memset(reply, 0, sizeof(*reply));
+    signing = link->token[0] && strcmp(path, "/api/health") != 0 && strcmp(path, "/api/pair2") != 0;
+    if (signing && (!sTimeKnown || CtrPlatform_Milliseconds() - sServerTimeAt > TIME_REFRESH_MS)
+        && !FetchTime(link, reply))
+        return false;
     snprintf(url, sizeof(url), "%s%s", link->server, path);
     https = strncmp(url, "https://", 8) == 0;
     r = httpcOpenContext(&ctx, method, url, 0);
@@ -561,10 +592,32 @@ static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path,
                          : httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify);
     if (R_SUCCEEDED(r)) r = httpcSetKeepAlive(&ctx, HTTPC_KEEPALIVE_DISABLED);
     if (R_SUCCEEDED(r)) r = httpcAddRequestHeaderField(&ctx, "User-Agent", USER_AGENT);
-    if (R_SUCCEEDED(r) && link->token[0])
+    if (R_SUCCEEDED(r) && signing)
     {
-        snprintf(bearer, sizeof(bearer), "Bearer %s", link->token);
-        r = httpcAddRequestHeaderField(&ctx, "Authorization", bearer);
+        /* Who, when (by the server's clock), a nonce, and a MAC over those,
+         * the method, the path and the body's digest: the token never goes. */
+        DeviceKey(link, key);
+        snprintf(text, sizeof(text), "EM3DS kid\n");
+        {
+            CtrSha256 s;
+
+            CtrSha256_Init(&s);
+            CtrSha256_Update(&s, text, (uint32_t)strlen(text));
+            CtrSha256_Update(&s, key, 32);
+            CtrSha256_Final(&s, digest);
+        }
+        CtrHex(digest, 8, kid);
+        snprintf(when, sizeof(when), "%lld",
+                 sServerTime + (long long)((CtrPlatform_Milliseconds() - sServerTimeAt) / 1000));
+        Random(random, sizeof(random));
+        CtrHex(random, sizeof(random), nonce);
+        Sha256Hex(body ? body : "", body ? bodyLength : 0, bodySha);
+        snprintf(text, sizeof(text), "EM3DS1\n%s\n%s\n%s\n%s\n%s", verb, path, when, nonce, bodySha);
+        Mac(key, text, sign);
+        r = httpcAddRequestHeaderField(&ctx, "X-Em3ds-Key", kid);
+        if (R_SUCCEEDED(r)) r = httpcAddRequestHeaderField(&ctx, "X-Em3ds-Time", when);
+        if (R_SUCCEEDED(r)) r = httpcAddRequestHeaderField(&ctx, "X-Em3ds-Nonce", nonce);
+        if (R_SUCCEEDED(r)) r = httpcAddRequestHeaderField(&ctx, "X-Em3ds-Sign", sign);
     }
     if (R_SUCCEEDED(r) && body)
     {
@@ -585,8 +638,8 @@ static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path,
     if (R_FAILED(r))
     {
         reply->result = r;
-        CtrLog_Write(CTR_LOG_ERROR, "online: %s %s failed %08lx after %lums%s", method == HTTPC_METHOD_POST ? "POST" : "GET",
-                     path, (unsigned long)r, (unsigned long)(CtrPlatform_Milliseconds() - t0),
+        CtrLog_Write(CTR_LOG_ERROR, "online: %s %s failed %08lx after %lums%s", verb, path, (unsigned long)r,
+                     (unsigned long)(CtrPlatform_Milliseconds() - t0),
                      (u32)r == RESULT_TLS ? " (TLS: certificate or handshake)" : "");
         if ((u32)r == RESULT_TLS)
             CtrLog_Write(CTR_LOG_ERROR, "online: TLS FAILED with %s: this console's SSL module did not accept the "
@@ -602,9 +655,8 @@ static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path,
     if (status < 100 || status > 599)
     {
         reply->result = -1;
-        CtrLog_Write(CTR_LOG_ERROR, "online: %s %s: no answer (status %lu) after %lums",
-                     method == HTTPC_METHOD_POST ? "POST" : "GET", path, (unsigned long)status,
-                     (unsigned long)(CtrPlatform_Milliseconds() - t0));
+        CtrLog_Write(CTR_LOG_ERROR, "online: %s %s: no answer (status %lu) after %lums", verb, path,
+                     (unsigned long)status, (unsigned long)(CtrPlatform_Milliseconds() - t0));
         httpcCloseContext(&ctx);
         return false;
     }
@@ -628,6 +680,11 @@ static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path,
         reply->length = now - before;
     }
     reply->body[reply->length] = 0;
+    /* The server's signature over this answer (checked below). */
+    if (signing && (R_FAILED(httpcGetResponseHeader(&ctx, "X-Em3ds-Sign", answerSign, sizeof(answerSign)))
+                    || answerSign[0] == 0))
+        /* Cloudflare sends header names in lower case; http:C may match them exactly. */
+        httpcGetResponseHeader(&ctx, "x-em3ds-sign", answerSign, sizeof(answerSign));
     httpcCloseContext(&ctx);
     if (R_FAILED(r) || (total && reply->length != total))
     {
@@ -638,9 +695,29 @@ static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path,
         reply->length = 0;
         return false;
     }
-    CtrLog_Write(CTR_LOG_FS, "online: %s %s -> HTTP %lu, %lu bytes, %lums", method == HTTPC_METHOD_POST ? "POST" : "GET",
-                 path, (unsigned long)status, (unsigned long)reply->length,
-                 (unsigned long)(CtrPlatform_Milliseconds() - t0));
+    /* A good answer counts only when the server signed it, for this request. */
+    if (signing && status >= 200 && status < 300)
+    {
+        char expect[65];
+
+        Sha256Hex(reply->body, reply->length, bodySha);
+        snprintf(text, sizeof(text), "EM3DS1 reply\n%s\n%lu\n%s", sign, (unsigned long)status, bodySha);
+        Mac(key, text, expect);
+        if (strcmp(expect, answerSign) != 0)
+        {
+            CtrLog_Write(CTR_LOG_ERROR, "online: %s %s -> HTTP %lu NOT SIGNED by the server (%s): ignored", verb, path,
+                         (unsigned long)status, answerSign[0] ? "a wrong signature" : "no signature");
+
+            reply->status = 0;
+            reply->result = (Result)RESULT_UNSIGNED;
+            ReplyFree(reply);
+            reply->length = 0;
+            return false;
+        }
+    }
+    CtrLog_Write(CTR_LOG_FS, "online: %s %s -> HTTP %lu, %lu bytes, %lums%s", verb, path, (unsigned long)status,
+                 (unsigned long)reply->length, (unsigned long)(CtrPlatform_Milliseconds() - t0),
+                 signing ? ", signed" : "");
     return true;
 }
 
@@ -697,6 +774,7 @@ static void FailStatus(const Reply *reply, const char *what)
         wifiDown = sWifiDown;
         Unlock();
         if ((u32)reply->result == RESULT_TLS) SetStatus(CTR_ONLINE_ERROR, "TLS FAILED");
+        else if ((u32)reply->result == (u32)RESULT_UNSIGNED) SetStatus(CTR_ONLINE_ERROR, "ANSWER NOT SIGNED");
         else SetStatus(CTR_ONLINE_ERROR, wifiDown ? "NO WI-FI" : "NO CONNECTION");
         return;
     }
@@ -704,42 +782,79 @@ static void FailStatus(const Reply *reply, const char *what)
     CtrLog_Write(CTR_LOG_ERROR, "online: %s: HTTP %d %s", what, reply->status, error);
     if (reply->status == 401) SetStatus(CTR_ONLINE_ERROR, "NOT LINKED ANY MORE");
     else if (reply->status == 429) SetStatus(CTR_ONLINE_ERROR, "TOO MANY - WAIT");
+    else if (reply->status == 426) SetStatus(CTR_ONLINE_ERROR, "SERVER TOO OLD");
     else SetStatus(CTR_ONLINE_ERROR, "ERROR %d", reply->status);
 }
 
 /* ── The jobs (worker thread) ───────────────────────────────────────── */
 
+/*
+ * Linking, over plain HTTP too: an X25519 exchange. The console sends its
+ * public key and a MAC of it keyed with the code's SHA-256 (what the server
+ * keeps of the code); the server answers with its own and a confirmation.
+ * Both make the token from the shared secret: nothing an onlooker sees gives
+ * it, and the confirmation shows the server had the code.
+ */
 static void DoPair(const Job *job, Link *link)
 {
-    char body[128], token[TOKEN_MAX], user[USER_MAX];
+    char body[320], text[320], token[TOKEN_MAX], user[USER_MAX], pubHex[65], serverHex[80], codeHex[65], proof[65],
+        confirm[80], expect[65];
+    uint8_t secret[32], pub[32], serverPub[32], shared[32], codeKey[32], tokenKey[32], zero[32] = {0};
     Reply reply;
     int n;
 
     SetStatus(CTR_ONLINE_BUSY, "LINKING...");
-    n = snprintf(body, sizeof(body), "{\"code\":\"%s\",\"console_name\":\"%s\"}", job->code, job->consoleName);
-    if (!Http(link, HTTPC_METHOD_POST, "/api/pair", body, (uint32_t)n, "application/json", &reply))
+    Random(secret, sizeof(secret));
+    CtrX25519_Public(pub, secret);
+    CtrHex(pub, 32, pubHex);
+    CtrSha256_Digest(job->code, (uint32_t)strlen(job->code), codeKey);
+    CtrHex(codeKey, 32, codeHex);
+    snprintf(text, sizeof(text), "EM3DS pair\n%s", pubHex);
+    Mac(codeKey, text, proof);
+    n = snprintf(body, sizeof(body), "{\"pub\":\"%s\",\"proof\":\"%s\",\"console_name\":\"%s\"}", pubHex, proof,
+                 job->consoleName);
+    if (!Http(link, HTTPC_METHOD_POST, "/api/pair2", body, (uint32_t)n, "application/json", &reply))
     {
         FailStatus(&reply, "pair");
         return;
     }
     if (reply.status == 403) SetStatus(CTR_ONLINE_ERROR, "CODE WRONG OR USED");
-    else if (reply.status != 200 || !JsonString((const char *)reply.body, "token", token, sizeof(token))
-             || !JsonString((const char *)reply.body, "user", user, sizeof(user)) || strlen(token) < 32)
+    else if (reply.status == 404) SetStatus(CTR_ONLINE_ERROR, "SERVER TOO OLD");
+    else if (reply.status != 200 || !JsonString((const char *)reply.body, "pub", serverHex, sizeof(serverHex))
+             || !JsonString((const char *)reply.body, "user", user, sizeof(user))
+             || !JsonString((const char *)reply.body, "confirm", confirm, sizeof(confirm))
+             || !CtrUnhex(serverHex, serverPub, 32))
         FailStatus(&reply, "pair");
     else
     {
-        snprintf(link->token, sizeof(link->token), "%s", token);
-        snprintf(link->user, sizeof(link->user), "%s", user);
-        link->seq = 0;
-        if (!PutLink(link)) SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
-        else SetStatus(CTR_ONLINE_DONE, "LINKED: %s", user);
-        CtrLog_Write(CTR_LOG_FS, "online: linked to %s as %s (%s)", link->server, user, job->consoleName);
+        CtrX25519(shared, secret, serverPub);
+        snprintf(text, sizeof(text), "EM3DS token\n%s\n%s\n%s", pubHex, serverHex, codeHex);
+        Mac(shared, text, token);
+        CtrSha256_Digest(token, (uint32_t)strlen(token), tokenKey);
+        snprintf(text, sizeof(text), "EM3DS paired\n%s\n%s\n%s", pubHex, serverHex, user);
+        Mac(tokenKey, text, expect);
+        if (memcmp(shared, zero, 32) == 0 || strcmp(expect, confirm) != 0)
+        {
+            CtrLog_Write(CTR_LOG_ERROR, "online: pair: the server's confirmation does not match (another server "
+                         "in between, or a wrong code)");
+            SetStatus(CTR_ONLINE_ERROR, "LINK NOT CONFIRMED");
+        }
+        else
+        {
+            snprintf(link->token, sizeof(link->token), "%s", token);
+            snprintf(link->user, sizeof(link->user), "%s", user);
+            link->seq = 0;
+            if (!PutLink(link)) SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
+            else SetStatus(CTR_ONLINE_DONE, "LINKED: %s", user);
+            CtrLog_Write(CTR_LOG_FS, "online: linked to %s as %s (%s), key agreed over X25519", link->server, user,
+                         job->consoleName);
+        }
     }
+    memset(secret, 0, sizeof(secret));
+    memset(shared, 0, sizeof(shared));
     ReplyFree(&reply);
 }
 
-/* One edit file up. 1 sent, 0 already there, -1 failed (the status says why;
- * `stop` when nothing after it can work either). */
 static int UploadOne(const Link *link, uint16_t id, SentList *sent, bool *stop)
 {
     char key[8], path[64], urlPath[48], sha[65];
@@ -1560,14 +1675,18 @@ static void DoTest(const Link *link)
     else
         TestLine("HEALTH HTTP %d", reply.status);
     ReplyFree(&reply);
-    /* This console's link. */
+    /* This console's link: a signed request, and the server's signed answer. */
     if (link->token[0] == 0)
         TestLine("NOT LINKED YET");
     else if (Http(link, HTTPC_METHOD_GET, "/api/me", NULL, 0, NULL, &reply) && reply.status == 200
              && JsonString((const char *)reply.body, "user", user, sizeof(user)))
         TestLine("LINKED AS %s", user);
+    else if ((u32)reply.result == (u32)RESULT_UNSIGNED)
+        TestLine("ANSWER NOT SIGNED");
+    else if (reply.status == 426)
+        TestLine("SERVER TOO OLD");
     else if (reply.status == 401)
-        TestLine("TOKEN NOT ACCEPTED");
+        TestLine("SIGNATURE REFUSED");
     else
         TestLine("ME HTTP %d", reply.status);
     ReplyFree(&reply);
@@ -1594,6 +1713,8 @@ static void Worker(void *arg)
     sNetFailed = false;
     CtrLog_Write(CTR_LOG_FS, "online: job %d on %s (Wi-Fi %lu%s)", job.type, link.server, (unsigned long)wifi,
                  link.verify ? "" : ", certificate checks OFF");
+    sTimeKnown = false;
+    sPsReady = R_SUCCEEDED(psInit());
     r = httpcInit(HTTPC_SHARED);
     if (R_FAILED(r))
     {
@@ -1622,6 +1743,8 @@ static void Worker(void *arg)
             DoFlush(&link);
         httpcExit();
     }
+    if (sPsReady) psExit();
+    sPsReady = false;
     Lock();
     if (sStatus == CTR_ONLINE_BUSY)
     {
@@ -1756,8 +1879,8 @@ bool CtrOnline_AskServer(void)
 
     if (!Keyboard("Server address, e.g. poke.cloudnoud.nl", link.server, (int)sizeof(server) - 1, server, sizeof(server)))
         return false;
-    /* A bare host name is an HTTPS one. */
-    if (strstr(server, "://") == NULL) snprintf(full, sizeof(full), "https://%s", server);
+    /* A bare host name is spoken to over plain HTTP (signed). */
+    if (strstr(server, "://") == NULL) snprintf(full, sizeof(full), "http://%s", server);
     else snprintf(full, sizeof(full), "%s", server);
     SetServer(full);
     return true;
@@ -1772,10 +1895,10 @@ bool CtrOnline_AskCode(char *code, unsigned size)
 
     if (link.server[0] == 0)
     {
-        if (!Keyboard("Server address, e.g. planes.example.com", "https://", (int)sizeof(server) - 1, server, sizeof(server)))
+        if (!Keyboard("Server address, e.g. planes.example.com", "http://", (int)sizeof(server) - 1, server, sizeof(server)))
             return false;
-        /* A bare host name is an HTTPS one. */
-        if (strstr(server, "://") == NULL) snprintf(link.server, sizeof(link.server), "https://%s", server);
+        /* A bare host name is spoken to over plain HTTP (signed). */
+        if (strstr(server, "://") == NULL) snprintf(link.server, sizeof(link.server), "http://%s", server);
         else snprintf(link.server, sizeof(link.server), "%s", server);
         for (size_t n = strlen(link.server); n && link.server[n - 1] == '/'; --n) link.server[n - 1] = 0;
         if (!PutLink(&link)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", LINK_PATH);
