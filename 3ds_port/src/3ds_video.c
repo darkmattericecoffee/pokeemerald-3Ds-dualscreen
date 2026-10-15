@@ -842,6 +842,7 @@ static void StereoWhy(unsigned why)
 }
 static float BattleSpriteShift(int centre);
 static void SceneOn(C3D_RenderTarget *target);
+static void DrawnClear(C3D_RenderTarget *target, uint32_t color, float x, float y, float w, float h);
 static float BattleSceneryShift(void);
 static bool sObjMaskOn;
 /* The eye being composed: +slider for the left, -slider for the right. */
@@ -6470,14 +6471,8 @@ static void SceneComposeInto(C3D_RenderTarget *target, int column, int left, int
     }
     else
     {
+        DrawnClear(target, 0, column, 0, width, height);
         C2D_SceneBegin(target);
-        C2D_ViewReset();
-        C2D_Flush();
-        C3D_AlphaTest(false, GPU_ALWAYS, 0);
-        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
-        C2D_DrawRectSolid(column, 0, 0, width, height, 0);
-        C2D_Flush();
-        BlendForget();
     }
     Blend(5, false, false);
     sLayerExclude = exclude;
@@ -7757,15 +7752,59 @@ static bool SlotsPack(void)
 
 /* A rectangle of a target set to one colour by drawing it, not clearing:
  * no command split, which with the GPU started early costs a cache flush. */
+/*
+ * Drawn as a picture, not Citro2D's solid rectangle: on hardware the solid
+ * rectangle wrote nothing into the battle scene surface (the dumps of
+ * frames 1705 and 2343: a Pokémon's slot composed over the planes' cell of
+ * frames before, which came back lit through the premultiplied placement -
+ * the copy of the player's Pokémon over the opponent at a battle's end),
+ * while every textured draw into the same target landed. Azahar drew the
+ * rectangle. An 8x8 texture of the colour, stretched over the rectangle,
+ * takes the path the sprites take. One texture a colour, a few of them:
+ * the GPU may still be reading an earlier one when the next is wanted.
+ */
+#define CLEAR_TEXTURES 4
+static struct { C3D_Tex tex; uint32_t color; bool made; } sClearTex[CLEAR_TEXTURES];
+static unsigned sClearTexNext;
+
+static C3D_Tex *ClearTexFor(uint32_t color)
+{
+    unsigned i;
+
+    for (i = 0; i < CLEAR_TEXTURES; ++i)
+        if (sClearTex[i].made && sClearTex[i].color == color) return &sClearTex[i].tex;
+    i = sClearTexNext;
+    sClearTexNext = (sClearTexNext + 1) % CLEAR_TEXTURES;
+    if (!sClearTex[i].made)
+    {
+        if (!C3D_TexInit(&sClearTex[i].tex, 8, 8, GPU_RGBA8)) return NULL;
+        C3D_TexSetFilter(&sClearTex[i].tex, GPU_NEAREST, GPU_NEAREST);
+        C3D_TexSetWrap(&sClearTex[i].tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+        sClearTex[i].made = true;
+    }
+    {
+        uint32_t *texels = sClearTex[i].tex.data, texel = __builtin_bswap32(color);
+
+        for (unsigned t = 0; t < 64; ++t) texels[t] = texel;
+        C3D_TexFlush(&sClearTex[i].tex);
+    }
+    sClearTex[i].color = color;
+    return &sClearTex[i].tex;
+}
+
 static void DrawnClear(C3D_RenderTarget *target, uint32_t color, float x, float y, float w, float h)
 {
+    static const Tex3DS_SubTexture whole = {8, 8, 0.0f, 1.0f, 1.0f, 0.0f};
+    C3D_Tex *tex = ClearTexFor(color);
+
     BlendForget();
     SceneOn(target);
     C2D_ViewReset();
     C2D_Flush();
     C3D_AlphaTest(false, GPU_ALWAYS, 0);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
-    C2D_DrawRectSolid(x, y, 0, w, h, color);
+    if (tex) C2D_DrawImageAt((C2D_Image){tex, &whole}, x, y, 0, NULL, w / 8.0f, h / 8.0f);
+    else C2D_DrawRectSolid(x, y, 0, w, h, color);
     C2D_Flush();
     BlendForget();
 }
@@ -8093,6 +8132,34 @@ static bool BattleMonsPatches(void)
 /* The stereo battle's scene composed whole, its sprites at the scenery's depth. */
 static bool sHudFlatScene;
 
+/*
+ * The text box's band of the logical surface on the eye being drawn, at
+ * BATTLE_TEXT_DEPTH, nearest of all (the left eye sees it shifted right).
+ * The strip its shift uncovers at the screen's edge is the box's own edge
+ * column again, so the box stays full width in both eyes. With `above`,
+ * the rows above the band first, unshifted: the surface composed whole
+ * (the frames a sprite blends), so that the box keeps its depth there too
+ * instead of dropping to the screen for the animation.
+ */
+static void BattleTextBand(bool above)
+{
+    const float top = BATTLE_BAND_TOP * sZoom + sOffY;
+    const float h = CTR_GAME_HEIGHT - top, shift = sEyeParallax * BATTLE_TEXT_DEPTH;
+    const Tex3DS_SubTexture upper = {CTR_GAME_WIDTH, (u16)top, 0, 1, CTR_GAME_WIDTH / 512.0f, 1 - top / 256.0f};
+    const Tex3DS_SubTexture band = {CTR_GAME_WIDTH, (u16)h, 0, 1 - top / 256.0f,
+        CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
+    const Tex3DS_SubTexture leftEdge = {1, (u16)h, 0, 1 - top / 256.0f, 1 / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
+    const Tex3DS_SubTexture rightEdge = {1, (u16)h, (CTR_GAME_WIDTH - 1) / 512.0f, 1 - top / 256.0f,
+        CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
+
+    if (above) C2D_DrawImageAt((C2D_Image){&sSurface, &upper}, 0, 0, 0, NULL, 1, 1);
+    C2D_DrawImageAt((C2D_Image){&sSurface, &band}, shift, top, 0, NULL, 1, 1);
+    if (shift > 0)
+        C2D_DrawImageAt((C2D_Image){&sSurface, &leftEdge}, 0, top, 0, NULL, shift, 1);
+    else if (shift < 0)
+        C2D_DrawImageAt((C2D_Image){&sSurface, &rightEdge}, CTR_GAME_WIDTH + shift, top, 0, NULL, -shift, 1);
+}
+
 static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
 {
     const Tex3DS_SubTexture logical = {CTR_GAME_WIDTH, CTR_GAME_HEIGHT, 0, 1,
@@ -8278,7 +8345,11 @@ static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
                 if (world) BattleWorldEye(target, world);
                 else DrawnClear(target, clear, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT);
                 Blend(5, false, false);
-                C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
+                /* The text box at its own depth here too (BattleTextBand):
+                 * drawn whole at the screen, it dropped a plane for every
+                 * stat change's blending frames. */
+                if (textOnce && !sTextAbove) BattleTextBand(true);
+                else C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
                 C2D_Flush();
                 C3D_FrameSplit(0);
             }
@@ -8379,21 +8450,7 @@ static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
          * strip its shift uncovers at the screen's edge is the box's own
          * edge column again, so the box stays full width in both eyes. */
         if (textOnce && !sTextAbove)
-        {
-            const float top = BATTLE_BAND_TOP * sZoom + sOffY;
-            const float h = CTR_GAME_HEIGHT - top, shift = sEyeParallax * BATTLE_TEXT_DEPTH;
-            const Tex3DS_SubTexture band = {CTR_GAME_WIDTH, (u16)h, 0, 1 - top / 256.0f,
-                CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-            const Tex3DS_SubTexture leftEdge = {1, (u16)h, 0, 1 - top / 256.0f, 1 / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-            const Tex3DS_SubTexture rightEdge = {1, (u16)h, (CTR_GAME_WIDTH - 1) / 512.0f, 1 - top / 256.0f,
-                CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-
-            C2D_DrawImageAt((C2D_Image){&sSurface, &band}, shift, top, 0, NULL, 1, 1);
-            if (shift > 0)
-                C2D_DrawImageAt((C2D_Image){&sSurface, &leftEdge}, 0, top, 0, NULL, shift, 1);
-            else if (shift < 0)
-                C2D_DrawImageAt((C2D_Image){&sSurface, &rightEdge}, CTR_GAME_WIDTH + shift, top, 0, NULL, -shift, 1);
-        }
+            BattleTextBand(false);
         else
             C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
         C2D_Flush();
@@ -9169,10 +9226,17 @@ static void RenderBattleWorld(uint32_t clear, float slider)
         VoxelBloomPrepare();
     if (stereo)
     {
-        /* Its columns only: the scenery beside it may be kept from the
-         * last frame (sSceneCached). */
-        DrawnClear(sScene, C2D_Color32(0, 0, 0, 255), 0, 0, WORLD_COLUMNS, SCENE_H);
-        DrawnClear(sScene, 0, WORLD_COLUMNS, 0, WORLD_GAP, SCENE_H);
+        /* The whole surface, as a memory fill, every frame: a drawn clear
+         * of the slots' columns did not land on hardware (the dumps of
+         * frames 1705, 2343 and after: the planes' cell of frames before
+         * came back under the opponent's slot at a battle's end, as a lit
+         * copy of the player's Pokémon), so nothing of a frame before is
+         * left for a slot or a cell to sample. The scenery beside the
+         * world is composed again when it is there (a move's background,
+         * a few frames). */
+        ColourClear(sScene, 0);
+        sSceneOn = NULL;
+        sSceneCached = false;
     }
     else
         C2D_TargetClear(world, C2D_Color32(0, 0, 0, 255));
@@ -10407,18 +10471,9 @@ static void DumpTileProbe(unsigned oam)
                  (unsigned long)sVramStamp[(0x10000 + (attr2 & 1023) * 32) / VRAM_BLOCK], (unsigned long)sStats.frames);
 }
 
-static void DumpOnKey(void)
+static void DumpAll(void)
 {
-    static bool sLatched;
-    const CtrInput *input = CtrInput_Get();
-    const unsigned chord = CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT;
     FILE *file;
-
-    /* The chord held, once until it is let go: the key's down edge is
-     * scanned by the game's frame, which this does not see every time. */
-    if ((input->physicalHeld & chord) != chord) { sLatched = false; return; }
-    if (sLatched) return;
-    sLatched = true;
     void *chunk = linearAlloc(DUMP_CHUNK);
 
     if (chunk == NULL) { CtrLog_Write(CTR_LOG_ERROR, "DUMP: no linear memory for the chunk"); return; }
@@ -10456,6 +10511,20 @@ static void DumpOnKey(void)
     CtrLog_Write(CTR_LOG_VIDEO, "DUMP skip %08lx %08lx %08lx %08lx slots %u mons %u", (unsigned long)sObjSkip[0],
                  (unsigned long)sObjSkip[1], (unsigned long)sObjSkip[2], (unsigned long)sObjSkip[3], sSlotCount, sMonCount);
     CtrLog_Write(CTR_LOG_VIDEO, "DUMP done");
+}
+
+static void DumpOnKey(void)
+{
+    static bool sLatched;
+    const CtrInput *input = CtrInput_Get();
+    const unsigned chord = CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT;
+
+    /* The chord held, once until it is let go: the key's down edge is
+     * scanned by the game's frame, which this does not see every time. */
+    if ((input->physicalHeld & chord) != chord) { sLatched = false; return; }
+    if (sLatched) return;
+    sLatched = true;
+    DumpAll();
 }
 
 #ifdef CTR_FRAME_DUMP
@@ -10740,6 +10809,8 @@ void CtrVideo_Present(void)
 #define CTR_DUMP_STEP 30
 #endif
     if (sBattle && (int)(sStats.frames - battleStart) >= (int)CTR_DUMP_FROM && sStats.frames % CTR_DUMP_STEP == 0 && dumped++ < 40)
+        DumpAll();
+    if (0)
 #else
     if (sStats.frames >= 150 && (sStats.frames - 150) % 150 == 0 && sStats.frames <= 12000)
 #endif
