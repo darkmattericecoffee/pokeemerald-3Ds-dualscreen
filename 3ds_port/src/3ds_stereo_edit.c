@@ -87,12 +87,12 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define BAR_H 24
 #define DEX_X 4
 #define DEX_W 28
-#define MORE_X (DEX_X + DEX_W + 2)
-#define MORE_W 22
-/* The server (3ds_online.c): the globe loads what is new; the star votes
- * for the version on the card. */
-#define ONLINE_X (MORE_X + MORE_W + 2)
+/* The server (3ds_online.c): the globe opens the versions screen; the
+ * settings come after it. */
+#define ONLINE_X (DEX_X + DEX_W + 2)
 #define ONLINE_W 26
+#define MORE_X (ONLINE_X + ONLINE_W + 2)
+#define MORE_W 22
 #define UNDO_W 22
 #define UNDO_X (CAN_X + CAN_W / 2 - UNDO_W - 1)
 #define REDO_X (CAN_X + CAN_W / 2 + 1)
@@ -219,7 +219,7 @@ static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
-enum { O_DEPTH, O_CONTROLS, O_RESET, O_CLOSE, O_COUNT };
+enum { O_DEPTH, O_CONTROLS, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -939,6 +939,38 @@ static void FourPlanes(void)
     CtrStereoMon_SetPlaneCount(PLANES);
     snprintf(line, sizeof(line), "planes %u to %u", from, PLANES);
     CtrStereoMon_LogEdit(line);
+}
+
+/* COLLAPSE TO 1 LAYER: every plane merged into the bottom one (plane 0, the
+ * farthest), in every frame; the outline stays. UNDO takes it back. */
+static void CollapsePlanes(void)
+{
+    bool any = false;
+
+    for (unsigned f = 0; f < sE.frames && !any; ++f)
+        for (unsigned i = 0; i < N && !any; ++i)
+        {
+            unsigned v = GetPlane(f, i);
+
+            any = v != NONE && v != 0;
+        }
+    if (!any)
+    {
+        Toast("ALREADY ONE LAYER");
+        return;
+    }
+    PushUndo();
+    for (unsigned f = 0; f < sE.frames; ++f)
+        for (unsigned i = 0; i < N; ++i)
+        {
+            unsigned v = GetPlane(f, i);
+
+            if (v != NONE && v != 0) PutPlane(f, i, 0);
+        }
+    sE.layer = 0;
+    CtrStereoMon_LogEdit("collapse");
+    Changed();
+    Toast("ONE LAYER NOW - UNDO TAKES IT BACK");
 }
 
 /* Plane `from` moved to position `to` in the stack, the others closing up. */
@@ -2082,6 +2114,10 @@ static void OptionAct(int row, bool rightHalf)
         sE.helpDirty = true;
         break;
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
+    case O_COLLAPSE:
+        sE.screen = S_EDIT;
+        CollapsePlanes();
+        break;
     case O_RESET:
         sE.screen = S_CONFIRM_RESET;
         break;
@@ -3384,7 +3420,7 @@ static void DrawVersions(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -3491,16 +3527,18 @@ static void DrawChooser(void)
             }
             else snprintf(line, sizeof(line), "%s", CtrOnline_Linked() ? "NOT ON THE SERVER" : "");
             CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 13, cur ? CTR_DRAW_WHITE : nf || nb ? CTR_DRAW_BLUE : CTR_DRAW_OFF);
-            /* The card's own edit: YOU under the icon, a flag once it is
-             * FINAL; else who made the server's current version. */
+            /* The card's own edit: YOU centred under the icon, on a half
+             * white tag so it reads over the picture, and a flag left of the
+             * globe once it is FINAL; else who made the server's current one. */
             if (edited)
             {
-                int w = CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOU");
-                bool final = CtrStereoMon_IsFinal(front);
-                int ax = x + 2 + (32 - (w + (final ? 2 + ICON_SMALL : 0))) / 2;
+                int w = CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOU"), ax = x + 2 + (32 - w) / 2;
 
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 22, cur ? CTR_DRAW_WHITE : CTR_DRAW_RED);
-                if (final) Icon(ICON_FLAG, false, ax + w + 2, y + 20, cur ? Rgb(31, 63, 31) : Rgb(24, 6, 6));
+                FillMix(ax - 2, y + 22, w + 4, 11, Rgb(31, 63, 31), 1, 2);
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 22, CTR_DRAW_RED);
+                if (CtrStereoMon_IsFinal(front))
+                    Icon(ICON_FLAG, false, x + W / CH_COLS - 4 - CH_GLOBE_W - 3 - ICON_SMALL, y + (CH_ROW_H - 2 - ICON_SMALL) / 2 + 2,
+                         cur ? Rgb(31, 63, 31) : Rgb(24, 6, 6));
             }
             else if (CtrOnline_CurrentAuthor(front, author, sizeof(author)) || (back && CtrOnline_CurrentAuthor(back, author, sizeof(author))))
             {

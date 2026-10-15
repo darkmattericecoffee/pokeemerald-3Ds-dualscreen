@@ -456,8 +456,11 @@ API 2` and `LINKED AS <name>` when a signed request and its signed answer went t
   Sent now, or after the job that runs; linking sends the card's name.
 - A **refresh** button (Pixelarticons, 24 px) at the STATUS row's right end: a tap there
   fetches what is new. (Icons on the other cells were tried and taken out again: too big.)
-- **The editor's Pokédex**: "YOUR EDIT, FINAL" became YOU under the Pokémon's icon (moved up
-  in its row), with a small flag once FINAL. The EDITED filter is the "mine" filter.
+- **The editor's Pokédex**: "YOUR EDIT, FINAL" became YOU, centred under the Pokémon's icon
+  (moved up in its row) on a half-white tag, and a small flag left of the globe once FINAL. The
+  EDITED filter is the "mine" filter.
+- **The editor**: its bar reads Pokédex, globe, settings; the settings have **COLLAPSE TO 1
+  LAYER** (every plane merged into plane 0, the farthest, in every frame; UNDO takes it back).
 - **Website**: the sign-in form is centred; the Users page starts with Add a user. Accounts
   made: darkmatter (admin, the master account) and Nukularkoffee (artist).
 - Test aid: `optionstab N` shows the OPTIONS screen on tab N (2 is ONLINE), even from the title
