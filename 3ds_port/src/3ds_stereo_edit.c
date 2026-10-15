@@ -218,7 +218,8 @@ static const char *const sOpacityNames[] = {"MAX", "60", "30", "15"};
 static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS };
-enum { O_DEPTH, O_CONTROLS, O_AUTHOR, O_RESET, O_CLOSE, O_COUNT };
+/* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
+enum { O_DEPTH, O_CONTROLS, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -2081,7 +2082,6 @@ static void OptionAct(int row, bool rightHalf)
         sE.helpDirty = true;
         break;
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
-    case O_AUTHOR: OpenKeyboard(KB_AUTHOR); break;
     case O_RESET:
         sE.screen = S_CONFIRM_RESET;
         break;
@@ -3384,7 +3384,7 @@ static void DrawVersions(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "AUTHOR", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -3409,7 +3409,6 @@ static void DrawOptions(void)
             value[0] = 0;
         }
         else if (row == O_CONTROLS) snprintf(value, sizeof(value), "%s", sE.controls ? "ON" : "OFF");
-        else if (row == O_AUTHOR) snprintf(value, sizeof(value), "%s", CtrStereoMon_Author()[0] ? CtrStereoMon_Author() : "?");
         if (value[0])
             CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, value,
                                OPT_X + OPT_W - 14 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, value), y + 5, CTR_DRAW_RED);
@@ -3491,12 +3490,23 @@ static void DrawChooser(void)
             }
             else snprintf(line, sizeof(line), "%s", CtrOnline_Linked() ? "NOT ON THE SERVER" : "");
             CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 13, cur ? CTR_DRAW_WHITE : nf || nb ? CTR_DRAW_BLUE : CTR_DRAW_OFF);
-            line[0] = 0;
-            if (edited) snprintf(line, sizeof(line), "%s", CtrStereoMon_IsFinal(front) ? "YOUR EDIT, FINAL" : "YOUR EDIT");
+            /* The card's own edit: a smile and YOU, a flag once it is FINAL;
+             * else who made the server's current version. */
+            if (edited)
+            {
+                uint16_t ink = cur ? Rgb(31, 63, 31) : Rgb(24, 6, 6);
+                int ax = x + 36 + ICON_SMALL + 2;
+
+                Icon(ICON_SMILE, false, x + 36, y + 23, ink);
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 24, cur ? CTR_DRAW_WHITE : CTR_DRAW_RED);
+                if (CtrStereoMon_IsFinal(front))
+                    Icon(ICON_FLAG, false, ax + CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOU") + 5, y + 23, ink);
+            }
             else if (CtrOnline_CurrentAuthor(front, author, sizeof(author)) || (back && CtrOnline_CurrentAuthor(back, author, sizeof(author))))
+            {
                 snprintf(line, sizeof(line), "BY %s", author);
-            if (line[0])
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 24, cur ? CTR_DRAW_WHITE : edited ? CTR_DRAW_RED : CTR_DRAW_DARK);
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 24, cur ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+            }
             if (votedF || votedB) DrawStar(x + W / CH_COLS - 6 - CH_GLOBE_W - 13, y + 3, true);
         }
         /* The globe: this Pokémon's versions on the server. */

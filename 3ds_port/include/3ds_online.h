@@ -48,6 +48,10 @@ void CtrOnline_UseStandardServer(void);
 /* The system keyboard: the server's address when none is known yet, then
  * the pairing code; false when cancelled (or not on this build). */
 bool CtrOnline_AskCode(char *code, unsigned size);
+/* YOUR NAME: the author's name (it signs the edits) with the system
+ * keyboard; once linked it is also the name the site shows for the account,
+ * sent now or after the job that runs. False when cancelled. */
+bool CtrOnline_AskName(void);
 /* The jobs (results through CtrOnline_Status and port.log); false when one
  * is running already or the console is not linked (the status says which). */
 bool CtrOnline_Pair(const char *code);

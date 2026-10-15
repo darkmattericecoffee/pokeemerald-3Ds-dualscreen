@@ -357,9 +357,27 @@ static const u8 *OnlineTestText(void)
     return OnlineGame(CTR_TEXT("TAP TO CHECK", "TOCA PARA PROBAR", "VERIFIER", "VERIFICA"));
 }
 
+/* The status row's refresh button: fetch what is new on the server. */
 static void OnlineStatusTap(void)
 {
+    PlaySE(CtrOnline_Linked() && CtrOnline_Sync() ? SE_SELECT : SE_FAILURE);
+}
+
+/* YOUR NAME: the author's name with the system keyboard; once linked, the
+ * name the site shows for the account too. */
+void CtrBottom_ForceRedraw(void);
+static void OnlineName(void)
+{
     PlaySE(SE_SELECT);
+    CtrOnline_AskName();
+    CtrBottom_ForceRedraw();
+}
+
+static const u8 *OnlineNameText(void)
+{
+    const char *name = CtrStereoMon_Author();
+
+    return OnlineGame(name[0] ? name : CTR_TEXT("TAP TO SET", "TOCA", "CHOISIR", "SCEGLI"));
 }
 
 /* NEW FROM SERVER: the editor on what the last sync brought, its chooser
@@ -467,6 +485,7 @@ const CtrExtra gCtrExtras[] =
     /* The server checked as tools/tlsprobe does; the status row shows how. */
     {CTR_EXTRAS_ONLINE, CTR_TEXT("TEST SERVER", "PROBAR SERVIDOR", "TESTER SERVEUR", "PROVA SERVER"), "online_test", 0, 0, NULL, OnlineTest, NULL, OnlineTestText},
     {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("YOUR NAME", "TU NOMBRE", "TON NOM", "IL TUO NOME"), "online_name", 0, 0, NULL, OnlineName, NULL, OnlineNameText},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("UNLINK", "DESENLAZAR", "DÉLIER", "SCOLLEGA"), "online_unlink", 0, 0, NULL, OnlineUnlink, NULL, OnlineUnlinkText},

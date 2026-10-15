@@ -252,6 +252,7 @@ MESSAGES = {
     "deleted": "The version was deleted.",
     "revoked": "The console was unlinked. Its token no longer works.",
     "password": "Password changed. Other browsers were signed out.",
+    "named": "Your name is saved; your versions show it from now on.",
     "disabled": "The user can no longer sign in, and their consoles stop working.",
     "enabled": "The user can sign in again.",
 }
@@ -261,7 +262,7 @@ MESSAGES = {
 def login_form(req: Request, error: str = "") -> Response:
     nxt = req.q("next", "/")
     err = '<p class="error">%s</p>' % e(error) if error else ""
-    body = """<section class="narrow"><h1>Sign in</h1>%s
+    body = """<section class="narrow signin"><h1>Sign in</h1>%s
 <form method="post" action="/login" class="stack">
 <input type="hidden" name="next" value="%s">
 <label>Name <input name="name" autocomplete="username" required autofocus></label>
@@ -308,7 +309,7 @@ def grid(req: Request) -> Response:
     kind = req.q("kind", "front")
     show = req.q("show", "all")
     rows = req.conn.execute(
-        "SELECT c.mon_key, c.version_id, c.pinned, v.final, u.name AS author, "
+        "SELECT c.mon_key, c.version_id, c.pinned, v.final, COALESCE(u.display_name, u.name) AS author, "
         "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n "
         "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id").fetchall()
     cur = {r["mon_key"]: r for r in rows}
@@ -386,7 +387,7 @@ def mon_page(req: Request, key: str) -> Response:
         return Response(page(req, "Not found", "<p>No such picture.</p>"), 404)
     versions = req.conn.execute(
         "SELECT v.id, v.planes, v.frames, v.final, v.revision, v.author_tag, v.saved_at, v.size, v.uploaded_at, "
-        "u.name AS uploader, d.console_name FROM versions v JOIN users u ON u.id = v.user_id "
+        "COALESCE(u.display_name, u.name) AS uploader, d.console_name FROM versions v JOIN users u ON u.id = v.user_id "
         "LEFT JOIN devices d ON d.id = v.device_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
@@ -596,6 +597,11 @@ def account(req: Request, extra: str = "", flash: str = "") -> Response:
            d["id"], e(d["console_name"]), csrf_field(req)) for d in devices)
     devices_html = ('<table class="plain">%s</table>' % rows) if rows else '<p class="muted">No consoles linked yet.</p>'
     body = """<h1>Your account</h1>%s
+<section class="narrow"><h2>Your name</h2>
+<form method="post" action="/account/name" class="stack">%s
+<label>Shown with your versions <input name="name" value="%s" maxlength="16" pattern="[A-Za-z0-9 ._-]+" required></label>
+<button>Save name</button></form>
+<p class="muted">The plane editor's ONLINE tab sets it too (YOUR NAME). You sign in as <strong>%s</strong>.</p></section>
 <section><h2>Consoles and computers</h2>%s
 <form method="post" action="/account/pair">%s<button>Link a console</button></form>
 <p class="muted">You get a code that works once, for ten minutes. Type it on the 3DS, or give it to the PC script.</p></section>
@@ -604,9 +610,18 @@ def account(req: Request, extra: str = "", flash: str = "") -> Response:
 <label>Current password <input name="old" type="password" autocomplete="current-password" required></label>
 <label>New password <input name="new" type="password" autocomplete="new-password" minlength="%d" required></label>
 <label>New password again <input name="again" type="password" autocomplete="new-password" required></label>
-<button>Change password</button></form></section>""" % (extra, devices_html, csrf_field(req), csrf_field(req),
-                                                      MIN_PASSWORD)
+<button>Change password</button></form></section>""" % (extra, csrf_field(req), e(db.shown_name(req.user)),
+                                                      e(req.user["name"]), devices_html, csrf_field(req),
+                                                      csrf_field(req), MIN_PASSWORD)
     return Response(page(req, "Account", body, flash or MESSAGES.get(req.q("msg"), "")))
+
+
+@route("POST", r"/account/name", "session")
+def account_name(req: Request) -> Response:
+    if db.set_display_name(req.conn, req.user["id"], req.form.get("name", "")) is None:
+        return account(req, flash="Names are letters, digits, spaces, dots, dashes and underscores, up to 16.")
+    db.bump_rev(req.conn)
+    return redirect("/account?msg=named")
 
 
 @route("POST", r"/account/pair", "session")
@@ -670,17 +685,19 @@ def admin(req: Request, flash: str = "") -> Response:
         actions.append('<form method="post" action="/admin/users/%d/reset" class="inline" data-confirm="Make a new '
                        'password for %s? The old one stops working.">%s<button class="small">New password</button>'
                        '</form>' % (u["id"], e(u["name"]), csrf_field(req)))
-        rows.append('<tr class="%s"><td><strong>%s</strong></td><td>%s</td><td>%d consoles</td><td>%d uploads</td>'
+        shown = "" if not u["display_name"] or u["display_name"] == u["name"] else (
+            ' <span class="muted">(%s)</span>' % e(u["display_name"]))
+        rows.append('<tr class="%s"><td><strong>%s</strong>%s</td><td>%s</td><td>%d consoles</td><td>%d uploads</td>'
                     '<td>%s</td><td class="actions">%s</td></tr>'
-                    % ("disabled" if u["disabled"] else "", e(u["name"]), u["role"], u["consoles"], u["uploads"],
+                    % ("disabled" if u["disabled"] else "", e(u["name"]), shown, u["role"], u["consoles"], u["uploads"],
                        "disabled" if u["disabled"] else "since " + ago(u["created"]), " ".join(actions)))
-    body = """<h1>Users</h1><table class="plain">%s</table>
+    body = """<h1>Users</h1>
 <section class="narrow"><h2>Add a user</h2><form method="post" action="/admin/users" class="stack">%s
-<label>Name <input name="name" required maxlength="32" pattern="[A-Za-z0-9_. -]+"></label>
+<label>Name <input name="name" required maxlength="32" pattern="[A-Za-z0-9_. -]+" autofocus></label>
 <label>Role <select name="role"><option value="artist">Artist</option><option value="admin">Admin</option></select></label>
 <button>Add user</button></form>
-<p class="muted">The server makes the password; you see it once and pass it on.</p></section>""" % (
-        "".join(rows), csrf_field(req))
+<p class="muted">The server makes the password; you see it once and pass it on.</p></section>
+<h2>Everybody</h2><table class="plain">%s</table>""" % (csrf_field(req), "".join(rows))
     return Response(page(req, "Users", body, flash or MESSAGES.get(req.q("msg"), "")))
 
 
@@ -759,8 +776,18 @@ def api_pair_signed(req: Request) -> Response:
 @route("GET", r"/api/me", "device")
 def api_me(req: Request) -> Response:
     d = req.device
-    return json_resp({"user": d["user_name"], "role": d["role"], "console_name": d["console_name"],
-                      "seq": db.current_seq(req.conn)})
+    user = req.conn.execute("SELECT * FROM users WHERE id = ?", (d["user_id"],)).fetchone()
+    return json_resp({"user": d["user_name"], "name": db.shown_name(user), "role": d["role"],
+                      "console_name": d["console_name"], "seq": db.current_seq(req.conn)})
+
+
+@route("POST", r"/api/me", "device")
+def api_me_name(req: Request) -> Response:
+    """{"name": ...}: the console's author name becomes the name the site shows for this account."""
+    if db.set_display_name(req.conn, req.device["user_id"], str(req.json().get("name", ""))) is None:
+        return api_error(400, "names are letters, digits, spaces, dots, dashes and underscores, up to 16")
+    db.bump_rev(req.conn)
+    return api_me(req)
 
 
 @route("POST", r"/api/mons/" + KEY + r"/versions", "device")
@@ -789,7 +816,7 @@ def _voter(req: Request) -> int:
 
 def _versions_json(req: Request, key: str) -> dict:
     rows = req.conn.execute(
-        "SELECT v.id, v.user_id, v.revision, v.final, v.author_tag, v.sha256, v.size, v.uploaded_at, u.name AS uploader "
+        "SELECT v.id, v.user_id, v.revision, v.final, v.author_tag, v.sha256, v.size, v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader "
         "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
@@ -873,7 +900,7 @@ def api_mons(req: Request) -> Response:
     """Every picture with a current version: how many versions it has, and how many of them are the
     caller's favourites (a console's Pokédex marks both)."""
     rows = req.conn.execute(
-        "SELECT c.mon_key, c.version_id, c.pinned, v.final, u.name AS author, "
+        "SELECT c.mon_key, c.version_id, c.pinned, v.final, COALESCE(u.display_name, u.name) AS author, "
         "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n, "
         "(SELECT COUNT(*) FROM votes t WHERE t.mon_key = c.mon_key AND t.user_id = ?) AS mine "
         "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id "

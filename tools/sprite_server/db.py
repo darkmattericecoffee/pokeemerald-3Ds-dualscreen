@@ -129,6 +129,9 @@ def init(path: str) -> None:
     conn = connect(path)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    # Added later: the name a user goes by on the site (set on the console or the account page).
+    if "display_name" not in [r["name"] for r in conn.execute("PRAGMA table_info(users)")]:
+        conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
     conn.close()
 
 
@@ -283,6 +286,24 @@ def device_for_key_id(conn: sqlite3.Connection, kid: str):
         return None, None
     conn.execute("UPDATE devices SET last_seen = ? WHERE id = ?", (now(), row["id"]))
     return row, signing.device_key(token_hash)
+
+
+DISPLAY_NAME = r"[A-Za-z0-9 ._-]{1,16}"
+
+
+def set_display_name(conn: sqlite3.Connection, user_id: int, name: str) -> Optional[str]:
+    """The name shown with a user's versions (the console's author name). The cleaned name, or None."""
+    import re
+    name = " ".join((name or "").split())
+    if not re.fullmatch(DISPLAY_NAME, name):
+        return None
+    conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (name, user_id))
+    return name
+
+
+def shown_name(row) -> str:
+    """A users row's name as the site shows it."""
+    return row["display_name"] or row["name"]
 
 
 def device_for_token(conn: sqlite3.Connection, token: str):

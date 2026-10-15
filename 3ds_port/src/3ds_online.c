@@ -89,7 +89,8 @@ typedef struct
     bool verify;
 } Link;
 
-enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX, JOB_DELETE, JOB_TEST };
+enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX, JOB_DELETE, JOB_TEST,
+       JOB_NAME };
 
 typedef struct
 {
@@ -130,6 +131,9 @@ static char sTestLines[TEST_LINES][24];
 static unsigned sTestCount;
 /* The last request found no server (no answer at all): votes wait. */
 static bool sNetFailed;
+/* The author's name, changed here, still to reach the server (it is the
+ * name the site shows for the account). */
+static bool sNamePending;
 /* The favourites, as the console knows them (online_votes.txt). */
 typedef struct Fav Fav;
 struct Fav
@@ -847,6 +851,8 @@ static void DoPair(const Job *job, Link *link)
             link->seq = 0;
             if (!PutLink(link)) SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
             else SetStatus(CTR_ONLINE_DONE, "LINKED: %s", user);
+            /* The card's author name goes to the site next. */
+            sNamePending = CtrStereoMon_Author()[0] != 0;
             CtrLog_Write(CTR_LOG_FS, "online: linked to %s as %s (%s), key agreed over X25519", link->server, user,
                          job->consoleName);
         }
@@ -1628,6 +1634,46 @@ static void DoDelete(const Job *job, const Link *link)
     ReplyFree(&reply);
 }
 
+/* The author's name as the site's name for this account (POST /api/me). */
+static void DoName(const Link *link)
+{
+    char name[24], body[64];
+    Reply reply;
+    int n;
+
+    snprintf(name, sizeof(name), "%s", CtrStereoMon_Author());
+    if (name[0] == 0)
+    {
+        sNamePending = false;
+        return;
+    }
+    SetStatus(CTR_ONLINE_BUSY, "SENDING YOUR NAME...");
+    n = snprintf(body, sizeof(body), "{\"name\":\"%s\"}", name);
+    if (!Http(link, HTTPC_METHOD_POST, "/api/me", body, (uint32_t)n, "application/json", &reply))
+    {
+        FailStatus(&reply, "name");
+        return;
+    }
+    if (reply.status == 200)
+    {
+        sNamePending = false;
+        SetStatus(CTR_ONLINE_DONE, "NAME SAVED: %s", name);
+        CtrLog_Write(CTR_LOG_FS, "online: the site's name for %s is now %s", link->user, name);
+    }
+    else if (reply.status == 404 || reply.status == 405)
+    {
+        sNamePending = false;
+        SetStatus(CTR_ONLINE_ERROR, "SERVER TOO OLD");
+    }
+    else if (reply.status == 400)
+    {
+        sNamePending = false;
+        SetStatus(CTR_ONLINE_ERROR, "NAME REFUSED");
+    }
+    else FailStatus(&reply, "name");
+    ReplyFree(&reply);
+}
+
 /* TEST SERVER: what tools/tlsprobe tells, for the server in use. A line
  * each, on the ONLINE tab and in port.log. */
 static void TestLine(const char *format, ...) __attribute__((format(printf, 1, 2)));
@@ -1749,7 +1795,10 @@ static void Worker(void *arg)
         case JOB_INDEX: DoIndex(&link); break;
         case JOB_DELETE: DoDelete(&job, &link); break;
         case JOB_TEST: DoTest(&link); break;
+        case JOB_NAME: DoName(&link); break;
         }
+        /* A name changed meanwhile (or just linked: the card's name). */
+        if (job.type != JOB_NAME && sNamePending && !sNetFailed && link.token[0]) DoName(&link);
         /* After a sync, the Pokédex's counts; and any vote still on the
          * card goes along while the server is there. */
         if (job.type == JOB_SYNC && !sNetFailed) DoIndex(&link);
@@ -1901,6 +1950,30 @@ bool CtrOnline_AskServer(void)
 }
 
 void CtrOnline_UseStandardServer(void) { SetServer(CTR_ONLINE_SERVER); }
+
+bool CtrOnline_AskName(void)
+{
+    char name[24];
+
+    if (!Keyboard("Your name, shown with your edits", CtrStereoMon_Author(), 16, name, sizeof(name))) return false;
+    CtrStereoMon_SetAuthor(name);
+    CtrLog_Write(CTR_LOG_FS, "online: author name %s", CtrStereoMon_Author());
+    if (!CtrOnline_Linked())
+    {
+        SetStatus(CTR_ONLINE_IDLE, "NAME SAVED");
+        return true;
+    }
+    sNamePending = true;
+    {
+        Job job;
+
+        memset(&job, 0, sizeof(job));
+        job.type = JOB_NAME;
+        /* Busy: it goes after the job that runs (sNamePending). */
+        Start(&job);
+    }
+    return true;
+}
 
 bool CtrOnline_AskCode(char *code, unsigned size)
 {
@@ -2380,6 +2453,7 @@ static void TestFrame(void)
     }
     else if (strncmp(line, "editor", 6) == 0) CtrStereoMonGame_OpenEditor();
     else if (strncmp(line, "verscreen", 9) == 0) CtrStereoEdit_TestVersions();
+    else if (strncmp(line, "optionstab", 10) == 0) CtrBottom_TestOptions((unsigned)strtoul(arg, NULL, 10));
     else if (strncmp(line, "bottomshot", 10) == 0)
     {
         char path[96];

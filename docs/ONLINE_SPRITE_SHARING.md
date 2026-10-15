@@ -448,6 +448,22 @@ API 2` and `LINKED AS <name>` when a signed request and its signed answer went t
 - Test aids for online_test.txt: `verscreen` opens the versions screen, `shot NAME` and
   `bottomshot NAME` write the editor's or the bottom screen's canvas to `shot-NAME.bin`.
 
+### 7.8 Round seven (2026-10-15)
+
+- **YOUR NAME** moved from the editor's options to OPTIONS, ONLINE: the author's name that signs
+  the edits, typed with the system keyboard. Once linked it is also the name the site shows for
+  the account (`POST /api/me {"name"}`, users.display_name; the Account page can set it too).
+  Sent now, or after the job that runs; linking sends the card's name.
+- **Icons** on the ONLINE tab's cells, from Pixelarticons at 24 px (gen_icons.mjs: download,
+  heart, server, check, user, upload, link, unlink), and a **refresh** button at the STATUS
+  row's right end: a tap there fetches what is new.
+- **The editor's Pokédex**: "YOUR EDIT, FINAL" became a smile and YOU, with a flag once FINAL
+  (Pixelarticons smile and flag, 12 px). The EDITED filter is the "mine" filter.
+- **Website**: the sign-in form is centred; the Users page starts with Add a user. Accounts
+  made: darkmatter (admin, the master account) and Nukularkoffee (artist).
+- Test aid: `optionstab N` shows the OPTIONS screen on tab N (2 is ONLINE), even from the title
+  screen, for `bottomshot`.
+
 ## 8. Open questions and risks
 
 | Item | Status |

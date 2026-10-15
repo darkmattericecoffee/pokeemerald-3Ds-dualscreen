@@ -27,6 +27,7 @@ h2 { font-size: 18px; margin: 28px 0 10px; }
 .flash { background: var(--done); border: 1px solid var(--accent); padding: 8px 12px; border-radius: 8px; }
 .error { color: var(--danger); font-weight: 600; }
 .narrow { max-width: 420px; }
+.signin { margin: 8vh auto 0; }
 .inline { display: inline; margin: 0; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 form.stack label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }

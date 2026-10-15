@@ -397,6 +397,16 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(console.raw("POST", "/api/mons/025/versions", edit[:-1] + b"x", h)[0], 401)
         self.assertEqual(console.call("GET", "/api/me", when=1000)[0], 401)
         self.assertEqual(SignedConsole(self.base, "f" * 64).call("GET", "/api/me")[0], 401)
+        # The console's author name is what the site shows for the account.
+        status, out, good, _ = console.call("POST", "/api/me", json.dumps({"name": "Dark Matter"}).encode(),
+                                            {"Content-Type": "application/json"})
+        self.assertEqual((status, json.loads(out)["name"], good), (200, "Dark Matter", True))
+        self.assertEqual(console.call("POST", "/api/me", json.dumps({"name": "<b>"}).encode(),
+                                      {"Content-Type": "application/json"})[0], 400)
+        listing = json.loads(console.call("GET", "/api/mons/025/versions")[1])
+        self.assertEqual(listing["versions"][0]["author"], "Dark Matter")
+        status, _, page = b.go("GET", "/account")
+        self.assertIn(b'value="Dark Matter"', page)
         # A console linked the old way (bearer token) signs with the same token.
         _, cfg = self.linked_client("oldstyle")
         old = SignedConsole(self.base, cfg["token"])
