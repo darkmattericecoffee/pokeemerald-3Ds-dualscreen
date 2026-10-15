@@ -82,6 +82,14 @@ def main():
         w, h = dims & 0xFFFF, dims >> 16
         size = w * h * bytes_
         tag = chr(tag)
+        if tag in "VPA":
+            # Raw GBA memory, not texels: kept as a .bin.
+            name = f"{frame:06d}_{ {'V': 'objvram', 'P': 'palette', 'A': 'oam'}[tag] }.bin"
+            open(os.path.join(out, name), "wb").write(data[pos:pos + size])
+            pos += size
+            print(name, size)
+            n += 1
+            continue
         untile.fmt = "565" if tag == "W" and bytes_ == 2 else "5551"
         img = untile(data[pos:pos + size], w, h, bytes_)
         pos += size

@@ -10369,6 +10369,44 @@ static unsigned TexBytes(const C3D_Tex *tex)
     return tex->fmt == GPU_RGBA8 ? 4 : tex->fmt == GPU_RGB8 ? 3 : 2;
 }
 
+/* The tile cache looked at without touching it: for the hardware dump, how
+ * many of a 64x64 sprite's tiles the cache holds with bytes other than the
+ * VRAM's, and how many it does not hold. */
+static void DumpTileProbe(unsigned oam)
+{
+    unsigned attr0 = sMemory.oam[oam * 4], attr1 = sMemory.oam[oam * 4 + 1], attr2 = sMemory.oam[oam * 4 + 2];
+    bool color256 = (attr0 & 0x2000) != 0;
+    unsigned bank = 16 + (attr2 >> 12), paletteId = color256 ? 32 + (bank >= 16) : bank;
+    unsigned missing = 0, stale = 0, old = 0, slotMin = ~0u, slotMax = 0;
+    uint32_t checkedMin = ~0u;
+
+    (void)attr1;
+    for (unsigned ty = 0; ty < 8; ++ty)
+        for (unsigned tx = 0; tx < 8; ++tx)
+        {
+            unsigned tile = CtrVideo_ObjTile(attr2 & 1023, tx, ty, 64, color256, Reg(0) & 0x40);
+            unsigned address = 0x10000 + tile * 32;
+            uint32_t key = (address / 32) * 34 + paletteId + 1;
+            unsigned hash = (key * 2654435761u) & (HASH_COUNT - 1);
+
+            while (sHash[hash] && sTiles[sHash[hash] - 1].key != key) hash = (hash + 1) & (HASH_COUNT - 1);
+            if (!sHash[hash] || !sTiles[sHash[hash] - 1].valid) { ++missing; continue; }
+            {
+                const Tile *t = &sTiles[sHash[hash] - 1];
+                unsigned slot = sHash[hash] - 1;
+
+                if (memcmp(t->bytes, sMemory.vram + address, color256 ? 64 : 32) != 0) ++stale;
+                if (t->checked != sStats.frames + 1) ++old;
+                if (t->checked < checkedMin) checkedMin = t->checked;
+                if (slot < slotMin) slotMin = slot;
+                if (slot > slotMax) slotMax = slot;
+            }
+        }
+    CtrLog_Write(CTR_LOG_VIDEO, "DUMP oam %u tiles: cached %u missing %u stale-bytes %u not-this-frame %u checked>=%lu slots %u..%u (block stamp %lu, frame %lu)",
+                 oam, 64 - missing, missing, stale, old, (unsigned long)checkedMin, slotMin, slotMax,
+                 (unsigned long)sVramStamp[(0x10000 + (attr2 & 1023) * 32) / VRAM_BLOCK], (unsigned long)sStats.frames);
+}
+
 static void DumpOnKey(void)
 {
     static bool sLatched;
@@ -10397,9 +10435,20 @@ static void DumpOnKey(void)
     if (sSlotTarget) DumpRecord(file, chunk, 'T', sSlotTex.data, sSlotTex.width, sSlotTex.height, TexBytes(&sSlotTex));
     if (sStereoTarget) DumpRecord(file, chunk, 'W', sStereoTex.data, 512, 256, TexBytes(&sStereoTex));
     if (sObjWinTarget) DumpRecord(file, chunk, 'O', sObjWinTex.data, sObjWinTex.width, sObjWinTex.height, TexBytes(&sObjWinTex));
+    /* The GBA's OBJ VRAM, its palettes and OAM, raw (not texels). */
+    DumpRecord(file, chunk, 'V', sMemory.vram + 0x10000, 0x8000, 1, 1);
+    DumpRecord(file, chunk, 'P', sMemory.palette, 512, 1, 2);
+    DumpRecord(file, chunk, 'A', sMemory.oam, 512, 1, 2);
     fclose(file);
     linearFree(chunk);
     CtrStereoBattle_LogState();
+    for (unsigned o = 0; o < 128; ++o)
+    {
+        unsigned attr0 = sMemory.oam[o * 4], attr1 = sMemory.oam[o * 4 + 1];
+
+        if ((!(attr0 & 0x100) && (attr0 & 0x200)) || (attr1 >> 14) != 3 || (attr0 >> 14) != 0) continue;
+        DumpTileProbe(o);
+    }
     for (unsigned k = 0; k < sMonCellCount; ++k)
         CtrLog_Write(CTR_LOG_VIDEO, "DUMP cell %u: oam %u at (%d,%d) in region %u texels (%d,%d) cell %d", k,
                      sMonCells[k].oam, sMonCells[k].x, sMonCells[k].y, sMonCells[k].region, sMonCells[k].sx,
