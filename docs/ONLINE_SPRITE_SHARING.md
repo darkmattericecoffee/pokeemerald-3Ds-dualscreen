@@ -273,6 +273,45 @@ CtrOnlineStatus CtrOnline_Status(char *text, unsigned size);  /* IDLE/BUSY/DONE/
   cost nothing while playing.
 - Game font gotchas apply to the status text (no `+`, `%` draws as `x`, 39-char ring buffers).
 
+### 7.1 What was built (2026-10-15)
+
+`3ds_port/src/3ds_online.c` with `include/3ds_online.h`, on the plane-editor line
+(`private/plane-editor` plus this branch's docs and tools):
+
+- **Jobs** `CtrOnline_Pair/Upload/UploadAll/Sync/Unlink`, one at a time on a worker thread
+  (system core, `CtrPlatform_StartThread`); `httpcInit(64 KiB)` and `httpcExit` per job;
+  `aptSetSleepAllowed(false)` while one runs (`CtrOnline_Frame`, called from
+  `CtrStereoMonGame_Frame`). 15 s timeouts. Every request is logged to port.log with its HTTP
+  status, size and time, or the failing `Result` (`D8A0A03C` is flagged as TLS).
+- **TLS**: GlobalSign Root CA (`src/3ds_online_root.h`, SHA-256 checked) added to every
+  `https://` context; `verify=0` in `online.txt` turns checks off for debugging.
+- **`online.txt`**: `server=`, `token=`, `user=`, `seq=` (last sync), optional `verify=0`.
+  No compiled-in server unless built with `make ONLINE_SERVER=https://...`; without either,
+  LINK CONSOLE asks for the address with the system keyboard first.
+- **`online_sent.txt`**: key and SHA-256 of every file the server is known to have (uploaded,
+  already there, or synced down). UPLOAD ALL sends only the rest.
+- **Sync**: compares each changed item's SHA-256 with the card's file, downloads only the
+  differing ones, checks their SHA-256 and magic, copies a differing card file to
+  `stereo/backup/<key>-<time>.bin`, writes `<key>.bin.part` and renames it over. `seq` moves
+  on only when every item worked. Afterwards the main thread runs
+  `CtrStereoMon_EditsChanged()`: rescan, battle planes forgotten, the gallery's picture read
+  again (a picture open in the editor keeps what the editor holds).
+- **UI**: OPTIONS › ENHANCEMENTS (third screen) › ONLINE: STATUS, LINK CONSOLE (`swkbd`),
+  UNLINK, UPLOAD ALL EDITS, SYNC FROM SERVER, UPLOAD ON FINAL (`online_auto`, on by default).
+  The editor's FINAL question gets an UPLOAD TO THE SERVER row when linked, and FINALIZE
+  uploads by itself with UPLOAD ON FINAL on; the upload's progress shows as toasts. The
+  gallery: SELECT syncs, and the result shows top right for six seconds.
+- **Scripted check**: if `sdmc:/3ds/emerald3ds/online_test.txt` exists, its lines (`pair
+  CODE`, `sync`, `upload 001`, `uploadall`, `unlink`, `wait N`) run one after the other ten
+  seconds after start, each result logged as `online test: -> ...`. Works on hardware too.
+
+Verified in Azahar against a local server (`http://127.0.0.1`): pairing with a code minted
+through the website's Account page, sync of another account's upload, upload, upload-all
+skipping known files, a sync that kept the card's differing file in `backup/`, unlink, and
+the error statuses for a wrong code, a missing file and an unlinked console. **Not yet
+verified**: the TLS path on the real New 3DS, and the on-screen parts (ONLINE page, the
+keyboard, the editor's UPLOAD row, the gallery line), which were built but not looked at.
+
 ## 8. Open questions and risks
 
 | Item | Status |

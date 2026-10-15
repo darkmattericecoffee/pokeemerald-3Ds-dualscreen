@@ -41,6 +41,7 @@
 #include "3ds_extras.h"
 #include "3ds_input.h"
 #include "3ds_log.h"
+#include "3ds_online.h"
 #include "3ds_video.h"
 #include "3ds_stereo_mon.h"
 
@@ -377,6 +378,7 @@ void CtrStereoMonGame_Frame(void)
     bool8 gallery = FALSE;
 
     if (sMask) --sMask;
+    CtrOnline_Frame();
     if (!CtrStereoMon_Load())
         return;
     BattleFrame();
@@ -428,6 +430,12 @@ void CtrStereoMonGame_Frame(void)
     {
         sOpenEditor = TRUE;
         sOpenFromGallery = TRUE;
+    }
+    else if (sGallery && (down & CTR_KEY_SELECT) && !(held & CTR_KEY_START) && CtrOnline_Linked())
+    {
+        /* SELECT: everybody's current planes down from the server (the top
+         * screen shows how it goes; 3ds_online.c). */
+        CtrOnline_Sync();
     }
     if (sGallery)
     {

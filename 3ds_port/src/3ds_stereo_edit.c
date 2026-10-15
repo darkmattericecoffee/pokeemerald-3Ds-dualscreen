@@ -60,6 +60,7 @@
 #include "3ds_edit_sprites.h"
 #include "3ds_input.h"
 #include "3ds_log.h"
+#include "3ds_online.h"
 #include "3ds_platform.h"
 #include "3ds_stereo_mon.h"
 
@@ -290,6 +291,10 @@ static struct
     int pressed;
     char toast[40];
     unsigned toastFrames;
+    /* An upload this editor started (3ds_online.c): its status is toasted
+     * as it changes, until it ends. */
+    bool onlineWatch;
+    unsigned onlineSerial;
     uint32_t tick;
     bool touching;
     char name[CTR_STEREO_MON_NAME];
@@ -1438,6 +1443,41 @@ static void SwapSide(bool toBack)
     Choose((unsigned)index);
 }
 
+/* The picture's saved file to the server (3ds_online.c); the toasts
+ * follow it. */
+static void Upload(void)
+{
+    char text[CTR_ONLINE_TEXT];
+
+    if (sE.dirtyFile) Save(true);
+    if (sE.dirtyFile) return;
+    if (CtrOnline_Upload(sE.id))
+    {
+        sE.onlineWatch = true;
+        sE.onlineSerial = 0;
+        return;
+    }
+    if (CtrOnline_Status(text, sizeof(text)) == CTR_ONLINE_BUSY) Toast("STILL BUSY WITH THE LAST ONE");
+    else Toast(text);
+}
+
+/* The upload's status, toasted whenever it changes and kept up while it runs. */
+static void WatchOnline(void)
+{
+    char text[CTR_ONLINE_TEXT];
+    CtrOnlineStatus status;
+
+    if (!sE.onlineWatch) return;
+    status = CtrOnline_Status(text, sizeof(text));
+    if (CtrOnline_Serial() != sE.onlineSerial)
+    {
+        sE.onlineSerial = CtrOnline_Serial();
+        Toast(text);
+    }
+    if (status == CTR_ONLINE_BUSY) sE.toastFrames = TOAST_FRAMES;
+    else sE.onlineWatch = false;
+}
+
 static void ToggleFinal(void)
 {
     bool final = !CtrStereoMon_EditMeta()->finalized;
@@ -1446,6 +1486,8 @@ static void ToggleFinal(void)
     sE.dirtyFile = true;
     Save(true);
     Toast(final ? "MARKED FINAL" : "NOT FINAL ANY MORE");
+    /* OPTIONS' AUTO UPLOAD: a finished picture goes to the server too. */
+    if (final && !sE.dirtyFile && CtrOnline_Linked() && CtrSettings_GetInt("online_auto", 1)) Upload();
 }
 
 /* The save's button: unsaved changes go to the card; saved already, it
@@ -1766,11 +1808,20 @@ static void OptionAct(int row, bool rightHalf)
 #define CF_Y 70
 #define CF_W 200
 #define CF_H 88
+/* The UPLOAD row under the FINAL question when the console is linked. */
+#define CF_UPLOAD_H 32
 
 static void TouchConfirm(const CtrInput *in)
 {
     if (!in->touchDown) return;
-    if (in->touchY >= CF_Y + 52 && in->touchY < CF_Y + 80)
+    /* Linked, the FINAL question has an UPLOAD under its two. */
+    if (sE.screen == S_CONFIRM_FINAL && CtrOnline_Linked() && in->touchY >= CF_Y + CF_H - 2 && in->touchY < CF_Y + CF_H + 24
+        && in->touchX >= CF_X + 16 && in->touchX < CF_X + 184)
+    {
+        sE.screen = S_EDIT;
+        Upload();
+    }
+    else if (in->touchY >= CF_Y + 52 && in->touchY < CF_Y + 80)
     {
         if (in->touchX >= CF_X + 16 && in->touchX < CF_X + 96)
         {
@@ -2455,8 +2506,15 @@ static void DrawRight(void)
 static void DrawConfirm(void)
 {
     const bool final = sE.screen == S_CONFIRM_FINAL, isFinal = CtrStereoMon_EditMeta()->finalized;
+    const bool upload = final && CtrOnline_Linked();
 
-    CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, CF_H / 8, false);
+    CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, (CF_H + (upload ? CF_UPLOAD_H : 0)) / 8, false);
+    if (upload)
+    {
+        CtrBottomDraw_Plate(CF_X + 16, CF_Y + CF_H - 2, 168, 24, 0, false);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "UPLOAD TO THE SERVER", CF_X + CF_W / 2, CF_Y + CF_H + 3,
+                                  CTR_DRAW_BLUE);
+    }
     if (final)
     {
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, isFinal ? "THIS EDIT IS MARKED FINAL." : "SAVED. MARK THIS EDIT AS FINAL?",
@@ -2946,6 +3004,7 @@ bool CtrStereoEdit_BottomFrame(void)
         sE.helpDirty = false;
         MakeHelpSheet();
     }
+    WatchOnline();
     if (sE.toastFrames && --sE.toastFrames == 0) sE.dirtyDraw = true;
     /* The lasso's dashes run while it is drawn. */
     if (sE.lassoing && sE.tick % 8 == 0) sE.dirtyDraw = true;

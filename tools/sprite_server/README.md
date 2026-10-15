@@ -33,6 +33,14 @@ game pictures and can be made again.
   hash). Unlinking on the Account page kills the token.
 - No passwords are ever typed on a console.
 
+## The 3DS client
+
+OPTIONS › ENHANCEMENTS (third screen) › ONLINE › LINK CONSOLE, then the code from the
+Account page (the first time also the server's address). After that: FINALIZE in the plane
+editor uploads the picture, UPLOAD ALL EDITS sends everything new, SELECT in the gallery or
+SYNC FROM SERVER fetches the current versions. Details: `3ds_port/src/3ds_online.c` and
+section 7.1 of the design doc.
+
 ## The PC client
 
 Does what the console will do over Wi-Fi, for anyone working from a copy of their SD card.

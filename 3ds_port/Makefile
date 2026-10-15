@@ -49,6 +49,12 @@ SOURCES += src/3ds_data.c src/3ds_pak.c src/3ds_settings.c src/3ds_prof.c src/3d
 SOURCES += src/3ds_video.c src/3ds_video_decode.c src/3ds_bottom_screen.c
 # The stereoscopic Pokémon viewer (include/3ds_stereo_mon.h).
 SOURCES += src/3ds_stereo_mon.c src/3ds_stereo_mon_decode.c src/3ds_stereo_battle.c
+# Sharing plane edits over Wi-Fi (include/3ds_online.h). ONLINE_SERVER=https://...
+# compiles in the server's address; sdmc:/3ds/emerald3ds/online.txt's server= wins.
+SOURCES += src/3ds_online.c
+ifdef ONLINE_SERVER
+CPPFLAGS += -DCTR_ONLINE_SERVER=\"$(ONLINE_SERVER)\"
+endif
 # Local wireless play (include/3ds_local.h).
 SOURCES += src/3ds_local.c
 SOURCES += src/3ds_daynight.c

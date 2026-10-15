@@ -23,6 +23,7 @@
 #include "3ds_input.h"
 #include "3ds_log.h"
 #include "3ds_stereo_mon.h"
+#include "3ds_online.h"
 #include "3ds_button_sprites.h"
 
 /*
@@ -180,6 +181,8 @@ static unsigned sHelpVersion;
  * farthest plane: a backdrop at the screen's depth stood in front of the
  * far planes. */
 #define BACKDROP_BEHIND 6.0f
+/* How long the gallery shows an online job's result after it ends. */
+#define ONLINE_LINE_MS 6000
 
 static bool LoadEdit(uint16_t national);
 
@@ -983,6 +986,32 @@ void CtrStereoMon_EditScan(void)
     closedir(d);
 }
 
+void CtrStereoMon_EditsChanged(void)
+{
+    CtrStereoMon_EditScan();
+    CtrStereoBattle_ForgetPlanes();
+    /* The gallery's picture comes from the card again; one in the editor
+     * keeps what the editor holds (the card's copy is replaced under it,
+     * the one before kept in stereo/backup). */
+    if (!sActive || sEditing) return;
+    if (!LoadEdit(sId))
+    {
+        int index;
+        PlanesFile *pf = FileOf(sId, &index);
+        unsigned entryFrames = 0;
+
+        if (index >= 0 && ReadPlanesInto(pf, (unsigned)index, sPlanes, sizeof(sPlanes), &entryFrames))
+        {
+            sShown = pf->header;
+            sShown.frames = (uint8_t)entryFrames;
+        }
+        sEdited = false;
+    }
+    else sEdited = true;
+    sTexReady = false;
+    ++sPlanesVersion;
+}
+
 bool CtrStereoMon_HasEdit(uint16_t id)
 {
     unsigned bit;
@@ -1745,7 +1774,17 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
     snprintf(line, sizeof(line), "<> MON   ^v DEPTH %u%%   L/R PLANES %u%s", (unsigned)sDepth, groups,
              sEdited ? "   EDITED" : "");
     DrawText(8, CTR_GAME_HEIGHT - 10 - 10 * GLYPH_PIXEL, line, C2D_Color32(160, 165, 180, 255));
-    DrawText(8, CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL, "X ANIM   Y EDIT   B BACK", C2D_Color32(160, 165, 180, 255));
+    DrawText(8, CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL,
+             CtrOnline_Linked() ? "X ANIM   Y EDIT   SELECT SYNC   B BACK" : "X ANIM   Y EDIT   B BACK",
+             C2D_Color32(160, 165, 180, 255));
+    /* A sync's progress and result, under the picture's number. */
+    if (CtrOnline_Recent(ONLINE_LINE_MS))
+    {
+        CtrOnlineStatus status = CtrOnline_Status(line, sizeof(line));
+
+        DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), 6 + 8 * GLYPH_PIXEL, line,
+                 status == CTR_ONLINE_ERROR ? C2D_Color32(255, 140, 120, 255) : C2D_Color32(150, 230, 160, 255));
+    }
 #ifdef CTR_STEREO_DEBUG
     snprintf(line, sizeof(line), "T%u C%u/%u F%u G%u X%u", sTexReady, sComposed, sToCompose, sFrames, groups, sTexCols);
     DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL, line,
@@ -1781,6 +1820,9 @@ typedef struct
     unsigned planesVersion, composed, toCompose, helpVersion, frames;
     bool texReady;
     char name[CTR_STEREO_MON_NAME];
+    /* The gallery's online line (3ds_online.c): shown, and its text. */
+    unsigned onlineSerial;
+    bool online;
 } DrawKey;
 
 static DrawKey sDrawn;
@@ -1814,6 +1856,11 @@ static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
     k->composed = sComposed;
     k->toCompose = sToCompose;
     k->helpVersion = sHelpVersion;
+    if (sGallery && !sEditing)
+    {
+        k->online = CtrOnline_Recent(ONLINE_LINE_MS);
+        k->onlineSerial = k->online ? CtrOnline_Serial() : 0;
+    }
     k->frames = sFrames;
     k->texReady = sTexReady;
     memcpy(k->name, sName, sizeof(k->name));

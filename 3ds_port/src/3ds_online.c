@@ -1,0 +1,1227 @@
+/*
+ * Sharing the plane editor's edit files over Wi-Fi (3ds_online.h): the
+ * console side of tools/sprite_server, docs/ONLINE_SPRITE_SHARING.md
+ * section 7.
+ *
+ * http:C (libctru's httpc) does DNS, TCP and TLS in a system module. The
+ * server sits behind a Cloudflare Tunnel whose edge still speaks the TLS the
+ * 3DS knows, with a certificate that chains to GlobalSign Root CA; that root
+ * is not among the console's own, so it is added to every HTTPS context
+ * (3ds_online_root.h). The calls block, so every job runs on a worker thread
+ * of its own and the game only ever reads a status word. httpc is set up at
+ * the start of a job and given back at its end: nothing of it is held while
+ * the game plays. The console is kept awake while a job runs (closing the
+ * lid would drop Wi-Fi in the middle of a transfer).
+ *
+ * The jobs, against the server's API (tools/sprite_server/README.md):
+ *   pair    POST /api/pair {code, console_name} -> {token, user}
+ *   upload  POST /api/mons/<key>/versions (the edit file as it is)
+ *   sync    GET /api/sync?since=<seq>, then GET /api/versions/<id> for each
+ *           picture whose current version differs from the card's; a card
+ *           file that differs is first copied to stereo/backup/ (as
+ *           client.py does), the new one written beside it and renamed over.
+ * What the server already has is remembered per file in online_sent.txt
+ * (key and SHA-256), so UPLOAD ALL sends only what is new.
+ */
+#include <3ds.h>
+#include <dirent.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include "3ds_log.h"
+#include "3ds_online.h"
+#include "3ds_platform.h"
+#include "3ds_stereo_mon.h"
+#include "3ds_online_root.h"
+
+#define DATA_DIR "sdmc:/3ds/emerald3ds"
+#define LINK_PATH DATA_DIR "/online.txt"
+#define SENT_PATH DATA_DIR "/online_sent.txt"
+#define EDIT_DIR DATA_DIR "/" CTR_STEREO_EDIT_DIR
+#define BACKUP_DIR EDIT_DIR "/backup"
+/* The address used when online.txt names none (make ONLINE_SERVER=...). */
+#ifndef CTR_ONLINE_SERVER
+#define CTR_ONLINE_SERVER ""
+#endif
+#define USER_AGENT "emerald3ds/1"
+/* http:C's shared memory, for request bodies (an edit is at most ~11 KiB). */
+#define HTTPC_SHARED (64 * 1024)
+#define TIMEOUT_NS 15000000000ULL
+/* No response is bigger than a sync of every picture (~150 bytes each). */
+#define MAX_RESPONSE (512 * 1024)
+#define MAX_EDIT (32 * 1024)
+#define MAX_SENT 1600
+#define SERVER_MAX 128
+#define TOKEN_MAX 80
+#define USER_MAX 40
+#define WORKER_STACK (32 * 1024)
+/* http:C's "the certificate could not be verified" (and handshakes it cannot do). */
+#define RESULT_TLS 0xD8A0A03C
+
+typedef struct
+{
+    char server[SERVER_MAX];
+    char token[TOKEN_MAX];
+    char user[USER_MAX];
+    unsigned seq;
+    bool verify;
+} Link;
+
+enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC };
+
+typedef struct
+{
+    int type;
+    uint16_t id;
+    char code[16];
+    char consoleName[40];
+} Job;
+
+static CtrLock sLock;
+static bool sLockReady;
+/* Guarded by sLock: */
+static Link sLink;
+static bool sLinkRead;
+static bool sBusy;
+static CtrOnlineStatus sStatus = CTR_ONLINE_IDLE;
+static char sText[CTR_ONLINE_TEXT];
+static unsigned sSerial;
+static uint64_t sEndedMs;
+static bool sEditsWritten;
+static bool sWifiDown;
+/* The job the worker runs (written before it starts). */
+static Job sJob;
+/* Main thread only. */
+static bool sSleepHeld;
+static char sUserCopy[USER_MAX];
+
+/* ── Small helpers ──────────────────────────────────────────────────── */
+
+static void Lock(void)
+{
+    if (!sLockReady)
+    {
+        CtrLock_Init(&sLock);
+        sLockReady = true;
+    }
+    CtrLock_Lock(&sLock);
+}
+
+static void Unlock(void) { CtrLock_Unlock(&sLock); }
+
+/* A string into a buffer, cut to fit (status lines are cut on purpose). */
+static void Copy(char *out, size_t size, const char *in)
+{
+    size_t n = strlen(in);
+
+    if (size == 0) return;
+    if (n >= size) n = size - 1;
+    memcpy(out, in, n);
+    out[n] = 0;
+}
+
+/* The game font's characters only: capitals, digits, space and . : / -. */
+static void FontSafe(char *s)
+{
+    for (; *s; ++s)
+    {
+        char c = *s;
+
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '.' || c == ':' || c == '/' || c == '-'))
+            c = ' ';
+        *s = c;
+    }
+}
+
+static void SetStatus(CtrOnlineStatus status, const char *format, ...) __attribute__((format(printf, 2, 3)));
+static void SetStatus(CtrOnlineStatus status, const char *format, ...)
+{
+    char text[64];
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    FontSafe(text);
+    Lock();
+    sStatus = status;
+    Copy(sText, sizeof(sText), text);
+    ++sSerial;
+    if (status != CTR_ONLINE_BUSY) sEndedMs = CtrPlatform_Milliseconds();
+    Unlock();
+}
+
+/* An id's edit file name: NNN a front, bNNN a back, tNNN a trainer, pNNN a
+ * player (as 3ds_stereo_mon.c names them). */
+static void KeyOf(uint16_t id, char *key, unsigned size)
+{
+    static const char prefix[4] = {0, 't', 'b', 'p'};
+    unsigned kind = id >> 14;
+
+    if (kind == 0) snprintf(key, size, "%03u", id);
+    else snprintf(key, size, "%c%03u", prefix[kind], id & 0x3FFF);
+}
+
+/* The other way round; 0 for a name that is no edit file's. */
+static uint16_t IdOf(const char *key)
+{
+    unsigned kind = 0, n = 0, k = 0;
+
+    if (key[0] == 'b') kind = CTR_STEREO_ID_BACK, k = 1;
+    else if (key[0] == 't') kind = CTR_STEREO_ID_TRAINER, k = 1;
+    else if (key[0] == 'p') kind = CTR_STEREO_ID_PLAYER, k = 1;
+    if (key[k] < '0' || key[k] > '9') return 0;
+    for (; key[k] >= '0' && key[k] <= '9'; ++k) n = n * 10 + (unsigned)(key[k] - '0');
+    if (key[k] != 0 || n >= 0x4000 || (kind == 0 && n == 0)) return 0;
+    return (uint16_t)(kind | n);
+}
+
+static uint8_t *ReadWhole(const char *path, uint32_t max, uint32_t *size)
+{
+    FILE *f = fopen(path, "rb");
+    uint8_t *data;
+    long n;
+
+    *size = 0;
+    if (f == NULL) return NULL;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n <= 0 || (uint32_t)n > max || (data = malloc((size_t)n)) == NULL)
+    {
+        fclose(f);
+        return NULL;
+    }
+    if (fread(data, 1, (size_t)n, f) != (size_t)n)
+    {
+        free(data);
+        data = NULL;
+    }
+    fclose(f);
+    if (data) *size = (uint32_t)n;
+    return data;
+}
+
+/* Writes beside the file and renames over it: a failed write never leaves
+ * half a file. */
+static bool WriteWhole(const char *path, const void *data, uint32_t size)
+{
+    char tmp[96];
+    FILE *f;
+    bool ok;
+
+    snprintf(tmp, sizeof(tmp), "%s.part", path);
+    f = fopen(tmp, "wb");
+    if (f == NULL) return false;
+    ok = fwrite(data, 1, size, f) == size;
+    ok = fclose(f) == 0 && ok;
+    if (ok)
+    {
+        remove(path);
+        ok = rename(tmp, path) == 0;
+    }
+    if (!ok) remove(tmp);
+    return ok;
+}
+
+/* ── SHA-256 (FIPS 180-4), for what the server already has ──────────── */
+
+typedef struct
+{
+    uint32_t h[8];
+    uint64_t length;
+    uint8_t block[64];
+    unsigned used;
+} Sha256;
+
+static const uint32_t sK[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+};
+
+#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void ShaBlock(Sha256 *s, const uint8_t *p)
+{
+    uint32_t w[64], a, b, c, d, e, f, g, h;
+
+    for (unsigned i = 0; i < 16; ++i)
+        w[i] = ((uint32_t)p[4 * i] << 24) | ((uint32_t)p[4 * i + 1] << 16) | ((uint32_t)p[4 * i + 2] << 8) | p[4 * i + 3];
+    for (unsigned i = 16; i < 64; ++i)
+    {
+        uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        uint32_t s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3], e = s->h[4], f = s->h[5], g = s->h[6], h = s->h[7];
+    for (unsigned i = 0; i < 64; ++i)
+    {
+        uint32_t t1 = h + (ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25)) + ((e & f) ^ (~e & g)) + sK[i] + w[i];
+        uint32_t t2 = (ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+
+        h = g, g = f, f = e, e = d + t1, d = c, c = b, b = a, a = t1 + t2;
+    }
+    s->h[0] += a, s->h[1] += b, s->h[2] += c, s->h[3] += d, s->h[4] += e, s->h[5] += f, s->h[6] += g, s->h[7] += h;
+}
+
+/* The digest of `data` as 64 lower-case hex digits. */
+static void Sha256Hex(const uint8_t *data, uint32_t size, char hex[65])
+{
+    static const uint32_t start[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                                      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    Sha256 s;
+    uint8_t tail[8];
+
+    memcpy(s.h, start, sizeof(start));
+    s.length = (uint64_t)size * 8;
+    s.used = 0;
+    for (; size >= 64; data += 64, size -= 64) ShaBlock(&s, data);
+    memcpy(s.block, data, size);
+    s.used = size;
+    s.block[s.used++] = 0x80;
+    if (s.used > 56)
+    {
+        memset(s.block + s.used, 0, 64 - s.used);
+        ShaBlock(&s, s.block);
+        s.used = 0;
+    }
+    memset(s.block + s.used, 0, 56 - s.used);
+    for (unsigned i = 0; i < 8; ++i) tail[i] = (uint8_t)(s.length >> (56 - 8 * i));
+    memcpy(s.block + 56, tail, 8);
+    ShaBlock(&s, s.block);
+    for (unsigned i = 0; i < 8; ++i) snprintf(hex + 8 * i, 9, "%08lx", (unsigned long)s.h[i]);
+}
+
+/* ── The link (online.txt) ──────────────────────────────────────────── */
+
+/* Called with sLock held. */
+static void ReadLinkLocked(void)
+{
+    FILE *f;
+    char line[160];
+
+    if (sLinkRead) return;
+    sLinkRead = true;
+    memset(&sLink, 0, sizeof(sLink));
+    snprintf(sLink.server, sizeof(sLink.server), "%s", CTR_ONLINE_SERVER);
+    sLink.verify = true;
+    f = fopen(LINK_PATH, "r");
+    if (f == NULL) return;
+    while (fgets(line, sizeof(line), f))
+    {
+        char *value = strchr(line, '='), *end;
+
+        if (value == NULL || line[0] == '#') continue;
+        *value++ = 0;
+        for (end = value + strlen(value); end > value && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' '); --end)
+            end[-1] = 0;
+        if (strcmp(line, "server") == 0 && value[0]) snprintf(sLink.server, sizeof(sLink.server), "%s", value);
+        else if (strcmp(line, "token") == 0) snprintf(sLink.token, sizeof(sLink.token), "%s", value);
+        else if (strcmp(line, "user") == 0) snprintf(sLink.user, sizeof(sLink.user), "%s", value);
+        else if (strcmp(line, "seq") == 0) sLink.seq = (unsigned)strtoul(value, NULL, 10);
+        else if (strcmp(line, "verify") == 0) sLink.verify = strcmp(value, "0") != 0;
+    }
+    fclose(f);
+    /* No slash at the end: paths start with one. */
+    for (size_t n = strlen(sLink.server); n && sLink.server[n - 1] == '/'; --n) sLink.server[n - 1] = 0;
+}
+
+static Link GetLink(void)
+{
+    Link copy;
+
+    Lock();
+    ReadLinkLocked();
+    copy = sLink;
+    Unlock();
+    return copy;
+}
+
+/* The link as given, to memory and to the card. */
+static bool PutLink(const Link *link)
+{
+    char text[400];
+    int n;
+
+    Lock();
+    sLink = *link;
+    sLinkRead = true;
+    Unlock();
+    n = snprintf(text, sizeof(text),
+                 "# The plane-sharing link (3ds_online.c). Unlink in OPTIONS or on the website.\n"
+                 "server=%s\ntoken=%s\nuser=%s\nseq=%u\n%s",
+                 link->server, link->token, link->user, link->seq, link->verify ? "" : "verify=0\n");
+    return n > 0 && n < (int)sizeof(text) && WriteWhole(LINK_PATH, text, (uint32_t)n);
+}
+
+/* ── What the server already has (online_sent.txt) ──────────────────── */
+
+typedef struct
+{
+    char key[8];
+    char sha[65];
+} Sent;
+
+typedef struct
+{
+    Sent *items;
+    unsigned count;
+    bool changed;
+} SentList;
+
+static void SentLoad(SentList *list)
+{
+    FILE *f = fopen(SENT_PATH, "r");
+    char line[96];
+
+    list->items = calloc(MAX_SENT, sizeof(Sent));
+    list->count = 0;
+    list->changed = false;
+    if (f == NULL || list->items == NULL)
+    {
+        if (f) fclose(f);
+        return;
+    }
+    while (list->count < MAX_SENT && fgets(line, sizeof(line), f))
+    {
+        Sent *s = &list->items[list->count];
+
+        if (sscanf(line, "%7s %64s", s->key, s->sha) == 2 && strlen(s->sha) == 64) ++list->count;
+    }
+    fclose(f);
+}
+
+static bool SentHas(const SentList *list, const char *key, const char *sha)
+{
+    for (unsigned i = 0; i < list->count; ++i)
+        if (strcmp(list->items[i].key, key) == 0) return strcmp(list->items[i].sha, sha) == 0;
+    return false;
+}
+
+static void SentPut(SentList *list, const char *key, const char *sha)
+{
+    unsigned i;
+
+    if (list->items == NULL) return;
+    for (i = 0; i < list->count && strcmp(list->items[i].key, key) != 0; ++i) {}
+    if (i == list->count)
+    {
+        if (list->count == MAX_SENT) return;
+        ++list->count;
+    }
+    snprintf(list->items[i].key, sizeof(list->items[i].key), "%s", key);
+    snprintf(list->items[i].sha, sizeof(list->items[i].sha), "%s", sha);
+    list->changed = true;
+}
+
+static void SentSave(SentList *list)
+{
+    char *text;
+    size_t n = 0;
+
+    if (list->items && list->changed && (text = malloc(list->count * 80 + 1)) != NULL)
+    {
+        for (unsigned i = 0; i < list->count; ++i)
+            n += (size_t)sprintf(text + n, "%s %s\n", list->items[i].key, list->items[i].sha);
+        if (!WriteWhole(SENT_PATH, text, (uint32_t)n))
+            CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", SENT_PATH);
+        free(text);
+    }
+    free(list->items);
+    list->items = NULL;
+}
+
+/* ── HTTP ───────────────────────────────────────────────────────────── */
+
+typedef struct
+{
+    int status;       /* the HTTP status, 0 when there was no answer */
+    Result result;    /* the failing call's result, when there was none */
+    uint8_t *body;    /* NUL-terminated, malloc'd (free it) */
+    uint32_t length;
+} Reply;
+
+static void ReplyFree(Reply *reply)
+{
+    free(reply->body);
+    reply->body = NULL;
+}
+
+/*
+ * One request. `body` (with its content type) for a POST. The answer's body
+ * is read whole (it carries a Content-Length, as the server always sends).
+ * Logs what happened, with the time it took.
+ */
+static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path, const void *body, uint32_t bodyLength,
+                 const char *contentType, Reply *reply)
+{
+    char url[SERVER_MAX + 96], bearer[TOKEN_MAX + 8];
+    httpcContext ctx;
+    uint64_t t0 = CtrPlatform_Milliseconds();
+    u32 status = 0, total = 0, before = 0, now = 0, capacity;
+    Result r;
+    bool https;
+
+    memset(reply, 0, sizeof(*reply));
+    snprintf(url, sizeof(url), "%s%s", link->server, path);
+    https = strncmp(url, "https://", 8) == 0;
+    r = httpcOpenContext(&ctx, method, url, 0);
+    if (R_FAILED(r))
+    {
+        reply->result = r;
+        CtrLog_Write(CTR_LOG_ERROR, "online: %s open failed %08lx", path, (unsigned long)r);
+        return false;
+    }
+    if (https)
+        r = link->verify ? httpcAddTrustedRootCA(&ctx, sOnlineRootCa, sizeof(sOnlineRootCa))
+                         : httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify);
+    if (R_SUCCEEDED(r)) r = httpcSetKeepAlive(&ctx, HTTPC_KEEPALIVE_DISABLED);
+    if (R_SUCCEEDED(r)) r = httpcAddRequestHeaderField(&ctx, "User-Agent", USER_AGENT);
+    if (R_SUCCEEDED(r) && link->token[0])
+    {
+        snprintf(bearer, sizeof(bearer), "Bearer %s", link->token);
+        r = httpcAddRequestHeaderField(&ctx, "Authorization", bearer);
+    }
+    if (R_SUCCEEDED(r) && body)
+    {
+        /* http:C copies the body from a word-aligned buffer. */
+        u32 *words = malloc((bodyLength + 3) & ~3u);
+
+        if (words == NULL) r = -1;
+        else
+        {
+            memcpy(words, body, bodyLength);
+            r = httpcAddRequestHeaderField(&ctx, "Content-Type", contentType);
+            if (R_SUCCEEDED(r)) r = httpcAddPostDataRaw(&ctx, words, bodyLength);
+            free(words);
+        }
+    }
+    if (R_SUCCEEDED(r)) r = httpcBeginRequest(&ctx);
+    if (R_SUCCEEDED(r)) r = httpcGetResponseStatusCodeTimeout(&ctx, &status, TIMEOUT_NS);
+    if (R_FAILED(r))
+    {
+        reply->result = r;
+        CtrLog_Write(CTR_LOG_ERROR, "online: %s %s failed %08lx after %lums%s", method == HTTPC_METHOD_POST ? "POST" : "GET",
+                     path, (unsigned long)r, (unsigned long)(CtrPlatform_Milliseconds() - t0),
+                     (u32)r == RESULT_TLS ? " (TLS: certificate or handshake)" : "");
+        httpcCloseContext(&ctx);
+        return false;
+    }
+    reply->status = (int)status;
+    httpcGetDownloadSizeState(&ctx, &before, &total);
+    capacity = total ? total : 16 * 1024;
+    if (capacity > MAX_RESPONSE) capacity = MAX_RESPONSE;
+    reply->body = malloc(capacity + 1);
+    if (reply->body == NULL)
+    {
+        httpcCloseContext(&ctx);
+        reply->result = -1;
+        return false;
+    }
+    /* httpcDownloadData with a timeout: what arrived is read off the
+     * module's count, a call at a time. */
+    for (r = HTTPC_RESULTCODE_DOWNLOADPENDING; r == (Result)HTTPC_RESULTCODE_DOWNLOADPENDING && reply->length < capacity;)
+    {
+        r = httpcReceiveDataTimeout(&ctx, reply->body + reply->length, capacity - reply->length, TIMEOUT_NS);
+        if (R_FAILED(httpcGetDownloadSizeState(&ctx, &now, NULL))) break;
+        reply->length = now - before;
+    }
+    reply->body[reply->length] = 0;
+    httpcCloseContext(&ctx);
+    if (R_FAILED(r) || (total && reply->length != total))
+    {
+        CtrLog_Write(CTR_LOG_ERROR, "online: %s HTTP %lu, body cut at %lu of %lu bytes (%08lx)", path,
+                     (unsigned long)status, (unsigned long)reply->length, (unsigned long)total, (unsigned long)r);
+        reply->result = R_FAILED(r) ? r : -1;
+        ReplyFree(reply);
+        reply->length = 0;
+        return false;
+    }
+    CtrLog_Write(CTR_LOG_FS, "online: %s %s -> HTTP %lu, %lu bytes, %lums", method == HTTPC_METHOD_POST ? "POST" : "GET",
+                 path, (unsigned long)status, (unsigned long)reply->length,
+                 (unsigned long)(CtrPlatform_Milliseconds() - t0));
+    return true;
+}
+
+/* A JSON answer's string field, as plain text (no escapes in what the
+ * server sends to consoles: tokens, names, keys, hex). */
+static bool JsonString(const char *json, const char *name, char *out, unsigned size)
+{
+    char pattern[32];
+    const char *p;
+    unsigned n = 0;
+
+    snprintf(pattern, sizeof(pattern), "\"%s\":", name);
+    if (size == 0 || (p = strstr(json, pattern)) == NULL) return false;
+    p += strlen(pattern);
+    while (*p == ' ') ++p;
+    if (*p++ != '"') return false;
+    for (; *p && *p != '"' && n + 1 < size; ++p)
+    {
+        if (*p == '\\' && p[1]) ++p;
+        out[n++] = *p;
+    }
+    out[n] = 0;
+    return true;
+}
+
+static bool JsonNumber(const char *json, const char *name, long *out)
+{
+    char pattern[32];
+    const char *p;
+
+    snprintf(pattern, sizeof(pattern), "\"%s\":", name);
+    if ((p = strstr(json, pattern)) == NULL) return false;
+    p += strlen(pattern);
+    while (*p == ' ') ++p;
+    if (strncmp(p, "true", 4) == 0) *out = 1;
+    else if (strncmp(p, "false", 5) == 0) *out = 0;
+    else if ((*p >= '0' && *p <= '9') || *p == '-') *out = strtol(p, NULL, 10);
+    else return false;
+    return true;
+}
+
+/* The status line for a request that got no good answer. */
+static void FailStatus(const Reply *reply, const char *what)
+{
+    char error[64] = "";
+
+    if (reply->status == 0)
+    {
+        bool wifiDown;
+
+        Lock();
+        wifiDown = sWifiDown;
+        Unlock();
+        if ((u32)reply->result == RESULT_TLS) SetStatus(CTR_ONLINE_ERROR, "TLS FAILED");
+        else SetStatus(CTR_ONLINE_ERROR, wifiDown ? "NO WI-FI" : "NO CONNECTION");
+        return;
+    }
+    if (reply->body) JsonString((const char *)reply->body, "error", error, sizeof(error));
+    CtrLog_Write(CTR_LOG_ERROR, "online: %s: HTTP %d %s", what, reply->status, error);
+    if (reply->status == 401) SetStatus(CTR_ONLINE_ERROR, "NOT LINKED ANY MORE");
+    else if (reply->status == 429) SetStatus(CTR_ONLINE_ERROR, "TOO MANY - WAIT");
+    else SetStatus(CTR_ONLINE_ERROR, "ERROR %d", reply->status);
+}
+
+/* ── The jobs (worker thread) ───────────────────────────────────────── */
+
+static void DoPair(const Job *job, Link *link)
+{
+    char body[128], token[TOKEN_MAX], user[USER_MAX];
+    Reply reply;
+    int n;
+
+    SetStatus(CTR_ONLINE_BUSY, "LINKING...");
+    n = snprintf(body, sizeof(body), "{\"code\":\"%s\",\"console_name\":\"%s\"}", job->code, job->consoleName);
+    if (!Http(link, HTTPC_METHOD_POST, "/api/pair", body, (uint32_t)n, "application/json", &reply))
+    {
+        FailStatus(&reply, "pair");
+        return;
+    }
+    if (reply.status == 403) SetStatus(CTR_ONLINE_ERROR, "CODE WRONG OR USED");
+    else if (reply.status != 200 || !JsonString((const char *)reply.body, "token", token, sizeof(token))
+             || !JsonString((const char *)reply.body, "user", user, sizeof(user)) || strlen(token) < 32)
+        FailStatus(&reply, "pair");
+    else
+    {
+        snprintf(link->token, sizeof(link->token), "%s", token);
+        snprintf(link->user, sizeof(link->user), "%s", user);
+        link->seq = 0;
+        if (!PutLink(link)) SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
+        else SetStatus(CTR_ONLINE_DONE, "LINKED: %s", user);
+        CtrLog_Write(CTR_LOG_FS, "online: linked to %s as %s (%s)", link->server, user, job->consoleName);
+    }
+    ReplyFree(&reply);
+}
+
+/* One edit file up. 1 sent, 0 already there, -1 failed (the status says why;
+ * `stop` when nothing after it can work either). */
+static int UploadOne(const Link *link, uint16_t id, SentList *sent, bool *stop)
+{
+    char key[8], path[64], urlPath[48], sha[65];
+    uint8_t *data;
+    uint32_t size;
+    Reply reply;
+    int result = -1;
+
+    *stop = false;
+    KeyOf(id, key, sizeof(key));
+    snprintf(path, sizeof(path), EDIT_DIR "/%s.bin", key);
+    data = ReadWhole(path, MAX_EDIT, &size);
+    if (data == NULL)
+    {
+        SetStatus(CTR_ONLINE_ERROR, "NO EDIT FILE");
+        return -1;
+    }
+    Sha256Hex(data, size, sha);
+    snprintf(urlPath, sizeof(urlPath), "/api/mons/%s/versions", key);
+    if (!Http(link, HTTPC_METHOD_POST, urlPath, data, size, "application/octet-stream", &reply))
+    {
+        FailStatus(&reply, key);
+        *stop = true;
+    }
+    else if (reply.status == 201 || reply.status == 200)
+    {
+        long version = 0, current = 0;
+
+        JsonNumber((const char *)reply.body, "version_id", &version);
+        JsonNumber((const char *)reply.body, "current", &current);
+        SentPut(sent, key, sha);
+        CtrLog_Write(CTR_LOG_FS, "online: %s %s as version %ld%s", key, reply.status == 201 ? "uploaded" : "already there",
+                     version, current ? ", current" : "");
+        result = reply.status == 201 ? 1 : 0;
+    }
+    else
+    {
+        FailStatus(&reply, key);
+        *stop = reply.status == 401 || reply.status == 429 || reply.status >= 500;
+        if (reply.status == 400) SetStatus(CTR_ONLINE_ERROR, "REJECTED BY SERVER");
+    }
+    ReplyFree(&reply);
+    free(data);
+    return result;
+}
+
+static void DoUpload(const Job *job, const Link *link)
+{
+    SentList sent;
+    bool stop;
+    int result;
+
+    SetStatus(CTR_ONLINE_BUSY, "UPLOADING...");
+    SentLoad(&sent);
+    result = UploadOne(link, job->id, &sent, &stop);
+    if (result > 0) SetStatus(CTR_ONLINE_DONE, "UPLOADED");
+    else if (result == 0) SetStatus(CTR_ONLINE_DONE, "ALREADY ON SERVER");
+    SentSave(&sent);
+}
+
+static void DoUploadAll(const Link *link)
+{
+    uint16_t *ids = malloc(MAX_SENT * sizeof(uint16_t));
+    unsigned count = 0, done = 0, known = 0, failed = 0;
+    SentList sent;
+    DIR *d;
+    struct dirent *e;
+
+    SetStatus(CTR_ONLINE_BUSY, "UPLOADING...");
+    if (ids == NULL)
+    {
+        SetStatus(CTR_ONLINE_ERROR, "OUT OF MEMORY");
+        return;
+    }
+    SentLoad(&sent);
+    if ((d = opendir(EDIT_DIR)) != NULL)
+    {
+        while ((e = readdir(d)) != NULL && count < MAX_SENT)
+        {
+            char key[16];
+            size_t n = strlen(e->d_name);
+            uint16_t id;
+
+            if (n < 5 || n - 4 >= sizeof(key) || strcmp(e->d_name + n - 4, ".bin") != 0) continue;
+            memcpy(key, e->d_name, n - 4);
+            key[n - 4] = 0;
+            if ((id = IdOf(key)) != 0) ids[count++] = id;
+        }
+        closedir(d);
+    }
+    for (unsigned i = 0; i < count; ++i)
+    {
+        char key[8], path[64], sha[65];
+        uint8_t *data;
+        uint32_t size;
+        bool stop = false;
+        int result;
+
+        KeyOf(ids[i], key, sizeof(key));
+        snprintf(path, sizeof(path), EDIT_DIR "/%s.bin", key);
+        if ((data = ReadWhole(path, MAX_EDIT, &size)) == NULL) continue;
+        Sha256Hex(data, size, sha);
+        free(data);
+        if (SentHas(&sent, key, sha))
+        {
+            ++known;
+            continue;
+        }
+        SetStatus(CTR_ONLINE_BUSY, "SENDING %u OF %u", i + 1, count);
+        result = UploadOne(link, ids[i], &sent, &stop);
+        if (result > 0) ++done;
+        else if (result == 0) ++known;
+        else ++failed;
+        if (stop) break;
+    }
+    SentSave(&sent);
+    free(ids);
+    CtrLog_Write(CTR_LOG_FS, "online: upload all: %u files, %u sent, %u known, %u failed", count, done, known, failed);
+    if (failed) return; /* the failure's own status stays */
+    if (count == 0) SetStatus(CTR_ONLINE_DONE, "NO EDITS TO SEND");
+    else if (done == 0) SetStatus(CTR_ONLINE_DONE, "NOTHING NEW TO SEND");
+    else SetStatus(CTR_ONLINE_DONE, "SENT %u OF %u", done, count);
+}
+
+/* A card file about to be replaced, kept as stereo/backup/<key>-<time>.bin. */
+static bool Backup(const char *key, const uint8_t *data, uint32_t size)
+{
+    char path[96];
+    time_t now = time(NULL);
+    struct tm *t = gmtime(&now);
+
+    mkdir(BACKUP_DIR, 0777);
+    snprintf(path, sizeof(path), BACKUP_DIR "/%s-%04d%02d%02d-%02d%02d%02d.bin", key, t ? t->tm_year + 1900 : 2000,
+             t ? t->tm_mon + 1 : 1, t ? t->tm_mday : 1, t ? t->tm_hour : 0, t ? t->tm_min : 0, t ? t->tm_sec : 0);
+    return WriteWhole(path, data, size);
+}
+
+static void DoSync(Link *link)
+{
+    char urlPath[48];
+    Reply list;
+    SentList sent;
+    const char *p;
+    long seq = 0;
+    unsigned got = 0, kept = 0, same = 0, items = 0;
+    bool ok = true;
+
+    SetStatus(CTR_ONLINE_BUSY, "SYNCING...");
+    snprintf(urlPath, sizeof(urlPath), "/api/sync?since=%u", link->seq);
+    if (!Http(link, HTTPC_METHOD_GET, urlPath, NULL, 0, NULL, &list) || list.status != 200
+        || !JsonNumber((const char *)list.body, "seq", &seq) || (p = strstr((const char *)list.body, "\"items\":[")) == NULL)
+    {
+        FailStatus(&list, "sync");
+        ReplyFree(&list);
+        return;
+    }
+    mkdir(EDIT_DIR, 0777);
+    SentLoad(&sent);
+    for (const char *item = strchr(p, '{'); item != NULL && ok; item = strchr(item + 1, '{'))
+    {
+        char object[320], key[16], sha[65], localSha[65], path[64], versionPath[40];
+        const char *end = strchr(item, '}');
+        long version = 0;
+        uint8_t *local;
+        uint32_t localSize;
+        Reply file;
+
+        if (end == NULL || (size_t)(end - item) >= sizeof(object)) break;
+        memcpy(object, item, (size_t)(end - item + 1));
+        object[end - item + 1] = 0;
+        ++items;
+        if (!JsonString(object, "key", key, sizeof(key)) || !JsonString(object, "sha256", sha, sizeof(sha))
+            || !JsonNumber(object, "version_id", &version) || IdOf(key) == 0 || strlen(sha) != 64)
+            continue;
+        snprintf(path, sizeof(path), EDIT_DIR "/%s.bin", key);
+        local = ReadWhole(path, MAX_EDIT, &localSize);
+        if (local)
+        {
+            Sha256Hex(local, localSize, localSha);
+            if (strcmp(localSha, sha) == 0)
+            {
+                SentPut(&sent, key, sha);
+                ++same;
+                free(local);
+                continue;
+            }
+        }
+        SetStatus(CTR_ONLINE_BUSY, "FETCHING %s", key);
+        snprintf(versionPath, sizeof(versionPath), "/api/versions/%ld", version);
+        if (!Http(link, HTTPC_METHOD_GET, versionPath, NULL, 0, NULL, &file) || file.status != 200)
+        {
+            FailStatus(&file, key);
+            ok = false;
+        }
+        else
+        {
+            Sha256Hex(file.body, file.length, localSha);
+            if (strcmp(localSha, sha) != 0 || file.length < 16 || memcmp(file.body, CTR_STEREO_EDIT_MAGIC, 8) != 0)
+            {
+                CtrLog_Write(CTR_LOG_ERROR, "online: %s version %ld came down damaged (%lu bytes)", key, version,
+                             (unsigned long)file.length);
+                SetStatus(CTR_ONLINE_ERROR, "DOWNLOAD DAMAGED");
+                ok = false;
+            }
+            else if (local && !Backup(key, local, localSize))
+            {
+                SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
+                ok = false;
+            }
+            else if (!WriteWhole(path, file.body, file.length))
+            {
+                SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
+                ok = false;
+            }
+            else
+            {
+                SentPut(&sent, key, sha);
+                ++got;
+                kept += local != NULL;
+                CtrLog_Write(CTR_LOG_FS, "online: %s now version %ld%s", key, version,
+                             local ? " (the card's kept in stereo/backup)" : "");
+            }
+        }
+        ReplyFree(&file);
+        free(local);
+    }
+    ReplyFree(&list);
+    SentSave(&sent);
+    if (got)
+    {
+        Lock();
+        sEditsWritten = true;
+        Unlock();
+    }
+    CtrLog_Write(CTR_LOG_FS, "online: sync since %u: %u items, %u fetched, %u kept in backup, %u the same%s", link->seq,
+                 items, got, kept, same, ok ? "" : ", STOPPED");
+    if (!ok) return; /* the failure's status stays, and the next sync starts from the same place */
+    link->seq = (unsigned)seq;
+    if (!PutLink(link)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", LINK_PATH);
+    if (got == 0) SetStatus(CTR_ONLINE_DONE, "UP TO DATE");
+    else if (kept) SetStatus(CTR_ONLINE_DONE, "GOT %u. BACKUP %u", got, kept);
+    else SetStatus(CTR_ONLINE_DONE, "GOT %u NEW", got);
+}
+
+static void Worker(void *arg)
+{
+    Job job = sJob;
+    Link link = GetLink();
+    u32 wifi = 0;
+    Result r;
+
+    (void)arg;
+    /* Only for the log and a clearer message: a request is tried anyway. */
+    if (R_SUCCEEDED(acInit()))
+    {
+        ACU_GetWifiStatus(&wifi);
+        acExit();
+    }
+    Lock();
+    sWifiDown = wifi == 0;
+    Unlock();
+    CtrLog_Write(CTR_LOG_FS, "online: job %d on %s (Wi-Fi %lu%s)", job.type, link.server, (unsigned long)wifi,
+                 link.verify ? "" : ", certificate checks OFF");
+    r = httpcInit(HTTPC_SHARED);
+    if (R_FAILED(r))
+    {
+        CtrLog_Write(CTR_LOG_ERROR, "online: httpcInit failed %08lx", (unsigned long)r);
+        SetStatus(CTR_ONLINE_ERROR, "NO HTTP SERVICE");
+    }
+    else
+    {
+        switch (job.type)
+        {
+        case JOB_PAIR: DoPair(&job, &link); break;
+        case JOB_UPLOAD: DoUpload(&job, &link); break;
+        case JOB_UPLOAD_ALL: DoUploadAll(&link); break;
+        case JOB_SYNC: DoSync(&link); break;
+        }
+        httpcExit();
+    }
+    Lock();
+    if (sStatus == CTR_ONLINE_BUSY)
+    {
+        sStatus = CTR_ONLINE_ERROR;
+        snprintf(sText, sizeof(sText), "FAILED");
+        ++sSerial;
+        sEndedMs = CtrPlatform_Milliseconds();
+    }
+    sBusy = false;
+    Unlock();
+}
+
+/* ── The game's side ────────────────────────────────────────────────── */
+
+/* Starts a job unless one runs or (but for pairing) there is no link. */
+static bool Start(const Job *job)
+{
+    Link link = GetLink();
+
+    Lock();
+    if (sBusy)
+    {
+        Unlock();
+        CtrLog_Write(CTR_LOG_FS, "online: job %d refused, one is running", job->type);
+        return false;
+    }
+    Unlock();
+    if (link.server[0] == 0)
+    {
+        SetStatus(CTR_ONLINE_ERROR, "NO SERVER ADDRESS");
+        return false;
+    }
+    if (job->type != JOB_PAIR && link.token[0] == 0)
+    {
+        SetStatus(CTR_ONLINE_ERROR, "NOT LINKED");
+        return false;
+    }
+    Lock();
+    sBusy = true;
+    sJob = *job;
+    Unlock();
+    SetStatus(CTR_ONLINE_BUSY, "STARTING...");
+    /* The system core: the game's own keeps its frame. */
+    if (!CtrPlatform_StartThread(Worker, NULL, WORKER_STACK, 1))
+    {
+        Lock();
+        sBusy = false;
+        Unlock();
+        SetStatus(CTR_ONLINE_ERROR, "NO THREAD");
+        return false;
+    }
+    return true;
+}
+
+bool CtrOnline_Linked(void)
+{
+    Link link = GetLink();
+
+    return link.token[0] != 0 && link.server[0] != 0;
+}
+
+bool CtrOnline_Available(void)
+{
+    bool down;
+
+    Lock();
+    down = sWifiDown && sStatus == CTR_ONLINE_ERROR;
+    Unlock();
+    return CtrOnline_Linked() && !down;
+}
+
+const char *CtrOnline_User(void)
+{
+    Link link = GetLink();
+
+    snprintf(sUserCopy, sizeof(sUserCopy), "%s", link.token[0] ? link.user : "");
+    return sUserCopy;
+}
+
+/* The system keyboard once; false when cancelled. */
+static bool Keyboard(const char *hint, const char *initial, int maxLength, char *out, unsigned size)
+{
+    SwkbdState kb;
+    SwkbdButton button;
+
+    swkbdInit(&kb, SWKBD_TYPE_QWERTY, 2, maxLength);
+    swkbdSetHintText(&kb, hint);
+    if (initial && initial[0]) swkbdSetInitialText(&kb, initial);
+    swkbdSetValidation(&kb, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
+    swkbdSetButton(&kb, SWKBD_BUTTON_LEFT, "Cancel", false);
+    swkbdSetButton(&kb, SWKBD_BUTTON_RIGHT, "OK", true);
+    out[0] = 0;
+    button = swkbdInputText(&kb, out, size);
+    return button == SWKBD_BUTTON_RIGHT && out[0] != 0;
+}
+
+bool CtrOnline_AskCode(char *code, unsigned size)
+{
+    Link link = GetLink();
+    char server[SERVER_MAX - 8];
+
+    if (link.server[0] == 0)
+    {
+        if (!Keyboard("Server address, e.g. planes.example.com", "https://", (int)sizeof(server) - 1, server, sizeof(server)))
+            return false;
+        /* A bare host name is an HTTPS one. */
+        if (strstr(server, "://") == NULL) snprintf(link.server, sizeof(link.server), "https://%s", server);
+        else snprintf(link.server, sizeof(link.server), "%s", server);
+        for (size_t n = strlen(link.server); n && link.server[n - 1] == '/'; --n) link.server[n - 1] = 0;
+        if (!PutLink(&link)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", LINK_PATH);
+        CtrLog_Write(CTR_LOG_FS, "online: server set to %s", link.server);
+    }
+    return Keyboard("The code from the website's Account page", NULL, 9, code, size);
+}
+
+bool CtrOnline_Pair(const char *code)
+{
+    Job job;
+    unsigned n = 0;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_PAIR;
+    /* Letters and digits only (the server drops the rest anyway). */
+    for (; *code && n + 1 < sizeof(job.code); ++code)
+    {
+        char c = *code;
+
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) job.code[n++] = c;
+    }
+    /* How the website lists the console: the author's name (letters,
+     * digits, spaces and . - _ only, so nothing needs escaping). */
+    snprintf(job.consoleName, sizeof(job.consoleName), "New 3DS %s", CtrStereoMon_Author());
+    if (n == 0)
+    {
+        SetStatus(CTR_ONLINE_ERROR, "NO CODE");
+        return false;
+    }
+    return Start(&job);
+}
+
+bool CtrOnline_Upload(uint16_t id)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_UPLOAD;
+    job.id = id;
+    return Start(&job);
+}
+
+bool CtrOnline_UploadAll(void)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_UPLOAD_ALL;
+    return Start(&job);
+}
+
+bool CtrOnline_Sync(void)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_SYNC;
+    return Start(&job);
+}
+
+void CtrOnline_Unlink(void)
+{
+    Link link = GetLink();
+    bool busy;
+
+    Lock();
+    busy = sBusy;
+    Unlock();
+    if (busy)
+    {
+        SetStatus(CTR_ONLINE_BUSY, "BUSY - TRY AGAIN");
+        return;
+    }
+    CtrLog_Write(CTR_LOG_FS, "online: unlinked from %s (was %s)", link.server, link.user);
+    link.token[0] = 0;
+    link.user[0] = 0;
+    link.seq = 0;
+    PutLink(&link);
+    /* Everything is new to whichever account links next. */
+    remove(SENT_PATH);
+    SetStatus(CTR_ONLINE_IDLE, "NOT LINKED");
+}
+
+CtrOnlineStatus CtrOnline_Status(char *text, unsigned size)
+{
+    CtrOnlineStatus status;
+
+    Lock();
+    status = sStatus;
+    if (text && size) snprintf(text, size, "%s", sText);
+    Unlock();
+    return status;
+}
+
+bool CtrOnline_Recent(unsigned ms)
+{
+    bool recent;
+
+    Lock();
+    recent = sBusy || (sStatus != CTR_ONLINE_IDLE && CtrPlatform_Milliseconds() - sEndedMs < ms);
+    Unlock();
+    return recent;
+}
+
+unsigned CtrOnline_Serial(void)
+{
+    unsigned serial;
+
+    Lock();
+    serial = sSerial;
+    Unlock();
+    return serial;
+}
+
+/*
+ * A scripted run, for an emulator or a first hardware check: when
+ * sdmc:/3ds/emerald3ds/online_test.txt exists, its lines one after the
+ * other, ten seconds after start and each once the job before it ended: "wait <frames>", "pair <code>", "upload <key>",
+ * "uploadall", "sync", "unlink". Each step and its result go to port.log.
+ */
+static void TestFrame(void)
+{
+    static FILE *script;
+    static bool opened;
+    static unsigned wait;
+    char line[64], text[CTR_ONLINE_TEXT], arg[32];
+    bool busy;
+
+    if (!opened)
+    {
+        opened = true;
+        script = fopen(DATA_DIR "/online_test.txt", "r");
+        wait = 600;
+    }
+    if (script == NULL) return;
+    Lock();
+    busy = sBusy;
+    Unlock();
+    if (busy || (wait && --wait)) return;
+    if (sSerial)
+    {
+        CtrOnlineStatus status = CtrOnline_Status(text, sizeof(text));
+
+        CtrLog_Write(CTR_LOG_FS, "online test: -> %s \"%s\"", status == CTR_ONLINE_ERROR ? "ERROR" : "ok", text);
+    }
+    if (!fgets(line, sizeof(line), script))
+    {
+        CtrLog_Write(CTR_LOG_FS, "online test: end of script");
+        fclose(script);
+        script = NULL;
+        return;
+    }
+    line[strcspn(line, "\r\n")] = 0;
+    CtrLog_Write(CTR_LOG_FS, "online test: %s", line);
+    arg[0] = 0;
+    sscanf(line, "%*s %31s", arg);
+    if (strncmp(line, "wait", 4) == 0) wait = (unsigned)strtoul(arg, NULL, 10);
+    else if (strncmp(line, "pair", 4) == 0) CtrOnline_Pair(arg);
+    else if (strncmp(line, "uploadall", 9) == 0) CtrOnline_UploadAll();
+    else if (strncmp(line, "upload", 6) == 0) CtrOnline_Upload(IdOf(arg));
+    else if (strncmp(line, "sync", 4) == 0) CtrOnline_Sync();
+    else if (strncmp(line, "unlink", 6) == 0) CtrOnline_Unlink();
+    if (wait == 0) wait = 1;
+}
+
+void CtrOnline_Frame(void)
+{
+    bool busy, written;
+
+    if (!sLockReady)
+    {
+        Lock();
+        Unlock();
+    }
+    TestFrame();
+    Lock();
+    busy = sBusy;
+    written = sEditsWritten;
+    sEditsWritten = false;
+    Unlock();
+    /* Awake while a transfer runs: sleep would drop Wi-Fi under it. */
+    if (busy != sSleepHeld)
+    {
+        aptSetSleepAllowed(!busy);
+        sSleepHeld = busy;
+    }
+    if (written) CtrStereoMon_EditsChanged();
+}

@@ -3,10 +3,13 @@
  * (3ds_extras.h). Each feature adds its line to gCtrExtras and, for the game
  * code that reads it, a function below.
  */
+#include <stdio.h>
 #include <string.h>
 #include "global.h"
 #include "3ds_locale.h"
 #include "3ds_extras.h"
+#include "3ds_locale_text.h"
+#include "3ds_online.h"
 #include "3ds_platform.h"
 #include "3ds_daynight.h"
 #include "event_data.h"
@@ -206,6 +209,110 @@ static void OpenStereoEditor(void)
     CtrStereoMonGame_OpenEditor();
 }
 
+/*
+ * Sharing plane edits over Wi-Fi (3ds_online.c): a screen of its own,
+ * opened from ENHANCEMENTS' second. LINK asks for the website's code with
+ * the system keyboard (and the server's address first when none is known);
+ * the status cell shows the last job's progress or result.
+ */
+static const char *const sOnlineOpenText[] = {CTR_TEXT("TAP TO OPEN", "TOCA PARA ABRIR", "OUVRIR", "APRI")};
+static const char *const sOnlineBackText[] = {CTR_TEXT("BACK", "VOLVER", "RETOUR", "INDIETRO")};
+
+static void OnlineOpen(void)
+{
+    PlaySE(SE_SELECT);
+    CtrExtras_ShowScreen(CTR_EXTRAS_ENHANCEMENTS, 2);
+}
+
+static void OnlineBack(void)
+{
+    PlaySE(SE_SELECT);
+    CtrExtras_ShowScreen(CTR_EXTRAS_ENHANCEMENTS, 1);
+}
+
+/* ASCII into the game's characters, a few kept at once. */
+static const u8 *OnlineGame(const char *ascii)
+{
+    static u8 ring[4][32];
+    static u8 next;
+    u8 *out = ring[next++ & 3];
+
+    CtrLocale_ToGame(out, sizeof(ring[0]), ascii);
+    return out;
+}
+
+static void OnlineLink(void)
+{
+    char code[16];
+
+    if (CtrOnline_Linked())
+    {
+        PlaySE(SE_FAILURE);
+        return;
+    }
+    PlaySE(SE_SELECT);
+    if (CtrOnline_AskCode(code, sizeof(code)))
+        CtrOnline_Pair(code);
+}
+
+static const u8 *OnlineLinkText(void)
+{
+    char text[32];
+
+    if (!CtrOnline_Linked())
+        return OnlineGame(CTR_TEXT("TAP TO LINK", "TOCA PARA ENLAZAR", "LIER", "COLLEGA"));
+    snprintf(text, sizeof(text), "%s", CtrOnline_User());
+    for (char *c = text; *c; ++c)
+        if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 'a' + 'A');
+    return OnlineGame(text);
+}
+
+static void OnlineUnlink(void)
+{
+    PlaySE(CtrOnline_Linked() ? SE_SELECT : SE_FAILURE);
+    if (CtrOnline_Linked())
+        CtrOnline_Unlink();
+}
+
+static const u8 *OnlineUnlinkText(void)
+{
+    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO UNLINK", "TOCA", "DÉLIER", "SCOLLEGA") : "-");
+}
+
+static void OnlineUploadAll(void)
+{
+    PlaySE(CtrOnline_UploadAll() ? SE_SELECT : SE_FAILURE);
+}
+
+static void OnlineSync(void)
+{
+    PlaySE(CtrOnline_Sync() ? SE_SELECT : SE_FAILURE);
+}
+
+static const u8 *OnlineSendText(void)
+{
+    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO SEND", "TOCA PARA ENVIAR", "ENVOYER", "INVIA") : "-");
+}
+
+static const u8 *OnlineSyncText(void)
+{
+    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO FETCH", "TOCA PARA BAJAR", "RECEVOIR", "RICEVI") : "-");
+}
+
+static const u8 *OnlineStatusText(void)
+{
+    char text[CTR_ONLINE_TEXT];
+
+    if (CtrOnline_Status(text, sizeof(text)) == CTR_ONLINE_IDLE)
+        snprintf(text, sizeof(text), "%s", CtrOnline_Linked() ? "READY" : "NOT LINKED");
+    return OnlineGame(text);
+}
+
+static void OnlineStatusTap(void)
+{
+    PlaySE(SE_SELECT);
+}
+
 const CtrExtra gCtrExtras[] =
 {
     /* Features add their lines here. */
@@ -261,6 +368,16 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("WILD POKEMON", "POKéMON SALV.", "POKÉMON SAUV.", "POKéMON SELV."), "timed_encounters", 2, 0, sTimedEncounters, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SHOW CLOCK", "VER RELOJ", "VOIR HORLOGE", "MOSTRA OROLOGIO"), "show_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("3D SPRITE EDITOR", "EDITOR 3D", "ÉDITEUR 3D", "EDITOR 3D"), "stereo_edit", 0, 0, sStereoEditText, OpenStereoEditor, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), "ONLINE", "online_open", 0, 0, sOnlineOpenText, OnlineOpen, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), "ONLINE", "online_back", 0, 0, sOnlineBackText, OnlineBack, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("UNLINK", "DESENLAZAR", "DÉLIER", "SCOLLEGA"), "online_unlink", 0, 0, NULL, OnlineUnlink, NULL, OnlineUnlinkText},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("SYNC FROM SERVER", "SINCRONIZAR", "SYNCHRONISER", "SINCRONIZZA"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
+    /* Read by the editor (3ds_stereo_edit.c ToggleFinal): a picture marked
+     * FINAL is uploaded at once. */
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 2), CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
     {0},
 };
 

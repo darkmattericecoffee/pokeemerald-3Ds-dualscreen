@@ -283,6 +283,10 @@ bool CtrStereoMon_ResetEdit(void);
  * memory, for the chooser's marks. */
 void CtrStereoMon_EditScan(void);
 bool CtrStereoMon_HasEdit(uint16_t id);
+/* The card's edit files changed behind the viewer's back (a sync,
+ * 3ds_online.c): scanned again, the battle's planes forgotten, the gallery's
+ * picture read again. */
+void CtrStereoMon_EditsChanged(void);
 /* Appends a line to the Pokémon's edit log (CTR_STEREO_EDIT_DIR/NNN.log). */
 void CtrStereoMon_LogEdit(const char *line);
 

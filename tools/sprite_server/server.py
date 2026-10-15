@@ -577,9 +577,10 @@ def account_pair(req: Request) -> Response:
     base = public_base(req)
     extra = """<section class="code"><h2>Your pairing code</h2><p class="bigcode">%s</p>
 <p>It works once and expires in ten minutes.</p>
-<ul><li><strong>On the 3DS:</strong> OPTIONS, then ONLINE, then "Link this console", and type the code.</li>
+<ul><li><strong>On the 3DS:</strong> OPTIONS, the ENHANCEMENTS tab's second screen, ONLINE, then LINK CONSOLE,
+and type the code (the first time it also asks for this server's address: %s).</li>
 <li><strong>On a computer:</strong><pre>python3 tools/sprite_server/client.py pair %s %s</pre></li></ul></section>""" % (
-        e(shown), e(base), e(shown))
+        e(shown), e(base), e(base), e(shown))
     return account(req, extra)
 
 
