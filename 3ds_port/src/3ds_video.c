@@ -10407,18 +10407,9 @@ static void DumpTileProbe(unsigned oam)
                  (unsigned long)sVramStamp[(0x10000 + (attr2 & 1023) * 32) / VRAM_BLOCK], (unsigned long)sStats.frames);
 }
 
-static void DumpOnKey(void)
+static void DumpAll(void)
 {
-    static bool sLatched;
-    const CtrInput *input = CtrInput_Get();
-    const unsigned chord = CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT;
     FILE *file;
-
-    /* The chord held, once until it is let go: the key's down edge is
-     * scanned by the game's frame, which this does not see every time. */
-    if ((input->physicalHeld & chord) != chord) { sLatched = false; return; }
-    if (sLatched) return;
-    sLatched = true;
     void *chunk = linearAlloc(DUMP_CHUNK);
 
     if (chunk == NULL) { CtrLog_Write(CTR_LOG_ERROR, "DUMP: no linear memory for the chunk"); return; }
@@ -10456,6 +10447,20 @@ static void DumpOnKey(void)
     CtrLog_Write(CTR_LOG_VIDEO, "DUMP skip %08lx %08lx %08lx %08lx slots %u mons %u", (unsigned long)sObjSkip[0],
                  (unsigned long)sObjSkip[1], (unsigned long)sObjSkip[2], (unsigned long)sObjSkip[3], sSlotCount, sMonCount);
     CtrLog_Write(CTR_LOG_VIDEO, "DUMP done");
+}
+
+static void DumpOnKey(void)
+{
+    static bool sLatched;
+    const CtrInput *input = CtrInput_Get();
+    const unsigned chord = CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT;
+
+    /* The chord held, once until it is let go: the key's down edge is
+     * scanned by the game's frame, which this does not see every time. */
+    if ((input->physicalHeld & chord) != chord) { sLatched = false; return; }
+    if (sLatched) return;
+    sLatched = true;
+    DumpAll();
 }
 
 #ifdef CTR_FRAME_DUMP
@@ -10740,6 +10745,8 @@ void CtrVideo_Present(void)
 #define CTR_DUMP_STEP 30
 #endif
     if (sBattle && (int)(sStats.frames - battleStart) >= (int)CTR_DUMP_FROM && sStats.frames % CTR_DUMP_STEP == 0 && dumped++ < 40)
+        DumpAll();
+    if (0)
 #else
     if (sStats.frames >= 150 && (sStats.frames - 150) % 150 == 0 && sStats.frames <= 12000)
 #endif
