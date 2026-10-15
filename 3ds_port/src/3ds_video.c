@@ -10282,13 +10282,28 @@ void CtrVideo_HoldTop(bool hold)
  * them out (8x8 tiles, Morton order). Read with scripts/dump_frames.py. The
  * GPU finished the last frame at FrameBegin, so the surfaces are complete.
  */
-static void DumpRecord(FILE *file, char tag, const void *data, unsigned w, unsigned h, unsigned bytes)
+/* VRAM through a linear-memory buffer: handed a VRAM address to write, the
+ * file system hung the console (both hardware logs end at the dump). */
+#define DUMP_CHUNK (64 * 1024)
+static void DumpRecord(FILE *file, void *chunk, char tag, const void *data, unsigned w, unsigned h, unsigned bytes)
 {
     uint32_t head[4] = {(uint32_t)tag, sStats.frames, w | h << 16, bytes};
+    size_t left = (size_t)w * h * bytes;
+    const uint8_t *from = data;
 
     if (data == NULL) return;
+    CtrLog_Write(CTR_LOG_VIDEO, "DUMP %c %ux%u x%u", tag, w, h, bytes);
     fwrite(head, sizeof(head), 1, file);
-    fwrite(data, (size_t)w * h * bytes, 1, file);
+    while (left)
+    {
+        size_t n = left < DUMP_CHUNK ? left : DUMP_CHUNK;
+
+        memcpy(chunk, from, n);
+        if (fwrite(chunk, n, 1, file) != 1) break;
+        from += n;
+        left -= n;
+    }
+    fflush(file);
 }
 
 static unsigned TexBytes(const C3D_Tex *tex)
@@ -10308,20 +10323,25 @@ static void DumpOnKey(void)
     if ((input->physicalHeld & chord) != chord) { sLatched = false; return; }
     if (sLatched) return;
     sLatched = true;
+    void *chunk = linearAlloc(DUMP_CHUNK);
+
+    if (chunk == NULL) { CtrLog_Write(CTR_LOG_ERROR, "DUMP: no linear memory for the chunk"); return; }
     file = fopen("sdmc:/3ds/emerald3ds/dump.raw", "ab");
-    if (!file) return;
-    DumpRecord(file, 'L', sTop ? sTop->frameBuf.colorBuf : NULL, 240, 400, 4);
-    if (sStereo && sTopRight) DumpRecord(file, 'R', sTopRight->frameBuf.colorBuf, 240, 400, 4);
-    DumpRecord(file, 'G', sSurface.data, 512, 256, TexBytes(&sSurface));
-    if (sScene) DumpRecord(file, 'S', sSceneTex.data, SCENE_W, SCENE_H, TexBytes(&sSceneTex));
-    if (sSlotTarget) DumpRecord(file, 'T', sSlotTex.data, sSlotTex.width, sSlotTex.height, TexBytes(&sSlotTex));
-    if (sStereoTarget) DumpRecord(file, 'W', sStereoTex.data, 512, 256, TexBytes(&sStereoTex));
-    if (sObjWinTarget) DumpRecord(file, 'O', sObjWinTex.data, sObjWinTex.width, sObjWinTex.height, TexBytes(&sObjWinTex));
-    fclose(file);
+    if (!file) { linearFree(chunk); return; }
     CtrLog_Write(CTR_LOG_VIDEO, "DUMP frame %lu to dump.raw: eyes%s, surfaces%s%s%s%s (battle=%d world=%d slider=%.2f)",
                  (unsigned long)sStats.frames, sStereo && sTopRight ? " L+R" : " L", sScene ? " scene" : "",
                  sSlotTarget ? " slots" : "", sStereoTarget ? " world" : "", sObjWinTarget ? " objwin" : "",
                  (int)sBattle, (int)sBattleWorld, (double)osGet3DSliderState());
+    DumpRecord(file, chunk, 'L', sTop ? sTop->frameBuf.colorBuf : NULL, 240, 400, 4);
+    if (sStereo && sTopRight) DumpRecord(file, chunk, 'R', sTopRight->frameBuf.colorBuf, 240, 400, 4);
+    DumpRecord(file, chunk, 'G', sSurface.data, 512, 256, TexBytes(&sSurface));
+    if (sScene) DumpRecord(file, chunk, 'S', sSceneTex.data, SCENE_W, SCENE_H, TexBytes(&sSceneTex));
+    if (sSlotTarget) DumpRecord(file, chunk, 'T', sSlotTex.data, sSlotTex.width, sSlotTex.height, TexBytes(&sSlotTex));
+    if (sStereoTarget) DumpRecord(file, chunk, 'W', sStereoTex.data, 512, 256, TexBytes(&sStereoTex));
+    if (sObjWinTarget) DumpRecord(file, chunk, 'O', sObjWinTex.data, sObjWinTex.width, sObjWinTex.height, TexBytes(&sObjWinTex));
+    fclose(file);
+    linearFree(chunk);
+    CtrLog_Write(CTR_LOG_VIDEO, "DUMP done");
 }
 
 #ifdef CTR_FRAME_DUMP
