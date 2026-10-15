@@ -262,6 +262,10 @@ void CtrStereoMon_HelpCell(unsigned cell, const uint8_t *alpha, unsigned width);
 /* The top screen is the Pokédex's (the editor's chooser): the picture under
  * the cursor with the chooser's cells instead of the gallery's words. */
 void CtrStereoMon_SetChooser(bool chooser);
+/* The top screen is the versions screen's: the picture's front and back
+ * side by side (the one edited as its planes, the other flat: the game side
+ * gives it with CtrStereoMon_SetCompanion, CtrStereoMonGame_WantCompanion). */
+void CtrStereoMon_SetVersionsView(bool on);
 /*
  * Who edited a picture, and how far: an edit file ends with a 32-byte
  * trailer (older files have none): "EM3DSMD1", u8 flags (bit 0 finalized),
@@ -391,6 +395,9 @@ void CtrStereoMonGame_OpenEditor(void);
 unsigned CtrStereoMonGame_GalleryIndex(void);
 void CtrStereoMonGame_SelectIndex(unsigned index);
 void CtrStereoMonGame_CloseGallery(void);
+/* The other side of whatever is shown, flat, for the versions screen
+ * (its texture is made only while asked for). */
+void CtrStereoMonGame_WantCompanion(bool on);
 /*
  * For the editor: the picture tried in a real battle. From the field, a
  * wild battle against the Pokémon (a Pokémon's front or back: the player's

@@ -65,11 +65,11 @@ header shows it working (grey when the server cannot be reached).
 
 OPTIONS › ONLINE › LINK CONSOLE, then the code from the Account page (the first time also
 the server's address). After that, in the plane editor (the column's EDITOR button): the globe
-loads what is new and opens the Pokédex on it; the star votes for the version on screen (two
-per Pokémon, kept on the card and sent when the server can be reached); the C-stick down shows
-the next version on the server. In the Pokédex (DEX): the Circle Pad moves through the
-Pokémon, the D-pad through the one under the cursor's versions, X votes, A edits. OPTIONS ›
-ONLINE also has LOAD NEW ONES, UPLOAD ALL EDITS and SEE AND VOTE. Details: `3ds_port/src/3ds_online.c` and
+opens the versions screen: the server's versions of the Pokémon's front and back, to show,
+vote for (two per picture, kept on the card and sent when the server can be reached), upload
+your own or delete yours. In the Pokédex (DEX) every entry shows its version counts and
+uploader and has the same globe. OPTIONS › ONLINE has LOAD NEW ONES, SEE AND VOTE and UPLOAD
+ALL EDITS. Details: `3ds_port/src/3ds_online.c` and
 section 7.1 of the design doc.
 
 ## The PC client
@@ -111,6 +111,7 @@ has a `Content-Length`. There are no redirects.
 | `GET /api/mons` | every Pokémon with a current version: `versions` (how many), `mine` (how many are the caller's favourites) |
 | `GET /api/mons/<key>/versions` | `{"current","pinned","favourites","max_favourites","versions":[{"version_id","author","signed","revision","final","votes","sha256","size","uploaded_at"}]}`, newest first; `favourites` are the caller's |
 | `POST /api/mons/<key>/votes` `{"version_ids":[…]}` | consoles only: the caller's favourites (0 to 2) for the picture, replacing the earlier ones; answers like `…/versions` |
+| `POST /api/versions/<id>/delete` | consoles only: takes the caller's own version off the server (an admin's console: any); answers like `…/versions` |
 | `GET /api/rev` | `{"rev","seq"}`: `rev` moves on with every upload, vote, pin and delete (the web pages poll it) |
 
 `<key>` is the edit file's name: `006` front, `b006` back, `t012` trainer, `p001` player.

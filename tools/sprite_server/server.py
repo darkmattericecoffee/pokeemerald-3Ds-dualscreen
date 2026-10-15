@@ -761,7 +761,7 @@ def _voter(req: Request) -> int:
 
 def _versions_json(req: Request, key: str) -> dict:
     rows = req.conn.execute(
-        "SELECT v.id, v.revision, v.final, v.author_tag, v.sha256, v.size, v.uploaded_at, u.name AS uploader "
+        "SELECT v.id, v.user_id, v.revision, v.final, v.author_tag, v.sha256, v.size, v.uploaded_at, u.name AS uploader "
         "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
@@ -770,7 +770,8 @@ def _versions_json(req: Request, key: str) -> dict:
             "favourites": db.favourites(req.conn, _voter(req), key), "max_favourites": db.MAX_FAVOURITES,
             "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],
                           "revision": r["revision"], "final": bool(r["final"]), "votes": counts.get(r["id"], 0),
-                          "sha256": r["sha256"], "size": r["size"], "uploaded_at": r["uploaded_at"]} for r in rows]}
+                          "sha256": r["sha256"], "size": r["size"], "uploaded_at": r["uploaded_at"],
+                          "mine": r["user_id"] == _voter(req)} for r in rows]}
 
 
 @route("GET", r"/api/mons/" + KEY + r"/versions", "any")
@@ -792,6 +793,18 @@ def api_votes(req: Request, key: str) -> Response:
     if err is not None:
         return api_error(400, err)
     return json_resp(_versions_json(req, key))
+
+
+@route("POST", r"/api/versions/(?P<vid>\d+)/delete", "device")
+def api_delete_version(req: Request, vid: str) -> Response:
+    """A console takes its account's own version off the server (an admin's console any)."""
+    row = req.conn.execute("SELECT mon_key, user_id FROM versions WHERE id = ?", (int(vid),)).fetchone()
+    if row is None:
+        return api_error(404, "no such version")
+    if row["user_id"] != req.device["user_id"] and req.device["role"] != "admin":
+        return api_error(403, "only its uploader can delete a version")
+    db.delete_version(req.conn, int(vid))
+    return json_resp(_versions_json(req, row["mon_key"]))
 
 
 @route("GET", r"/api/mons/" + KEY + r"/current", "any")

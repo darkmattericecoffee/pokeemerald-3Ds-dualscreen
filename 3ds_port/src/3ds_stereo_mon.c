@@ -135,8 +135,9 @@ static uint32_t sEditMark;
 /* The editor's other views: every pixel in its plane's colour (composed
  * from sTinted instead of the picture), and the battle's. */
 static bool sEditLayers, sEditBattle, sEditControls = true;
-/* The Pokédex's view (CtrStereoMon_SetChooser). */
-static bool sChooser;
+/* The Pokédex's view (CtrStereoMon_SetChooser), the versions screen's
+ * (CtrStereoMon_SetVersionsView). */
+static bool sChooser, sVersionsView;
 static uint16_t sTinted[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
 /* The editor's own depth (CtrStereoMon_Depth), -1 until read. */
 static int sEditDepth = -1;
@@ -1421,6 +1422,7 @@ static bool sHelpAllocated, sHelpFailed;
 static uint8_t sHelpWidth[CTR_HELP_CELLS];
 
 void CtrStereoMon_SetChooser(bool chooser) { sChooser = chooser; }
+void CtrStereoMon_SetVersionsView(bool on) { sVersionsView = on; }
 
 void CtrStereoMon_HelpCell(unsigned cell, const uint8_t *alpha, unsigned width)
 {
@@ -1694,13 +1696,12 @@ static void DrawControls(void)
  * The Pokédex's top screen (the editor's chooser): the picture under the
  * cursor, its name and the page at the top left, which version is on the
  * card at the top right, and the controls down both sides: the Circle Pad
- * moves through the Pokémon, the D-pad through a Pokémon's versions.
+ * (and the D-pad) move through the Pokémon, A edits, X opens its versions.
  */
 static void DrawChooserHelp(void)
 {
     static const Help left[] = {
         {BTN_PAD, false, CTR_HELP_C_POKEMON},
-        {BTN_DPAD_LR, false, CTR_HELP_C_VERSIONS},
         {BTN_L, false, CTR_HELP_C_PREV_PAGE},
     };
     static const Help right[] = {
@@ -1721,6 +1722,77 @@ static void DrawChooserHelp(void)
     DrawHelpCell(CTR_HELP_VERSION_VOTES, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_VOTES), 32, dim);
     DrawHelp(false, 154, left, sizeof(left) / sizeof(left[0]));
     DrawHelp(true, 114, right, sizeof(right) / sizeof(right[0]));
+}
+
+/* Help along a row, centred on `cx`: each button with its word after it. */
+static void DrawHelpRow(int cx, int y, const Help *help, unsigned count)
+{
+    const uint32_t words = C2D_Color32(225, 230, 240, 255);
+    int total = 0, x;
+
+    for (unsigned i = 0; i < count; ++i)
+        total += ButtonWidth(help[i].button) + 4 + HelpWidth(help[i].cell) + (i + 1 < count ? 18 : 0);
+    x = cx - total / 2;
+    for (unsigned i = 0; i < count; ++i)
+    {
+        DrawButton(help[i].button, x, y + (18 - ButtonHeight(help[i].button)) / 2);
+        x += ButtonWidth(help[i].button) + 4;
+        DrawHelpCell(help[i].cell, x, y + 3, words);
+        x += HelpWidth(help[i].cell) + 18;
+    }
+}
+
+/*
+ * The versions screen's top screen (3ds_stereo_edit.c): the picture's front
+ * on the left and its back on the right, the side being looked at as its
+ * planes (in 3D), the other flat; their names under them, the picture's name
+ * at the top left, which version this is at the top right, and the screen's
+ * controls along the bottom.
+ */
+#define VERSIONS_SCALE 2.0f
+static void DrawVersionsEye(float sign, float slider, unsigned frame)
+{
+    static const Help row1[] = {
+        {BTN_DPAD_UD, false, CTR_HELP_C_VERSIONS},
+        {BTN_DPAD_LR, false, CTR_HELP_C_POKEMON},
+    };
+    static const Help row2[] = {
+        {BTN_A, false, CTR_HELP_C_VOTE},
+        {BTN_Y, false, CTR_HELP_R_ANIMATE},
+        {BTN_B, false, CTR_HELP_C_CLOSE},
+    };
+    const bool back = (sId & 0xC000) != 0;
+    const float size = DIM * VERSIONS_SCALE, top = 44;
+    const float leftX = CTR_GAME_WIDTH / 4 - size / 2, rightX = CTR_GAME_WIDTH * 3 / 4 - size / 2;
+    const float depth = slider * CtrStereoMon_Depth() / 100.0f * PARALLAX * 2.0f;
+    const uint32_t white = C2D_Color32(240, 242, 248, 255), gold = C2D_Color32(255, 214, 72, 255);
+    const uint32_t dim = C2D_Color32(185, 190, 205, 255), cyan = C2D_Color32(80, 230, 240, 255);
+    const float back3d = BackdropShift(sign, slider, SCALE);
+
+    C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, C2D_Color32(52, 56, 66, 255));
+    for (int gx = 8 - 24; gx < CTR_GAME_WIDTH + 24; gx += 24)
+        C2D_DrawRectSolid(gx + back3d, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(66, 70, 82, 255));
+    /* The other side, flat. */
+    if (sMateReady)
+    {
+        unsigned f = frame < sMateFrames ? frame : 0;
+        const Tex3DS_SubTexture sub = {DIM, DIM, f * 0.5f, 1.0f, f * 0.5f + 0.5f, 0.0f};
+
+        C2D_DrawImageAt((C2D_Image){&sMateTex, &sub}, back ? leftX : rightX, top, 0, NULL, VERSIONS_SCALE, VERSIONS_SCALE);
+    }
+    /* The side looked at, as its planes. */
+    DrawStack(back ? rightX : leftX, top, VERSIONS_SCALE, sign * depth * DepthOf(sId), frame, NULL);
+    DrawHelpCell(CTR_HELP_C_PREV_PAGE, leftX + size / 2 - HelpWidth(CTR_HELP_C_PREV_PAGE) / 2, top + size + 2,
+                 back ? dim : cyan);
+    DrawHelpCell(CTR_HELP_C_NEXT_PAGE, rightX + size / 2 - HelpWidth(CTR_HELP_C_NEXT_PAGE) / 2, top + size + 2,
+                 back ? cyan : dim);
+    DrawHelpCell(CTR_HELP_CHOOSE_NAME, 8, 4, white);
+    DrawHelpCell(CTR_HELP_PAGE, 8, 18, cyan);
+    DrawHelpCell(CTR_HELP_VERSION, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION), 4, gold);
+    DrawHelpCell(CTR_HELP_VERSION_BY, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_BY), 18, white);
+    DrawHelpCell(CTR_HELP_VERSION_VOTES, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_VOTES), 32, dim);
+    DrawHelpRow(CTR_GAME_WIDTH / 2, CTR_GAME_HEIGHT - 42, row1, sizeof(row1) / sizeof(row1[0]));
+    DrawHelpRow(CTR_GAME_WIDTH / 2, CTR_GAME_HEIGHT - 21, row2, sizeof(row2) / sizeof(row2[0]));
 }
 
 static void DrawEditEye(float sign, float slider, unsigned frame)
@@ -1810,7 +1882,8 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ZERO);
     if (!sGallery || sEditing)
     {
-        if (sEditing) DrawEditEye(sign, slider, frame);
+        if (sEditing && sVersionsView) DrawVersionsEye(sign, slider, frame);
+        else if (sEditing) DrawEditEye(sign, slider, frame);
         else DrawDex(sign, slider, frame);
         C2D_Flush();
         return;
@@ -1911,7 +1984,7 @@ static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
     k->editBattle = sEditBattle;
     k->editLayers = sEditLayers;
     k->editControls = sEditControls;
-    k->chooser = sChooser;
+    k->chooser = (uint8_t)(sChooser | (sVersionsView << 1));
     k->backdrop = sBackdropReady;
     k->mate = sMateReady;
     k->final = sMeta.finalized;

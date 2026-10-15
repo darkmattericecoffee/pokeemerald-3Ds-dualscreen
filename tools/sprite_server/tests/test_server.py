@@ -298,6 +298,14 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(json.loads(api("GET", "/api/mons/030/versions", gina)[2])["favourites"], [ids[0], ids[2]])
         status, _, page = gina_web.go("GET", "/mon/030")
         self.assertIn(b"2 votes", page)
+        # Each knows its own versions, and only its uploader takes one off the server.
+        listing = json.loads(api("GET", "/api/mons/030/versions", frank)[2])
+        self.assertTrue(all(v["mine"] for v in listing["versions"]))
+        self.assertFalse(any(v["mine"] for v in json.loads(api("GET", "/api/mons/030/versions", gina)[2])["versions"]))
+        self.assertEqual(api("POST", "/api/versions/%d/delete" % ids[2], gina)[0], 403)
+        status, _, body = api("POST", "/api/versions/%d/delete" % ids[2], frank)
+        self.assertEqual(status, 200)
+        self.assertEqual([v["version_id"] for v in json.loads(body)["versions"]], [ids[1], ids[0]])
 
     def test_unlinking_a_console(self):
         b, cfg = self.linked_client("dave")

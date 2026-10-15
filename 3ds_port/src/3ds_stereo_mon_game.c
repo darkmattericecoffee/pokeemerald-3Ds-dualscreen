@@ -350,6 +350,24 @@ static void Backdrop(u16 species)
     }
 }
 
+/* The versions screen's other side (CtrStereoMonGame_WantCompanion). */
+static bool8 sWantMate;
+
+static void ShowMate(u16 mate)
+{
+    static u16 picture[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
+    unsigned frames = sWantMate && mate ? DecodePicture(mate, picture[0]) : 0;
+
+    CtrStereoMon_SetCompanion(frames ? picture[0] : NULL, frames);
+}
+
+void CtrStereoMonGame_WantCompanion(bool on)
+{
+    if (on == sWantMate) return;
+    sWantMate = on;
+    ShowMate(sShown ? CtrStereoMon_Counterpart(sShown) : 0);
+}
+
 static void Show(u16 id, bool8 gallery)
 {
     static u16 picture[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
@@ -365,8 +383,7 @@ static void Show(u16 id, bool8 gallery)
          * mock battle view, with the other side of the picture, is gone
          * (START plays the real battle): its textures are not made. */
         if (!gallery && (kind == 0 || kind == CTR_STEREO_ID_BACK)) Backdrop(NationalPokedexNumToSpecies(id & 0x3FFF));
-        (void)mate;
-        CtrStereoMon_SetCompanion(NULL, 0);
+        ShowMate(mate);
         CtrLog_Write(CTR_LOG_VIDEO, "stereo: id %04x %s, %u frames (%s)", id, name, frames, gallery ? "gallery" : "pokedex");
     }
 }

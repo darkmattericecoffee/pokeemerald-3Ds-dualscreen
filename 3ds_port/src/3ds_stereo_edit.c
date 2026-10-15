@@ -174,9 +174,12 @@ enum { SLIDER_NONE = -1, SLIDER_ZOOM, SLIDER_SIZE };
 enum { GRID_OFF, GRID_WHITE, GRID_BLACK };
 /* The chooser: its bar (the search, ALL/EDITED, the order, the pages),
  * then a page of icons and names. */
-#define CH_COLS 3
-#define CH_ROWS 6
-#define CH_ROW_H 33
+/* Two wide columns of three-line entries: the number and the name, what
+ * the server has, and whose; a globe on each (the versions screen). */
+#define CH_COLS 2
+#define CH_ROWS 5
+#define CH_ROW_H 38
+#define CH_GLOBE_W 24
 #define CH_Y0 24
 #define CH_PER_PAGE (CH_COLS * CH_ROWS)
 #define CH_SEARCH_X 2
@@ -215,7 +218,7 @@ static const char *const sOpacityNames[] = {"MAX", "60", "30", "15"};
 static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS };
-enum { O_DEPTH, O_CONTROLS, O_AUTHOR, O_VERSIONS, O_RESET, O_CLOSE, O_COUNT };
+enum { O_DEPTH, O_CONTROLS, O_AUTHOR, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -310,7 +313,20 @@ static struct
      * status line's serial; the viewer's reloads seen (a version put on the
      * card is taken up as a new picture). */
     CtrOnlineVersions versions;
-    unsigned versionsSerial, verCursor, statusSerial, reloads;
+    unsigned versionsSerial, statusSerial, reloads;
+    /* The versions screen: per side (0 the front, 1 the back) its picture,
+     * the server's list, whether it came, the cursor (and whether it was
+     * put on the card's version), which version the card holds; the side
+     * looked at; a delete waiting for its yes; the dex's globe asking for
+     * the screen once the picture is in the editor. */
+    uint16_t sideId[2];
+    CtrOnlineVersions sideList[2];
+    bool sideLoaded[2], sidePlaced[2];
+    unsigned sideCursor[2], sideSerial;
+    uint32_t sideCard[2];
+    uint8_t side;
+    bool confirmDelete, versionsAfterBind;
+    uint32_t deleteVersion;
     /* The picture the server's words are about (the one edited, or under
      * the Pokédex's cursor), since when, whether its list came; which
      * version of it is on the card (and when that was read); a cycle
@@ -1036,9 +1052,11 @@ static bool Bind(void)
 bool CtrStereoEdit_Active(void) { return sE.active; }
 static void Choose(unsigned index);
 static void OpenChooser(void);
-static void ToggleVote(void);
-static void CycleVersion(int dir);
-static void GlobeTap(void);
+static void OpenVersions(void);
+static void CloseVersions(void);
+static void VersionsKeys(unsigned down);
+static void VersionsFrame(void);
+static void TouchVersions(const CtrInput *in);
 static void VersionsKeys(unsigned down);
 /* The next open shows the new pictures (CtrStereoEdit_PreferNew). */
 static bool sPreferNew, sPreferDex;
@@ -1348,11 +1366,10 @@ static void ChooseKeys(unsigned down)
 {
     unsigned count = sListCount;
 
-    /* The Pokédex: the Circle Pad moves through the Pokémon (ChoosePad),
-     * the D-pad's left and right through the one under the cursor's
-     * versions on the server, up and down a row; A edits it, X votes for
-     * the version shown, L and R turn the page, Y searches, START filters
-     * (ALL, EDITED, NEW), B and SELECT go back. */
+    /* The Pokédex: the Circle Pad and the D-pad move through the Pokémon
+     * (ChoosePad), A edits the one under the cursor, X opens its versions
+     * on the server (as its globe does), L and R turn the page, Y searches,
+     * START filters (ALL, EDITED, NEW), B and SELECT go back. */
     if (down & (CTR_KEY_B | CTR_KEY_SELECT)) { CloseChooser(); return; }
     if (down & CTR_KEY_Y) { OpenKeyboard(KB_SEARCH); return; }
     if (down & CTR_KEY_START)
@@ -1364,9 +1381,14 @@ static void ChooseKeys(unsigned down)
     }
     if (count == 0) return;
     if (down & CTR_KEY_A) Choose(sList[sE.chooseCursor]);
-    else if (down & CTR_KEY_X) ToggleVote();
-    else if (down & CTR_KEY_RIGHT) CycleVersion(1);
-    else if (down & CTR_KEY_LEFT) CycleVersion(-1);
+    else if (down & CTR_KEY_X)
+    {
+        /* The globe's: the versions screen of the one under the cursor. */
+        sE.versionsAfterBind = true;
+        Choose(sList[sE.chooseCursor]);
+    }
+    else if (down & CTR_KEY_RIGHT) sE.chooseCursor = (sE.chooseCursor + 1) % count;
+    else if (down & CTR_KEY_LEFT) sE.chooseCursor = (sE.chooseCursor + count - 1) % count;
     else if (down & CTR_KEY_DOWN) sE.chooseCursor = (sE.chooseCursor + CH_COLS) % count;
     else if (down & CTR_KEY_UP) sE.chooseCursor = (sE.chooseCursor + count - CH_COLS % count) % count;
     else if (down & CTR_KEY_R) sE.chooseCursor = (sE.chooseCursor + CH_PER_PAGE) % count;
@@ -1670,8 +1692,7 @@ static bool BarAct(int x, int y)
     if (y < BAR_Y || y >= BAR_Y + BAR_H) return false;
     if (x >= DEX_X && x < DEX_X + DEX_W) { sE.pressed = P_DEX; OpenChooser(); }
     else if (x >= MORE_X && x < MORE_X + MORE_W) { sE.pressed = P_MORE; sE.screen = S_OPTIONS; }
-    else if (x >= ONLINE_X && x < ONLINE_X + ONLINE_W) { sE.pressed = P_ONLINE; GlobeTap(); }
-    else if (x >= VOTE_X && x < VOTE_X + VOTE_W) { sE.pressed = P_VOTE; ToggleVote(); }
+    else if (x >= ONLINE_X && x < ONLINE_X + ONLINE_W) { sE.pressed = P_ONLINE; OpenVersions(); }
     else if (x >= UNDO_X && x < UNDO_X + UNDO_W) { sE.pressed = P_UNDO; Undo(); }
     else if (x >= REDO_X && x < REDO_X + UNDO_W) { sE.pressed = P_REDO; Redo(); }
     else if (x >= SAVE_X && x < SAVE_X + SAVE_W) { sE.pressed = P_SAVE; SaveTap(); }
@@ -1944,7 +1965,7 @@ static void VersionLines(uint16_t id, char *a, char *b, char *c)
         {
             snprintf(a, 40, "%s", CtrStereoMon_HasEdit(id) ? "YOUR OWN EDIT" : "THE GAME'S PLANES");
             snprintf(b, 40, "%u ON THE SERVER", count);
-            snprintf(c, 40, "%s", sE.screen == S_CHOOSE ? "D-PAD: SEE THEM" : "C-STICK DOWN: SEE THEM");
+            snprintf(c, 40, "%s", sE.screen == S_CHOOSE ? "X: SEE THEM" : "THE GLOBE: SEE THEM");
             return;
         }
         {
@@ -1968,132 +1989,6 @@ static void VersionLines(uint16_t id, char *a, char *b, char *c)
     }
 }
 
-static void UseVersionOf(uint16_t id, uint32_t version);
-
-/* The next (or previous) version of the picture in focus to the card and
- * the screens: the D-pad in the Pokédex, the C-stick down in the editor. */
-static void CycleVersion(int dir)
-{
-    uint16_t id = FocusId();
-    unsigned count;
-    int at, next;
-
-    if (!CtrOnline_Linked())
-    {
-        Toast("LINK THE CONSOLE: OPTIONS, ONLINE");
-        return;
-    }
-    if (!sE.versionsLoaded || sE.versions.id != id || sE.cardFor != id)
-    {
-        /* Asked for; it turns as soon as the list is in. */
-        sE.cycleWanted = dir;
-        if (!CtrOnline_Busy() && sE.askedFor != id)
-        {
-            sE.askedFor = id;
-            sE.askedAt = sE.tick;
-            CtrOnline_FetchVersions(id);
-        }
-        Toast("ASKING THE SERVER...");
-        return;
-    }
-    count = sE.versions.count;
-    if (count == 0)
-    {
-        Toast("NO VERSIONS ON THE SERVER YET");
-        return;
-    }
-    at = CardAt();
-    next = at < 0 ? 0 : (at + (dir > 0 ? 1 : -1) + (int)count) % (int)count;
-    if (count == 1 && at == 0)
-    {
-        Toast("THE ONLY VERSION ON THE SERVER");
-        return;
-    }
-    UseVersionOf(id, sE.versions.v[next].version);
-}
-
-static void UseVersionOf(uint16_t id, uint32_t version)
-{
-    char line[40];
-
-    if (sE.dirtyFile && id == sE.id) Save(true);
-    if (!CtrOnline_UseVersion(id, version))
-    {
-        /* The server is busy: tried again once it is free. */
-        sE.cycleWanted = sE.cycleWanted ? sE.cycleWanted : 1;
-        return;
-    }
-    snprintf(line, sizeof(line), "LOADING VERSION %lu...", (unsigned long)version);
-    Toast(line);
-    sE.onlineWatch = true;
-    sE.onlineSerial = 0;
-}
-
-/* The star: a vote for the version on the card, or the vote taken back.
- * Two at most per Pokémon; kept on the card and sent (now or later). */
-static void ToggleVote(void)
-{
-    uint16_t id = FocusId();
-    uint32_t fav[2], list[2];
-    unsigned n, m = 0;
-    uint32_t version;
-
-    if (!CtrOnline_Linked())
-    {
-        Toast("LINK THE CONSOLE: OPTIONS, ONLINE");
-        return;
-    }
-    if (sE.cardFor != id) sE.cardVersion = CtrOnline_CardVersion(id), sE.cardFor = id;
-    version = sE.cardVersion;
-    if (version == 0)
-    {
-        Toast(CtrStereoMon_HasEdit(id) ? "NOT ON THE SERVER: UPLOAD IT FIRST" : "PICK A SERVER VERSION FIRST");
-        return;
-    }
-    n = CtrOnline_Favourites(id, fav, NULL);
-    for (unsigned i = 0; i < n; ++i)
-        if (fav[i] != version) list[m++] = fav[i];
-    if (m == n)
-    {
-        if (n >= 2)
-        {
-            Toast("TWO VOTES ALREADY: TAKE ONE BACK");
-            return;
-        }
-        list[m++] = version;
-    }
-    CtrOnline_Vote(id, list, m);
-    Toast(m > n ? "SENDING VOTE..." : "TAKING THE VOTE BACK...");
-    sE.onlineWatch = true;
-    sE.onlineSerial = CtrOnline_Serial();
-    sE.helpDirty = true;
-    sE.dirtyDraw = true;
-}
-
-/* The globe: what is new on the server to the card (a sync); then the
- * Pokédex opens on the new pictures (CtrStereoEdit_GoTo). */
-static void GlobeTap(void)
-{
-    if (!CtrOnline_Linked())
-    {
-        Toast("LINK THE CONSOLE: OPTIONS, ONLINE");
-        return;
-    }
-    Save(true);
-    sE.globeNewSerial = CtrOnline_NewSerial();
-    if (CtrOnline_Busy())
-    {
-        sE.globeWanted = true;
-        Toast("LOOKING FOR NEW ONES SOON...");
-        return;
-    }
-    if (CtrOnline_Sync())
-    {
-        sE.globeSync = true;
-        Toast("LOOKING FOR NEW ONES...");
-    }
-}
-
 /* Each frame: the picture in focus's list and card version, the
  * Pokédex's counts, the globe's sync, and what waits for the server. */
 static void OnlineFrame(void)
@@ -2110,6 +2005,7 @@ static void OnlineFrame(void)
         return;
     }
     busy = CtrOnline_Busy();
+    if (sE.screen == S_VERSIONS) return;
     if (id != sE.focusId)
     {
         sE.focusId = id;
@@ -2151,15 +2047,6 @@ static void OnlineFrame(void)
         CtrOnline_FetchVersions(id);
         busy = true;
     }
-    /* A turn asked for before the list (or the server) was there. */
-    if (sE.cycleWanted && !busy && sE.versionsLoaded && sE.versions.id == id && sE.cardFor == id)
-    {
-        int dir = sE.cycleWanted;
-
-        sE.cycleWanted = 0;
-        CycleVersion(dir);
-        busy = CtrOnline_Busy();
-    }
     /* The Pokédex's counts and votes, fetched again after two minutes. */
     if (sE.screen == S_CHOOSE)
     {
@@ -2178,149 +2065,6 @@ static void OnlineFrame(void)
             busy = true;
         }
     }
-    if (sE.globeWanted && !busy)
-    {
-        sE.globeWanted = false;
-        if (CtrOnline_Sync()) sE.globeSync = true;
-        busy = true;
-    }
-    if (sE.globeSync && !busy)
-    {
-        char text[CTR_ONLINE_TEXT];
-        CtrOnlineStatus st = CtrOnline_Status(text, sizeof(text));
-
-        sE.globeSync = false;
-        if (CtrOnline_NewSerial() == sE.globeNewSerial)
-            Toast(st == CTR_ONLINE_ERROR ? text : "NOTHING NEW. DEX: SEE AND VOTE");
-    }
-}
-
-/* ── The versions on the server (3ds_online.c) ─────────────────────── */
-
-#define VER_Y0 28
-#define VER_ROW 30
-#define VER_ROWS 6
-#define VER_STAR_W 34
-#define VER_CLOSE_W 56
-
-static void FetchVersions(void)
-{
-    if (!CtrOnline_FetchVersions(sE.id)) Toast("BUSY - A MOMENT");
-    sE.dirtyDraw = true;
-}
-
-static void OpenVersions(void)
-{
-    if (!CtrOnline_Linked())
-    {
-        sE.screen = S_EDIT;
-        Toast("LINK IN OPTIONS: EDITOR FIRST");
-        return;
-    }
-    if (sE.dirtyFile) Save(true);
-    memset(&sE.versions, 0, sizeof(sE.versions));
-    sE.versionsSerial = CtrOnline_GetVersions(&sE.versions);
-    if (sE.versions.id != sE.id) memset(&sE.versions, 0, sizeof(sE.versions));
-    sE.verCursor = 0;
-    sE.screen = S_VERSIONS;
-    FetchVersions();
-}
-
-/* A version to the card and the screens (the card's own edit kept in
- * stereo/backup unless the server has it). */
-static void UseVersion(unsigned i)
-{
-    if (i >= sE.versions.count) return;
-    if (sE.dirtyFile) Save(true);
-    if (CtrOnline_UseVersion(sE.id, sE.versions.v[i].version)) sE.verCursor = i;
-    else Toast("BUSY - A MOMENT");
-    sE.dirtyDraw = true;
-}
-
-/* A favourite's star on or off: at most two, sent at once. */
-static void StarVersion(unsigned i)
-{
-    uint32_t ids[2];
-    unsigned n = 0, most = sE.versions.maxFavourites && sE.versions.maxFavourites < 2 ? sE.versions.maxFavourites : 2;
-    CtrOnlineVersion *v;
-
-    if (i >= sE.versions.count) return;
-    v = &sE.versions.v[i];
-    for (unsigned k = 0; k < sE.versions.count; ++k)
-        if (k != i && sE.versions.v[k].favourite && n < 2) ids[n++] = sE.versions.v[k].version;
-    if (!v->favourite)
-    {
-        if (n >= most)
-        {
-            Toast("TWO FAVOURITES ALREADY: UNSTAR ONE");
-            return;
-        }
-        ids[n++] = v->version;
-    }
-    if (CtrOnline_Vote(sE.id, ids, n)) v->favourite = !v->favourite;
-    else Toast("BUSY - A MOMENT");
-    sE.verCursor = i;
-    sE.dirtyDraw = true;
-}
-
-/* Each frame on the screen: a new list, a new status line. */
-static void VersionsFrame(void)
-{
-    CtrOnlineVersions list;
-    unsigned serial = CtrOnline_GetVersions(&list);
-
-    if (serial != sE.versionsSerial)
-    {
-        sE.versionsSerial = serial;
-        if (list.id == sE.id)
-        {
-            sE.versions = list;
-            if (sE.verCursor >= list.count) sE.verCursor = list.count ? list.count - 1 : 0;
-        }
-        sE.dirtyDraw = true;
-    }
-    if (CtrOnline_Serial() != sE.statusSerial)
-    {
-        sE.statusSerial = CtrOnline_Serial();
-        sE.dirtyDraw = true;
-    }
-}
-
-/* UP/DOWN shows the version above or below, A stars it, Y asks the server
- * again, L/R turn the page, B goes back. */
-static void VersionsKeys(unsigned down)
-{
-    unsigned count = sE.versions.count;
-
-    if (down & (CTR_KEY_B | CTR_KEY_START)) sE.screen = S_EDIT;
-    else if ((down & CTR_KEY_UP) && sE.verCursor > 0) UseVersion(sE.verCursor - 1);
-    else if ((down & CTR_KEY_DOWN) && sE.verCursor + 1 < count) UseVersion(sE.verCursor + 1);
-    else if (down & CTR_KEY_A) StarVersion(sE.verCursor);
-    else if (down & CTR_KEY_Y) FetchVersions();
-    else if ((down & CTR_KEY_L) && sE.verCursor >= VER_ROWS) sE.verCursor -= VER_ROWS;
-    else if ((down & CTR_KEY_R) && sE.verCursor + VER_ROWS < count) sE.verCursor += VER_ROWS;
-    sE.dirtyDraw = true;
-}
-
-static void TouchVersions(const CtrInput *in)
-{
-    int x = in->touchX, y = in->touchY;
-
-    if (!in->touchDown) return;
-    sE.dirtyDraw = true;
-    if (y < VER_Y0 - 4)
-    {
-        if (x >= W - 4 - VER_CLOSE_W) sE.screen = S_EDIT;
-        else FetchVersions();
-        return;
-    }
-    if (y >= VER_Y0 && y < VER_Y0 + VER_ROWS * VER_ROW)
-    {
-        unsigned i = (sE.verCursor / VER_ROWS) * VER_ROWS + (unsigned)((y - VER_Y0) / VER_ROW);
-
-        if (x < VER_STAR_W) StarVersion(i);
-        else UseVersion(i);
-    }
 }
 
 static void OptionAct(int row, bool rightHalf)
@@ -2333,7 +2077,6 @@ static void OptionAct(int row, bool rightHalf)
         break;
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
     case O_AUTHOR: OpenKeyboard(KB_AUTHOR); break;
-    case O_VERSIONS: OpenVersions(); break;
     case O_RESET:
         sE.screen = S_CONFIRM_RESET;
         break;
@@ -2365,6 +2108,358 @@ static void OptionAct(int row, bool rightHalf)
 #define CF_H 88
 /* The UPLOAD row under the FINAL question when the console is linked. */
 #define CF_UPLOAD_H 32
+
+/* ── The versions screen: what the server has of this Pokémon ─────────── */
+
+/*
+ * The globe (in the editor's bar, or on a Pokémon in the Pokédex) opens it:
+ * the server's versions of the picture's front and of its back, two lists
+ * side by side with who made each and its votes. The top screen shows the
+ * front and the back next to each other, the side looked at in 3D. UP/DOWN
+ * shows a version (it goes on the card; the card's own edit is kept in
+ * stereo/backup unless the server has it), LEFT/RIGHT is the front or the
+ * back, A (or the star) votes for it, Y animates; UPLOAD MINE sends this
+ * console's own edits of both sides, DELETE MINE takes this account's
+ * version off the server.
+ */
+#define VER_TITLE_H 24
+#define VER_HEAD_Y 26
+#define VER_HEAD_H 18
+#define VER_Y0 48
+#define VER_ROW 32
+#define VER_ROWS 4
+#define VER_COL_W 154
+#define VER_STAR_W 22
+#define VER_CLOSE_W 56
+#define VER_BTN_Y 182
+#define VER_BTN_H 22
+
+static int ColumnX(unsigned side) { return side ? W - 4 - VER_COL_W : 4; }
+
+/* The version on the card of a side: its place in the side's list, or -1. */
+static int SideCardAt(unsigned side)
+{
+    for (unsigned i = 0; i < sE.sideList[side].count; ++i)
+        if (sE.sideCard[side] && sE.sideList[side].v[i].version == sE.sideCard[side]) return (int)i;
+    return -1;
+}
+
+static void OpenVersions(void)
+{
+    uint16_t other = CtrStereoMon_Counterpart(sE.id);
+    bool back = (sE.id & 0xC000) == CTR_STEREO_ID_BACK;
+
+    if (!CtrOnline_Linked())
+    {
+        sE.screen = S_EDIT;
+        Toast("LINK THE CONSOLE: OPTIONS, ONLINE");
+        return;
+    }
+    if (sE.dirtyFile) Save(true);
+    memset(sE.sideList, 0, sizeof(sE.sideList));
+    memset(sE.sideLoaded, 0, sizeof(sE.sideLoaded));
+    memset(sE.sideCursor, 0, sizeof(sE.sideCursor));
+    memset(sE.sidePlaced, 0, sizeof(sE.sidePlaced));
+    /* A Pokémon's front and back; a trainer's or a player's one picture. */
+    sE.sideId[0] = back && other ? other : sE.id;
+    sE.sideId[1] = back ? sE.id : (sE.id & 0xC000) == 0 ? other : 0;
+    sE.side = back ? 1 : 0;
+    sE.sideCard[0] = CtrOnline_CardVersion(sE.sideId[0]);
+    sE.sideCard[1] = sE.sideId[1] ? CtrOnline_CardVersion(sE.sideId[1]) : 0;
+    sE.sideSerial = CtrOnline_Serial();
+    sE.confirmDelete = false;
+    sE.versionsSerial = CtrOnline_GetVersions(&sE.sideList[0]);
+    memset(&sE.sideList[0], 0, sizeof(sE.sideList[0]));
+    sE.askedFor = 0;
+    sE.screen = S_VERSIONS;
+    sE.helpDirty = true;
+    sE.dirtyDraw = true;
+    CtrStereoMonGame_WantCompanion(true);
+}
+
+static void CloseVersions(void)
+{
+    sE.screen = S_EDIT;
+    sE.confirmDelete = false;
+    CtrStereoMonGame_WantCompanion(false);
+    sE.helpDirty = true;
+    sE.dirtyDraw = true;
+}
+
+/* The other side to the screens (and to the editor, which follows it). */
+static void ShowSide(unsigned side)
+{
+    int index;
+
+    if (side > 1 || sE.sideId[side] == 0 || side == sE.side) return;
+    index = CtrStereoMon_GalleryIndexOf(sE.sideId[side]);
+    if (index < 0) return;
+    Save(true);
+    sE.side = (uint8_t)side;
+    sE.pl = NULL;
+    sE.id = 0;
+    CtrStereoMonGame_SelectIndex((unsigned)index);
+    sE.helpDirty = true;
+    sE.dirtyDraw = true;
+}
+
+/* A version of the side looked at to the card and the screens. */
+static void ShowVersion(unsigned i)
+{
+    const CtrOnlineVersions *list = &sE.sideList[sE.side];
+
+    if (i >= list->count) return;
+    sE.sideCursor[sE.side] = i;
+    sE.helpDirty = true;
+    sE.dirtyDraw = true;
+    if (list->v[i].version == sE.sideCard[sE.side]) return;
+    if (sE.dirtyFile) Save(true);
+    if (CtrOnline_UseVersion(sE.sideId[sE.side], list->v[i].version))
+    {
+        char line[40];
+
+        snprintf(line, sizeof(line), "SHOWING VERSION %lu...", (unsigned long)list->v[i].version);
+        Toast(line);
+    }
+    else Toast("BUSY - A MOMENT");
+}
+
+/* A vote for a version of a side, or the vote taken back: two at most per
+ * picture, kept on the card and sent now or as soon as the server answers. */
+static void VoteFor(unsigned side, unsigned i)
+{
+    const CtrOnlineVersions *list = &sE.sideList[side];
+    uint32_t fav[2], keep[2], version;
+    unsigned n, m = 0;
+
+    if (i >= list->count) return;
+    version = list->v[i].version;
+    n = CtrOnline_Favourites(sE.sideId[side], fav, NULL);
+    for (unsigned k = 0; k < n; ++k)
+        if (fav[k] != version) keep[m++] = fav[k];
+    if (m == n)
+    {
+        if (n >= 2)
+        {
+            Toast("TWO VOTES ALREADY: TAKE ONE BACK");
+            return;
+        }
+        keep[m++] = version;
+    }
+    CtrOnline_Vote(sE.sideId[side], keep, m);
+    sE.sideCursor[side] = i;
+    Toast(m > n ? "SENDING VOTE..." : "TAKING THE VOTE BACK...");
+    sE.onlineWatch = true;
+    sE.onlineSerial = CtrOnline_Serial();
+    sE.helpDirty = true;
+    sE.dirtyDraw = true;
+}
+
+/* UPLOAD MINE: this console's own edits of both sides that the server has
+ * not got (the card's file is no server version). */
+static void UploadMine(void)
+{
+    uint16_t up[2] = {0, 0};
+    unsigned n = 0;
+
+    if (sE.dirtyFile) Save(true);
+    for (unsigned s = 0; s < 2; ++s)
+        if (sE.sideId[s] && CtrStereoMon_HasEdit(sE.sideId[s]) && CtrOnline_CardVersion(sE.sideId[s]) == 0)
+            up[n++] = sE.sideId[s];
+    if (n == 0)
+    {
+        Toast("NOTHING OF YOURS TO UPLOAD");
+        return;
+    }
+    if (CtrOnline_UploadPair(up[0], up[1]))
+    {
+        Toast("UPLOADING YOUR EDIT...");
+        sE.onlineWatch = true;
+        sE.onlineSerial = 0;
+        sE.sideLoaded[0] = sE.sideLoaded[1] = false;
+        sE.askedFor = 0;
+    }
+    else Toast("BUSY - A MOMENT");
+}
+
+/* DELETE MINE: this account's version of the side looked at (the one on
+ * the card, else the one under the cursor, else its only one), asked first. */
+static void AskDeleteMine(void)
+{
+    const CtrOnlineVersions *list = &sE.sideList[sE.side];
+    int pick = -1, mine = 0, last = -1, card = SideCardAt(sE.side), cur = (int)sE.sideCursor[sE.side];
+
+    for (unsigned i = 0; i < list->count; ++i)
+        if (list->v[i].mine)
+        {
+            ++mine;
+            last = (int)i;
+        }
+    if (card >= 0 && list->v[card].mine) pick = card;
+    else if (cur < (int)list->count && list->v[cur].mine) pick = cur;
+    else if (mine == 1) pick = last;
+    if (pick < 0)
+    {
+        Toast(mine ? "PICK WHICH OF YOURS FIRST" : "NONE OF THESE IS YOURS");
+        return;
+    }
+    sE.deleteVersion = list->v[pick].version;
+    sE.confirmDelete = true;
+    sE.dirtyDraw = true;
+}
+
+static void DeleteMine(void)
+{
+    sE.confirmDelete = false;
+    if (CtrOnline_Delete(sE.sideId[sE.side], sE.deleteVersion))
+    {
+        Toast("DELETING FROM THE SERVER...");
+        sE.onlineWatch = true;
+        sE.onlineSerial = 0;
+    }
+    else Toast("BUSY - A MOMENT");
+    sE.dirtyDraw = true;
+}
+
+static void ToggleAnimate(void)
+{
+    sE.animate = !sE.animate;
+    sE.helpDirty = true;
+    sE.dirtyDraw = true;
+}
+
+/* Each frame on the screen: the two lists (asked for one at a time), which
+ * version each side's card holds, the cursor on it when a list arrives. */
+static void VersionsFrame(void)
+{
+    CtrOnlineVersions list;
+    unsigned serial = CtrOnline_GetVersions(&list);
+    bool busy = CtrOnline_Busy();
+
+    if (serial != sE.versionsSerial)
+    {
+        sE.versionsSerial = serial;
+        for (unsigned s = 0; s < 2; ++s)
+            if (sE.sideId[s] && list.id == sE.sideId[s])
+            {
+                sE.sideList[s] = list;
+                sE.sideLoaded[s] = true;
+                sE.helpDirty = true;
+                sE.dirtyDraw = true;
+            }
+    }
+    if (CtrOnline_Serial() != sE.sideSerial && !busy)
+    {
+        sE.sideSerial = CtrOnline_Serial();
+        for (unsigned s = 0; s < 2; ++s)
+            if (sE.sideId[s]) sE.sideCard[s] = CtrOnline_CardVersion(sE.sideId[s]);
+        sE.helpDirty = true;
+        sE.dirtyDraw = true;
+    }
+    /* The cursor starts on the version the card holds. */
+    for (unsigned s = 0; s < 2; ++s)
+        if (sE.sideLoaded[s] && !sE.sidePlaced[s])
+        {
+            int at = SideCardAt(s);
+
+            sE.sidePlaced[s] = true;
+            sE.sideCursor[s] = at >= 0 ? (unsigned)at : 0;
+        }
+    if (!busy)
+        for (unsigned k = 0; k < 2; ++k)
+        {
+            unsigned s = k ? 1u - sE.side : sE.side;
+
+            if (sE.sideId[s] && !sE.sideLoaded[s] && (sE.askedFor != sE.sideId[s] || sE.tick - sE.askedAt > 600))
+            {
+                sE.askedFor = sE.sideId[s];
+                sE.askedAt = sE.tick;
+                CtrOnline_FetchVersions(sE.sideId[s]);
+                break;
+            }
+        }
+    if (CtrOnline_Serial() != sE.statusSerial)
+    {
+        sE.statusSerial = CtrOnline_Serial();
+        sE.dirtyDraw = true;
+    }
+}
+
+/* UP/DOWN show a version, LEFT/RIGHT the front or the back, A votes, Y
+ * animates, L/R a page of the list, B goes back. */
+static void VersionsKeys(unsigned down)
+{
+    unsigned count = sE.sideList[sE.side].count, cur = sE.sideCursor[sE.side];
+
+    if (sE.confirmDelete)
+    {
+        if (down & CTR_KEY_A) DeleteMine();
+        else if (down & CTR_KEY_B) sE.confirmDelete = false;
+        sE.dirtyDraw = true;
+        return;
+    }
+    if (down & (CTR_KEY_B | CTR_KEY_START)) CloseVersions();
+    else if ((down & CTR_KEY_UP) && cur > 0) ShowVersion(cur - 1);
+    else if ((down & CTR_KEY_DOWN) && cur + 1 < count) ShowVersion(cur + 1);
+    else if (down & CTR_KEY_LEFT) ShowSide(0);
+    else if (down & CTR_KEY_RIGHT) ShowSide(1);
+    else if (down & CTR_KEY_A) VoteFor(sE.side, cur);
+    else if (down & CTR_KEY_Y) ToggleAnimate();
+    else if ((down & CTR_KEY_L) && cur >= VER_ROWS) ShowVersion(cur - VER_ROWS);
+    else if ((down & CTR_KEY_R) && cur + VER_ROWS < count) ShowVersion(cur + VER_ROWS);
+    sE.dirtyDraw = true;
+}
+
+static void TouchVersions(const CtrInput *in)
+{
+    int x = in->touchX, y = in->touchY;
+
+    if (!in->touchDown) return;
+    sE.dirtyDraw = true;
+    if (sE.confirmDelete)
+    {
+        if (y >= CF_Y + 52 && y < CF_Y + 80)
+        {
+            if (x >= CF_X + 16 && x < CF_X + 96) DeleteMine();
+            else if (x >= CF_X + 104 && x < CF_X + 184) sE.confirmDelete = false;
+        }
+        return;
+    }
+    if (y < VER_TITLE_H)
+    {
+        if (x >= W - 4 - VER_CLOSE_W) CloseVersions();
+        return;
+    }
+    if (y >= VER_HEAD_Y && y < VER_HEAD_Y + VER_HEAD_H)
+    {
+        ShowSide(x >= W / 2 ? 1 : 0);
+        return;
+    }
+    if (y >= VER_Y0 && y < VER_Y0 + VER_ROWS * VER_ROW)
+    {
+        unsigned side = x >= W / 2 ? 1 : 0;
+        unsigned first = sE.sideCursor[side] / VER_ROWS * VER_ROWS;
+        unsigned i = first + (unsigned)((y - VER_Y0) / VER_ROW);
+        int cx = x - ColumnX(side);
+
+        if (sE.sideId[side] == 0 || i >= sE.sideList[side].count) return;
+        if (cx < VER_STAR_W) VoteFor(side, i);
+        else if (side != sE.side)
+        {
+            /* The other side: looked at first, the version shown next. */
+            sE.sideCursor[side] = i;
+            ShowSide(side);
+        }
+        else ShowVersion(i);
+        return;
+    }
+    if (y >= VER_BTN_Y && y < VER_BTN_Y + VER_BTN_H)
+    {
+        if (x < 108) UploadMine();
+        else if (x < 212) AskDeleteMine();
+        else ToggleAnimate();
+    }
+}
 
 static void TouchConfirm(const CtrInput *in)
 {
@@ -2423,7 +2518,10 @@ static void TouchChoose(const CtrInput *in)
     row = (y - CH_Y0) / CH_ROW_H;
     if (row < 0 || row >= CH_ROWS || col >= CH_COLS) return;
     cell = page * CH_PER_PAGE + (unsigned)(row * CH_COLS + col);
-    if (cell < count) Choose(sList[cell]);
+    if (cell >= count) return;
+    /* The entry's globe: its versions on the server; the rest: the editor. */
+    if (x >= (col + 1) * (W / CH_COLS) - 4 - CH_GLOBE_W) sE.versionsAfterBind = true;
+    Choose(sList[cell]);
 }
 
 /* The keyboard's keys: A..Z then 0..9, nine to a row. */
@@ -2864,30 +2962,24 @@ static void DrawTools(void)
 /* The bar along the picture's top. */
 static void DrawStar(int x, int y, bool on);
 
-/* The globe (the user's picture, 3ds_menu_icon.h) at its own size: a dot
- * on it while the server is being talked to, an orange one while votes
- * wait on the card. */
+/* The globe: a button with the 16px picture (sprites/globe.png); a dot on
+ * it while the server is being talked to, an orange one while votes wait
+ * on the card. It opens the versions screen. */
 static void DrawGlobe(void)
 {
-    int x0 = ONLINE_X + (ONLINE_W - ONLINE_ICON_W) / 2, y0 = BAR_Y + (BAR_H - ONLINE_ICON_H) / 2 + (sE.pressed == P_ONLINE);
     bool linked = CtrOnline_Linked();
 
-    for (int r = 0; r < ONLINE_ICON_H; ++r)
-        for (int c = 0; c < ONLINE_ICON_W; ++c)
-        {
-            uint16_t px = sOnlineIcon[r * ONLINE_ICON_W + c];
-
-            if (px != MENU_ICON_CLEAR) Px(x0 + c, y0 + r, linked ? px : Grey(px));
-        }
-    if (CtrOnline_Busy() || sE.globeSync || sE.globeWanted)
+    CtrBottomDraw_Plate(ONLINE_X, BAR_Y, ONLINE_W, BAR_H, linked ? 0 : 2, sE.pressed == P_ONLINE);
+    Sprite(SPRITE_GLOBE, ONLINE_X + (ONLINE_W - SPRITE_SIZE) / 2 - 1, BAR_Y + (BAR_H - SPRITE_SIZE) / 2 + (sE.pressed == P_ONLINE));
+    if (CtrOnline_Busy())
     {
-        DrawDisc(x0 + ONLINE_ICON_W - 3, y0 + 3, 4, Rgb(1, 2, 2));
-        DrawDisc(x0 + ONLINE_ICON_W - 3, y0 + 3, 3, (sE.tick / 15) % 2 ? Rgb(6, 40, 31) : Rgb(14, 56, 31));
+        DrawDisc(ONLINE_X + ONLINE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
+        DrawDisc(ONLINE_X + ONLINE_W - 5, BAR_Y + 5, 3, (sE.tick / 15) % 2 ? Rgb(6, 40, 31) : Rgb(14, 56, 31));
     }
     else if (CtrOnline_PendingVotes())
     {
-        DrawDisc(x0 + ONLINE_ICON_W - 3, y0 + 3, 4, Rgb(1, 2, 2));
-        DrawDisc(x0 + ONLINE_ICON_W - 3, y0 + 3, 3, Rgb(31, 40, 4));
+        DrawDisc(ONLINE_X + ONLINE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
+        DrawDisc(ONLINE_X + ONLINE_W - 5, BAR_Y + 5, 3, Rgb(31, 40, 4));
     }
 }
 
@@ -2900,16 +2992,6 @@ static void DrawBar(void)
     CtrBottomDraw_GamePic(CTR_DRAW_PIC_DEX, DEX_X + DEX_W / 2, BAR_Y + BAR_H / 2);
     PlateIcon(MORE_X, BAR_Y, MORE_W, BAR_H, 0, sE.pressed == P_MORE, ICON_SETTINGS, false, INK_DARK);
     DrawGlobe();
-    /* The vote: a star, gold when the version on the card has this
-     * account's vote; greyed when there is nothing to vote for. */
-    {
-        uint16_t id = FocusId();
-        bool on = sE.cardFor == id && Voted(id, sE.cardVersion);
-        bool live = CtrOnline_Linked() && sE.cardFor == id && sE.cardVersion != 0;
-
-        CtrBottomDraw_Plate(VOTE_X, BAR_Y, VOTE_W, BAR_H, on ? 1 : live ? 0 : 2, sE.pressed == P_VOTE);
-        DrawStar(VOTE_X + (VOTE_W - 11) / 2, BAR_Y + (BAR_H - 11) / 2 + (sE.pressed == P_VOTE), on);
-    }
     PlateIcon(UNDO_X, BAR_Y, UNDO_W, BAR_H, sUndoCount ? 0 : 2, sE.pressed == P_UNDO, ICON_UNDO, false,
               sUndoCount ? INK_DARK : INK_OFF);
     PlateIcon(REDO_X, BAR_Y, UNDO_W, BAR_H, sRedoCount ? 0 : 2, sE.pressed == P_REDO, ICON_REDO, false,
@@ -3152,64 +3234,108 @@ static void DrawStar(int x, int y, bool on)
 }
 
 /*
- * The versions screen: every version of the picture on the server, newest
- * first, who made it, its votes, whether it is current and whether it is
- * the one on the card; a star for each of the (two) favourites.
+ * The versions screen (VersionsFrame and its friends): the front's list on
+ * the left, the back's on the right, the side looked at chosen; each
+ * version with its vote star, number, votes, who made it, whether the card
+ * shows it and whether it is this account's; UPLOAD MINE, DELETE MINE and
+ * ANIMATE along the bottom, the server's status under them.
  */
 static void DrawVersions(void)
 {
-    const CtrOnlineVersions *list = &sE.versions;
-    unsigned page = sE.verCursor / VER_ROWS;
-    char line[64], status[CTR_ONLINE_TEXT];
+    char line[64], status[CTR_ONLINE_TEXT], name[CTR_STEREO_MON_NAME];
     CtrOnlineStatus st = CtrOnline_Status(status, sizeof(status));
 
     CtrBottomDraw_Panel(0, 0, W, H);
-    snprintf(line, sizeof(line), "VERSIONS OF %s", sE.name);
+    CtrStereoMonGame_Name(sE.sideId[0], name, sizeof(name));
+    snprintf(line, sizeof(line), "%s ON THE SERVER", name);
     CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, 7, CTR_DRAW_DARK);
     CtrBottomDraw_Plate(W - 4 - VER_CLOSE_W, 2, VER_CLOSE_W, 20, 0, false);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "CLOSE", W - 4 - VER_CLOSE_W / 2, 7, CTR_DRAW_DARK);
-    if (list->count == 0)
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_NORMAL, st == CTR_ONLINE_BUSY ? "ASKING THE SERVER..." : "NONE ON THE SERVER YET",
-                                  W / 2, H / 2 - 8, CTR_DRAW_DARK);
-    for (unsigned r = 0; r < VER_ROWS; ++r)
+    for (unsigned side = 0; side < 2; ++side)
     {
-        unsigned i = page * VER_ROWS + r;
-        const CtrOnlineVersion *v = &list->v[i];
-        int y = VER_Y0 + (int)r * VER_ROW, colour;
-        bool chosen = i == sE.verCursor;
+        const CtrOnlineVersions *list = &sE.sideList[side];
+        int x = ColumnX(side);
+        bool looked = side == sE.side;
+        unsigned first = sE.sideCursor[side] / VER_ROWS * VER_ROWS;
 
-        if (i >= list->count) break;
-        CtrBottomDraw_Plate(4, y, W - 8, VER_ROW - 4, chosen ? 1 : 0, false);
-        DrawStar(13, y + 7, v->favourite);
-        colour = chosen ? CTR_DRAW_WHITE : CTR_DRAW_DARK;
-        snprintf(line, sizeof(line), "#%lu %s", (unsigned long)v->version, v->author[0] ? v->author : "?");
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, VER_STAR_W, y + 3, colour);
-        snprintf(line, sizeof(line), "R%u%s%s", v->revision, v->final ? "  FINAL" : "",
-                 v->current ? (list->pinned ? "  CURRENT, PINNED" : "  CURRENT") : "");
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, VER_STAR_W, y + 14, chosen ? CTR_DRAW_WHITE : CTR_DRAW_BLUE);
-        snprintf(line, sizeof(line), "%u VOTE%s", v->votes, v->votes == 1 ? "" : "S");
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, W - 12 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, line), y + 3,
-                           colour);
-        if (v->onCard)
-            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "SHOWING", W - 12 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "SHOWING"),
-                               y + 14, chosen ? CTR_DRAW_WHITE : CTR_DRAW_RED);
+        if (sE.sideId[side] == 0)
+        {
+            CtrBottomDraw_Plate(x, VER_HEAD_Y, VER_COL_W, VER_HEAD_H, 2, false);
+            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, side ? "NO BACK" : "NO FRONT", x + VER_COL_W / 2, VER_HEAD_Y + 3,
+                                      CTR_DRAW_OFF);
+            continue;
+        }
+        CtrBottomDraw_Plate(x, VER_HEAD_Y, VER_COL_W, VER_HEAD_H, looked ? 1 : 0, false);
+        if (sE.sideLoaded[side]) snprintf(line, sizeof(line), "%s  %u", side ? "BACK" : "FRONT", list->count);
+        else snprintf(line, sizeof(line), "%s", side ? "BACK" : "FRONT");
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 6, VER_HEAD_Y + 3, looked ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+        if (sE.sideLoaded[side] && list->count > VER_ROWS)
+        {
+            snprintf(line, sizeof(line), "%u/%u", first / VER_ROWS + 1, (list->count + VER_ROWS - 1) / VER_ROWS);
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + VER_COL_W - 6 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, line),
+                               VER_HEAD_Y + 3, looked ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+        }
+        if (!sE.sideLoaded[side])
+        {
+            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "ASKING THE SERVER...", x + VER_COL_W / 2, VER_Y0 + 12, CTR_DRAW_DARK);
+            continue;
+        }
+        if (list->count == 0)
+            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "NONE ON THE SERVER YET", x + VER_COL_W / 2, VER_Y0 + 12,
+                                      CTR_DRAW_DARK);
+        for (unsigned r = 0; r < VER_ROWS; ++r)
+        {
+            unsigned i = first + r;
+            const CtrOnlineVersion *v = &list->v[i];
+            int y = VER_Y0 + (int)r * VER_ROW, ink;
+            bool chosen = looked && i == sE.sideCursor[side], shown = sE.sideCard[side] && v->version == sE.sideCard[side];
+
+            if (i >= list->count) break;
+            CtrBottomDraw_Plate(x, y, VER_COL_W, VER_ROW - 3, chosen ? 1 : 0, false);
+            DrawStar(x + 6, y + 9, Voted(sE.sideId[side], v->version));
+            ink = chosen ? CTR_DRAW_WHITE : CTR_DRAW_DARK;
+            snprintf(line, sizeof(line), "%lu  %u VOTE%s%s", (unsigned long)v->version, v->votes, v->votes == 1 ? "" : "S",
+                     v->current ? "  TOP" : "");
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + VER_STAR_W, y + 3, ink);
+            snprintf(line, sizeof(line), "BY %s", v->author[0] ? v->author : "?");
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + VER_STAR_W, y + 15, chosen ? CTR_DRAW_WHITE : CTR_DRAW_BLUE);
+            if (shown)
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "SHOWN", x + VER_COL_W - 6 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "SHOWN"),
+                                   y + 3, chosen ? CTR_DRAW_WHITE : CTR_DRAW_RED);
+            if (v->mine)
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOURS", x + VER_COL_W - 6 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOURS"),
+                                   y + 15, chosen ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+        }
     }
-    if (list->count > VER_ROWS)
-    {
-        snprintf(line, sizeof(line), "PAGE %u OF %u  L/R", page + 1, (list->count + VER_ROWS - 1) / VER_ROWS);
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, W - 8 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, line), H - 15,
-                           CTR_DRAW_DARK);
-    }
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "UP/DOWN SHOW   A STAR (TWO)   B BACK", 6, H - 28, CTR_DRAW_DARK);
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, status, 6, H - 15,
+    /* The buttons: send this console's own edit, take this account's off, animate. */
+    CtrBottomDraw_Plate(4, VER_BTN_Y, 100, VER_BTN_H, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "UPLOAD MINE", 54, VER_BTN_Y + 5, CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(108, VER_BTN_Y, 100, VER_BTN_H, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "DELETE MINE", 158, VER_BTN_Y + 5, CTR_DRAW_RED);
+    CtrBottomDraw_Plate(212, VER_BTN_Y, W - 216, VER_BTN_H, sE.animate ? 1 : 0, sE.animate);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "ANIMATE  Y", 212 + (W - 216) / 2, VER_BTN_Y + 5,
+                              sE.animate ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, status, 6, VER_BTN_Y + 27,
                        st == CTR_ONLINE_ERROR ? CTR_DRAW_RED : st == CTR_ONLINE_BUSY ? CTR_DRAW_BLUE : CTR_DRAW_DARK);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "UP/DOWN SHOW  LEFT/RIGHT SIDE  A VOTE", 6, H - 13, CTR_DRAW_DARK);
+    if (sE.confirmDelete)
+    {
+        CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, CF_H / 8, false);
+        snprintf(line, sizeof(line), "DELETE YOUR VERSION %lu", (unsigned long)sE.deleteVersion);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, CF_X + CF_W / 2, CF_Y + 10, CTR_DRAW_DARK);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, sE.side ? "OF THE BACK FROM THE SERVER?" : "OF THE FRONT FROM THE SERVER?",
+                                  CF_X + CF_W / 2, CF_Y + 26, CTR_DRAW_RED);
+        CtrBottomDraw_Plate(CF_X + 16, CF_Y + 52, 80, 24, 0, false);
+        CtrBottomDraw_Plate(CF_X + 104, CF_Y + 52, 80, 24, 1, false);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "DELETE  A", CF_X + 56, CF_Y + 57, CTR_DRAW_RED);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "KEEP  B", CF_X + 144, CF_Y + 57, CTR_DRAW_WHITE);
+    }
     DrawToast();
 }
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "AUTHOR", "VERSIONS ON SERVER", "RESET TO PACK",
-                                               "CLOSE"};
+    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "AUTHOR", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -3289,40 +3415,47 @@ static void DrawChooser(void)
         /* A Pokémon's icon (front or back); a trainer's or a player's kind. */
         if (kind == 0 || kind == CTR_STEREO_ID_BACK)
         {
-            if (!CtrBottomDraw_MonIcon(number, x + 2, y)) sE.iconsMissing = true;
+            if (!CtrBottomDraw_MonIcon(number, x + 2, y + 2)) sE.iconsMissing = true;
         }
         else
-            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, kind == CTR_STEREO_ID_TRAINER ? "TR" : "PL", x + 18, y + 9,
+            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, kind == CTR_STEREO_ID_TRAINER ? "TR" : "PL", x + 18, y + 12,
                                       cur ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
-        if (kind == 0) snprintf(line, sizeof(line), "%03u", number);
-        else snprintf(line, sizeof(line), "%c%03u", kind == CTR_STEREO_ID_BACK ? 'B' : kind == CTR_STEREO_ID_TRAINER ? 'T' : 'P', number);
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 3, cur ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, name, x + 36, y + 16, cur ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
-        /* On the server: how many versions (and a star when this account
-         * voted for one), left of the edit mark. */
+        /* The number and the name. */
+        if (kind == 0) snprintf(line, sizeof(line), "%03u %s", number, name);
+        else snprintf(line, sizeof(line), "%c%03u %s", kind == CTR_STEREO_ID_BACK ? 'B' : kind == CTR_STEREO_ID_TRAINER ? 'T' : 'P',
+                      number, name);
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 2, cur ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+        /* What the server has of it (the front's and the back's), and whose
+         * it is when the card has no edit of its own. */
         {
-            bool voted;
-            unsigned versions = CtrOnline_VersionCount(id, &voted);
+            uint16_t other = CtrStereoMon_Counterpart(id), front = kind == CTR_STEREO_ID_BACK && other ? other : id;
+            uint16_t back = front == id ? other : id;
+            bool votedF, votedB, edited = CtrStereoMon_HasEdit(id) || (other && CtrStereoMon_HasEdit(other));
+            unsigned nf = CtrOnline_VersionCount(front, &votedF), nb = back ? CtrOnline_VersionCount(back, &votedB) : 0;
+            char author[20];
 
-            if (versions)
+            if (back == 0) votedB = false;
+            if (nf || nb)
             {
-                snprintf(line, sizeof(line), "%uV", versions);
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 58, y + 3, cur ? CTR_DRAW_WHITE : CTR_DRAW_BLUE);
+                if (back) snprintf(line, sizeof(line), "%u FRONT  %u BACK", nf, nb);
+                else snprintf(line, sizeof(line), "%u VERSION%s", nf, nf == 1 ? "" : "S");
             }
-            if (voted) DrawStar(x + 73, y + 4, true);
+            else snprintf(line, sizeof(line), "%s", CtrOnline_Linked() ? "NOT ON THE SERVER" : "");
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 13, cur ? CTR_DRAW_WHITE : nf || nb ? CTR_DRAW_BLUE : CTR_DRAW_OFF);
+            line[0] = 0;
+            if (edited) snprintf(line, sizeof(line), "%s", CtrStereoMon_IsFinal(front) ? "YOUR EDIT, FINAL" : "YOUR EDIT");
+            else if (CtrOnline_CurrentAuthor(front, author, sizeof(author)) || (back && CtrOnline_CurrentAuthor(back, author, sizeof(author))))
+                snprintf(line, sizeof(line), "BY %s", author);
+            if (line[0])
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 24, cur ? CTR_DRAW_WHITE : edited ? CTR_DRAW_RED : CTR_DRAW_DARK);
+            if (votedF || votedB) DrawStar(x + W / CH_COLS - 6 - CH_GLOBE_W - 13, y + 3, true);
         }
-        /* Edited (either side): a pencil; finished (both sides): a tick. */
-        {
-            uint16_t other = CtrStereoMon_Counterpart(id);
-
-            if (CtrStereoMon_IsFinal(id) && (!other || CtrStereoMon_IsFinal(other)))
-                Icon(ICON_CHECK, false, x + W / CH_COLS - 18, y + 3, Rgb(8, 58, 10));
-            else if (CtrStereoMon_HasEdit(id) || (other && CtrStereoMon_HasEdit(other)))
-                Icon(ICON_EDIT, false, x + W / CH_COLS - 18, y + 3, Rgb(31, 52, 8));
-        }
+        /* The globe: this Pokémon's versions on the server. */
+        CtrBottomDraw_Plate(x + W / CH_COLS - 4 - CH_GLOBE_W, y + 7, CH_GLOBE_W, 22, 0, false);
+        Sprite(SPRITE_GLOBE, x + W / CH_COLS - 4 - CH_GLOBE_W + (CH_GLOBE_W - SPRITE_SIZE) / 2 - 1, y + 10);
     }
     /* (The game font's strings take 39 characters at most.) */
-    snprintf(line, sizeof(line), "%u SHOWN   PAGE %u OF %u   L/R PAGES", count, count ? page + 1 : 1, pages);
+    snprintf(line, sizeof(line), "PAGE %u OF %u   A: EDIT   X: ONLINE", count ? page + 1 : 1, pages);
     CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, CH_Y0 + CH_ROWS * CH_ROW_H + 1, CTR_DRAW_DARK);
 }
 
@@ -3385,10 +3518,13 @@ static void DrawKeyboard(void)
 static void MakeHelpSheet(void)
 {
     static const char *const fixed[] = {"NEXT/PICK PLANE", "OUTLINE", "PAN", "ZOOM", "UNDO/REDO", "ANIMATE", "VIEW",
-                                        "FRAME", "PKMN, DOWN: VERSION", "BATTLE", "BACK", "POKEDEX", "HOLD", "START", "SELECT"};
+                                        "FRAME", "SWITCH PKMN", "BATTLE", "BACK", "POKEDEX", "HOLD", "START", "SELECT"};
     static const char *const views[V_COUNT] = {"", "  LAYERS"};
-    static const char *const chooser[] = {"POKEMON", "VERSIONS", "PAGE BACK", "NEXT PAGE", "EDIT", "VOTE", "SEARCH",
+    /* CTR_HELP_C_POKEMON on: the Pokédex's words, or the versions screen's. */
+    static const char *const chooser[] = {"POKEMON", "", "PAGE BACK", "NEXT PAGE", "EDIT", "ITS VERSIONS ONLINE", "SEARCH",
                                           "ALL/EDITED/NEW", "BACK"};
+    static const char *const versions[] = {"FRONT OR BACK", "SHOW A VERSION", "FRONT", "BACK", "", "VOTE FOR IT", "", "",
+                                           "BACK"};
     static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
     const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();
     char text[CTR_HELP_CELLS][40];
@@ -3408,8 +3544,36 @@ static void MakeHelpSheet(void)
     /* The server's words about the picture in focus, the Pokédex's. */
     VersionLines(FocusId(), text[CTR_HELP_VERSION], text[CTR_HELP_VERSION_BY], text[CTR_HELP_VERSION_VOTES]);
     for (unsigned k = 0; k < sizeof(chooser) / sizeof(chooser[0]); ++k)
-        snprintf(text[CTR_HELP_C_POKEMON + k], 40, "%s", chooser[k]);
+        snprintf(text[CTR_HELP_C_POKEMON + k], 40, "%s", sE.screen == S_VERSIONS ? versions[k] : chooser[k]);
     text[CTR_HELP_CHOOSE_NAME][0] = text[CTR_HELP_PAGE][0] = 0;
+    if (sE.screen == S_VERSIONS)
+    {
+        /* Which version the side looked at shows, by whom, its votes. */
+        const CtrOnlineVersions *list = &sE.sideList[sE.side];
+        int at = SideCardAt(sE.side);
+        char name[CTR_STEREO_MON_NAME];
+
+        CtrStereoMonGame_Name(sE.sideId[0], name, sizeof(name));
+        snprintf(text[CTR_HELP_CHOOSE_NAME], 40, "%s ON THE SERVER", name);
+        snprintf(text[CTR_HELP_PAGE], 40, "LOOKING AT THE %s", sE.side ? "BACK" : "FRONT");
+        text[CTR_HELP_VERSION][0] = text[CTR_HELP_VERSION_BY][0] = text[CTR_HELP_VERSION_VOTES][0] = 0;
+        if (!sE.sideLoaded[sE.side]) snprintf(text[CTR_HELP_VERSION], 40, "ASKING THE SERVER...");
+        else if (list->count == 0) snprintf(text[CTR_HELP_VERSION], 40, "NONE ON THE SERVER YET");
+        else if (at < 0)
+        {
+            snprintf(text[CTR_HELP_VERSION], 40, "%s", CtrStereoMon_HasEdit(sE.sideId[sE.side]) ? "YOUR OWN EDIT" : "THE GAME'S PLANES");
+            snprintf(text[CTR_HELP_VERSION_BY], 40, "%u ON THE SERVER", list->count);
+        }
+        else
+        {
+            const CtrOnlineVersion *v = &list->v[at];
+
+            snprintf(text[CTR_HELP_VERSION], 40, "VERSION %u OF %u", list->count - (unsigned)at, list->count);
+            snprintf(text[CTR_HELP_VERSION_BY], 40, "BY %s", v->author[0] ? v->author : "?");
+            snprintf(text[CTR_HELP_VERSION_VOTES], 40, "%u VOTE%s%s%s", v->votes, v->votes == 1 ? "" : "S",
+                     Voted(sE.sideId[sE.side], v->version) ? "  YOUR VOTE" : "", v->current ? "  TOP" : "");
+        }
+    }
     if (sE.screen == S_CHOOSE && sListCount)
     {
         uint16_t id = FocusId();
@@ -3458,7 +3622,7 @@ static void Draw(void)
         DrawChooser();
     else if (sE.screen == S_KEYBOARD)
         DrawKeyboard();
-    else if (sE.screen == S_VERSIONS && sE.pl != NULL)
+    else if (sE.screen == S_VERSIONS)
         DrawVersions();
     else if (sE.pl == NULL)
     {
@@ -3625,18 +3789,13 @@ static const CtrInput *TestInput(const CtrInput *real)
 static void CstickMon(const CtrInput *in)
 {
     int cx = in->cstickX, ax = cx < 0 ? -cx : cx, cy = in->cstickY, ay = cy < 0 ? -cy : cy;
+
+    (void)ay;
     unsigned count = CtrStereoMon_GalleryCount();
 
     if (sE.cstickMoved)
     {
         if (ax < CSTICK_OFF && ay < CSTICK_OFF) sE.cstickMoved = false;
-        return;
-    }
-    /* Down: the next version on the server (another player's), up the one before. */
-    if (ay >= CSTICK_ON && ay > ax)
-    {
-        sE.cstickMoved = true;
-        CycleVersion(cy < 0 ? 1 : -1);
         return;
     }
     if (ax < CSTICK_ON || count == 0) return;
@@ -3731,7 +3890,14 @@ bool CtrStereoEdit_BottomFrame(void)
     if (sE.dirtyFile && !sE.touching && sE.screen == S_EDIT && sE.tick - sE.changedAt > AUTOSAVE_FRAMES) Save(true);
     OnlineFrame();
     CtrStereoMon_SetChooser(sE.screen == S_CHOOSE || (sE.screen == S_KEYBOARD && sE.kbReturn == S_CHOOSE));
-    if (sE.helpDirty && (sE.pl != NULL || sE.screen == S_CHOOSE))
+    CtrStereoMon_SetVersionsView(sE.screen == S_VERSIONS);
+    /* The Pokédex's globe: the versions screen once the picture is in. */
+    if (sE.versionsAfterBind && sE.pl != NULL && sE.screen == S_EDIT)
+    {
+        sE.versionsAfterBind = false;
+        OpenVersions();
+    }
+    if (sE.helpDirty && (sE.pl != NULL || sE.screen == S_CHOOSE || sE.screen == S_VERSIONS))
     {
         sE.helpDirty = false;
         MakeHelpSheet();

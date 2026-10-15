@@ -78,12 +78,12 @@ typedef struct
     bool verify;
 } Link;
 
-enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX };
+enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX, JOB_DELETE };
 
 typedef struct
 {
     int type;
-    uint16_t id;
+    uint16_t id, id2;
     char code[16];
     char consoleName[40];
     uint32_t version;
@@ -133,6 +133,7 @@ typedef struct
 {
     uint16_t id;
     uint8_t count, mine;
+    char author[17]; /* who uploaded the current version */
 } IndexEntry;
 static IndexEntry sIndex[MAX_INDEX];
 static unsigned sIndexCount, sIndexSerial;
@@ -771,6 +772,14 @@ static void DoUpload(const Job *job, const Link *link)
     SetStatus(CTR_ONLINE_BUSY, "UPLOADING...");
     SentLoad(&sent);
     result = UploadOne(link, job->id, &sent, &stop);
+    /* The other side too (a front's back), when asked for. */
+    if (job->id2 && result >= 0 && !stop)
+    {
+        int second = UploadOne(link, job->id2, &sent, &stop);
+
+        if (second < 0) result = -1;
+        else if (second > 0) result = 1;
+    }
     if (result > 0) SetStatus(CTR_ONLINE_DONE, "UPLOADED");
     else if (result == 0) SetStatus(CTR_ONLINE_DONE, "ALREADY ON SERVER");
     SentSave(&sent);
@@ -1090,6 +1099,7 @@ static bool ParseVersions(uint16_t id, const char *json)
         if (JsonNumber(object, "revision", &number)) v->revision = (uint16_t)number;
         if (JsonNumber(object, "votes", &number)) v->votes = (uint16_t)number;
         if (JsonNumber(object, "final", &number)) v->final = number != 0;
+        if (JsonNumber(object, "mine", &number)) v->mine = number != 0;
         v->current = v->version == (uint32_t)current;
         for (unsigned f = 0; f < favs; ++f) v->favourite |= (uint32_t)fav[f] == v->version;
         JsonString(object, "sha256", shas[list.count], sizeof(shas[0]));
@@ -1412,6 +1422,9 @@ static void DoIndex(const Link *link)
         if (!JsonString(object, "key", key, sizeof(key)) || IdOf(key) == 0) continue;
         JsonNumber(object, "versions", &versions);
         JsonNumber(object, "mine", &mine);
+        list[count].author[0] = 0;
+        JsonString(object, "author", list[count].author, sizeof(list[count].author));
+        FontSafe(list[count].author);
         list[count].id = IdOf(key);
         list[count].count = (uint8_t)(versions < 255 ? versions : 255);
         list[count].mine = (uint8_t)(mine < 255 ? mine : 255);
@@ -1426,6 +1439,41 @@ static void DoIndex(const Link *link)
     Unlock();
     CtrLog_Write(CTR_LOG_FS, "online: %u pictures on the server", count);
     SetStatus(CTR_ONLINE_DONE, "%u ON THE SERVER", count);
+}
+
+/* This account's own version off the server; the list comes back. */
+static void DoDelete(const Job *job, const Link *link)
+{
+    char key[8], path[48];
+    Reply reply;
+
+    SetStatus(CTR_ONLINE_BUSY, "DELETING...");
+    KeyOf(job->id, key, sizeof(key));
+    snprintf(path, sizeof(path), "/api/versions/%lu/delete", (unsigned long)job->version);
+    if (!Http(link, HTTPC_METHOD_POST, path, "{}", 2, "application/json", &reply) || reply.status != 200)
+    {
+        FailStatus(&reply, "delete");
+        if (reply.status == 403) SetStatus(CTR_ONLINE_ERROR, "NOT YOURS TO DELETE");
+    }
+    else
+    {
+        SentList sent;
+
+        /* The card keeps its file; the server no longer has it. */
+        SentLoad(&sent);
+        for (unsigned i = 0; i < sent.count; ++i)
+            if (strcmp(sent.items[i].key, key) == 0 && sent.items[i].version == job->version)
+            {
+                /* Still counted as sent: UPLOAD ALL does not put it back. */
+                sent.items[i].version = 0;
+                sent.changed = true;
+            }
+        SentSave(&sent);
+        ParseVersions(job->id, (const char *)reply.body);
+        CtrLog_Write(CTR_LOG_FS, "online: %s version %lu deleted from the server", key, (unsigned long)job->version);
+        SetStatus(CTR_ONLINE_DONE, "DELETED FROM SERVER");
+    }
+    ReplyFree(&reply);
 }
 
 static void Worker(void *arg)
@@ -1466,6 +1514,7 @@ static void Worker(void *arg)
         case JOB_USE: DoUse(&job, &link); break;
         case JOB_FLUSH: DoFlush(&link); break;
         case JOB_INDEX: DoIndex(&link); break;
+        case JOB_DELETE: DoDelete(&job, &link); break;
         }
         /* After a sync, the Pokédex's counts; and any vote still on the
          * card goes along while the server is there. */
@@ -1624,6 +1673,43 @@ bool CtrOnline_Upload(uint16_t id)
     job.type = JOB_UPLOAD;
     job.id = id;
     return Start(&job);
+}
+
+bool CtrOnline_UploadPair(uint16_t id, uint16_t other)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_UPLOAD;
+    job.id = id;
+    job.id2 = other;
+    return Start(&job);
+}
+
+bool CtrOnline_Delete(uint16_t id, uint32_t version)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_DELETE;
+    job.id = id;
+    job.version = version;
+    return Start(&job);
+}
+
+bool CtrOnline_CurrentAuthor(uint16_t id, char *out, unsigned size)
+{
+    bool found = false;
+
+    Lock();
+    for (unsigned i = 0; i < sIndexCount && !found; ++i)
+        if (sIndex[i].id == id)
+        {
+            snprintf(out, size, "%s", sIndex[i].author);
+            found = out[0] != 0;
+        }
+    Unlock();
+    return found;
 }
 
 bool CtrOnline_UploadAll(void)
@@ -1967,10 +2053,24 @@ static void TestFrame(void)
     if (strncmp(line, "wait", 4) == 0) wait = (unsigned)strtoul(arg, NULL, 10);
     else if (strncmp(line, "pair", 4) == 0) CtrOnline_Pair(arg);
     else if (strncmp(line, "uploadall", 9) == 0) CtrOnline_UploadAll();
-    else if (strncmp(line, "upload", 6) == 0) CtrOnline_Upload(IdOf(arg));
+    else if (strncmp(line, "upload ", 7) == 0) CtrOnline_Upload(IdOf(arg));
     else if (strncmp(line, "sync", 4) == 0) CtrOnline_Sync();
     else if (strncmp(line, "unlink", 6) == 0) CtrOnline_Unlink();
     else if (strncmp(line, "versions", 8) == 0) CtrOnline_FetchVersions(IdOf(arg));
+    else if (strncmp(line, "delete", 6) == 0)
+    {
+        unsigned long version = 0;
+
+        sscanf(line, "%*s %*s %lu", &version);
+        CtrOnline_Delete(IdOf(arg), (uint32_t)version);
+    }
+    else if (strncmp(line, "uploadpair", 10) == 0)
+    {
+        char second[16] = "";
+
+        sscanf(line, "%*s %*s %15s", second);
+        CtrOnline_UploadPair(IdOf(arg), second[0] ? IdOf(second) : 0);
+    }
     else if (strncmp(line, "index", 5) == 0)
     {
         CtrOnline_FetchIndex();

@@ -359,6 +359,26 @@ pinned GlobalSign root, and a version made on the PC synced down. Then, on the u
 - `online_sent.txt` lines carry the server's version number (`key sha256 version`), so the
   console knows which version is on the card.
 
+### 7.4 Round four (2026-10-15): one screen, one job
+
+- **The globe** (the user's 16px picture, `sprites/globe.png`, now an editor sprite) is a
+  button in the editor's bar and on every Pokédex entry. Both open the **versions screen**:
+  the server's versions of the Pokémon's front (left list) and back (right list), each with
+  who made it, its votes, SHOWN (on the card) and YOURS. UP/DOWN shows a version, LEFT/RIGHT
+  picks the front or the back, A or the star votes (front and back separately), Y animates;
+  UPLOAD MINE sends this console's own edits of both sides, DELETE MINE (asked first) takes
+  this account's version off the server (`POST /api/versions/<id>/delete`, own versions only;
+  an admin's console may delete any). The top screen shows the front and the back side by
+  side, the side looked at in 3D, the other flat (`CtrStereoMonGame_WantCompanion`, its
+  texture made only while the screen is open), with the screen's controls along the bottom.
+- **The editor** edits: the vote star and the C-stick's version turning are gone from it
+  (voting is the versions screen's). The top right still names the version on the card.
+- **The Pokédex** picks: two columns of taller entries showing the number and the name, how
+  many front and back versions the server has, and "YOUR EDIT" or "BY <uploader>" (the current
+  version's, from `GET /api/mons`); a star where this account voted. A (or a tap) edits, X (or
+  the entry's globe) opens its versions screen.
+- The versions JSON has `mine` per version.
+
 ## 8. Open questions and risks
 
 | Item | Status |
