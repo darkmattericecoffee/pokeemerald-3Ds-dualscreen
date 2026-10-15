@@ -3536,16 +3536,22 @@ static void DrawChooser(void)
 
                 FillMix(ax - 2, y + 22, w + 4, 11, Rgb(31, 63, 31), 1, 2);
                 CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 22, CTR_DRAW_RED);
-                if (CtrStereoMon_IsFinal(front))
-                    Icon(ICON_FLAG, false, x + W / CH_COLS - 4 - CH_GLOBE_W - 3 - ICON_SMALL, y + (CH_ROW_H - 2 - ICON_SMALL) / 2 + 2,
-                         cur ? Rgb(31, 63, 31) : Rgb(24, 6, 6));
             }
             else if (CtrOnline_CurrentAuthor(front, author, sizeof(author)) || (back && CtrOnline_CurrentAuthor(back, author, sizeof(author))))
             {
                 snprintf(line, sizeof(line), "BY %s", author);
                 CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 24, cur ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
             }
-            if (votedF || votedB) DrawStar(x + W / CH_COLS - 6 - CH_GLOBE_W - 13, y + 3, true);
+            /* The vote's star over the FINAL flag, the two (or the one)
+             * centred on the globe, in a column left of it. */
+            {
+                bool star = votedF || votedB, flag = edited && CtrStereoMon_IsFinal(front);
+                int cx = x + W / CH_COLS - 4 - CH_GLOBE_W - 3 - ICON_SMALL / 2, cy = y + 7 + 11;
+                int top = cy - ((star ? 11 : 0) + (star && flag ? 3 : 0) + (flag ? ICON_SMALL : 0)) / 2;
+
+                if (star) DrawStar(cx - 5, top, true);
+                if (flag) Icon(ICON_FLAG, false, cx - ICON_SMALL / 2, top + (star ? 14 : 0), cur ? Rgb(31, 63, 31) : Rgb(24, 6, 6));
+            }
         }
         /* The globe: this Pokémon's versions on the server. */
         CtrBottomDraw_Plate(x + W / CH_COLS - 4 - CH_GLOBE_W, y + 7, CH_GLOBE_W, 22, 0, false);
