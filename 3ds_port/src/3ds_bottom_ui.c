@@ -4800,6 +4800,20 @@ static void DrawWideStatus(const ViewState *s, int row, const CtrExtra *extra)
     const u8 *name = Ascii(icons && st != CTR_ONLINE_BUSY && !CtrOnline_LastWasSync()
                                ? CTR_TEXT("NEW FROM SERVER", "NUEVOS", "NOUVEAUX", "NUOVI") : extra->name);
     const u8 *value = extra->text();
+    char tested[4][24];
+    unsigned tests = CtrOnline_TestResult(tested, 4);
+
+    /* TEST SERVER's findings: two to a line, over the status. */
+    if (tests)
+    {
+        char a[64], b[64];
+
+        snprintf(a, sizeof(a), "%s%s%s", tested[0], tests > 1 ? "   " : "", tests > 1 ? tested[1] : "");
+        snprintf(b, sizeof(b), "%s%s%s", tests > 2 ? tested[2] : "", tests > 3 ? "   " : "", tests > 3 ? tested[3] : "");
+        name = Ascii(a);
+        value = Ascii(b[0] ? b : "");
+        icons = FALSE;
+    }
     int x, y, capTop, capBottom, cap, line, right, dy = on;
 
     OptionCell(row, &x, &y);

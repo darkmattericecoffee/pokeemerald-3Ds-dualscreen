@@ -347,6 +347,16 @@ static const u8 *OnlineStandardText(void)
                                                    : CTR_TEXT("TAP TO USE", "TOCA PARA USAR", "UTILISER", "USA"));
 }
 
+static void OnlineTest(void)
+{
+    PlaySE(CtrOnline_TestServer() ? SE_SELECT : SE_FAILURE);
+}
+
+static const u8 *OnlineTestText(void)
+{
+    return OnlineGame(CTR_TEXT("TAP TO CHECK", "TOCA PARA PROBAR", "VERIFIER", "VERIFICA"));
+}
+
 static void OnlineStatusTap(void)
 {
     PlaySE(SE_SELECT);
@@ -454,7 +464,8 @@ const CtrExtra gCtrExtras[] =
     /* The server: poke.cloudnoud.nl unless another is typed (3ds_online.c). */
     {CTR_EXTRAS_ONLINE, CTR_TEXT("SERVER", "SERVIDOR", "SERVEUR", "SERVER"), "online_server", 0, 0, NULL, OnlineServer, NULL, OnlineServerText},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("STANDARD SERVER", "SERVIDOR NORMAL", "SERVEUR NORMAL", "SERVER NORMALE"), "online_standard", 0, 0, NULL, OnlineStandard, NULL, OnlineStandardText},
-    {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
+    /* The server checked as tools/tlsprobe does; the status row shows how. */
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("TEST SERVER", "PROBAR SERVIDOR", "TESTER SERVEUR", "PROVA SERVER"), "online_test", 0, 0, NULL, OnlineTest, NULL, OnlineTestText},
     {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},

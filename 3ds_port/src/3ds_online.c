@@ -78,7 +78,7 @@ typedef struct
     bool verify;
 } Link;
 
-enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX, JOB_DELETE };
+enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX, JOB_DELETE, JOB_TEST };
 
 typedef struct
 {
@@ -113,6 +113,10 @@ static CtrOnlineVersions sVersions;
 static char sVersionSha[CTR_ONLINE_MAX_VERSIONS][65];
 static unsigned sVersionsSerial;
 static bool sShownWritten;
+/* TEST SERVER's findings (CtrOnline_TestResult), a line each. */
+#define TEST_LINES 4
+static char sTestLines[TEST_LINES][24];
+static unsigned sTestCount;
 /* The last request found no server (no answer at all): votes wait. */
 static bool sNetFailed;
 /* The favourites, as the console knows them (online_votes.txt). */
@@ -1495,6 +1499,81 @@ static void DoDelete(const Job *job, const Link *link)
     ReplyFree(&reply);
 }
 
+/* TEST SERVER: what tools/tlsprobe tells, for the server in use. A line
+ * each, on the ONLINE tab and in port.log. */
+static void TestLine(const char *format, ...) __attribute__((format(printf, 1, 2)));
+static void TestLine(const char *format, ...)
+{
+    char line[64];
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    CtrLog_Write(CTR_LOG_FS, "online: test server: %s", line);
+    FontSafe(line);
+    Lock();
+    if (sTestCount < TEST_LINES) Copy(sTestLines[sTestCount++], sizeof(sTestLines[0]), line);
+    Unlock();
+}
+
+static void DoTest(const Link *link)
+{
+    Reply reply;
+    long ok = 0, api = 0;
+    bool https = strncmp(link->server, "https://", 8) == 0, reached;
+    char user[USER_MAX];
+
+    Lock();
+    sTestCount = 0;
+    Unlock();
+    SetStatus(CTR_ONLINE_BUSY, "TESTING THE SERVER...");
+    CtrLog_Write(CTR_LOG_FS, "online: test server %s (%s)", link->server,
+                 !https ? "plain http" : link->verify ? "GlobalSign Root CA pinned" : "certificate checks off");
+    /* The handshake (with the pinned root) and the health answer. */
+    reached = Http(link, HTTPC_METHOD_GET, "/api/health", NULL, 0, NULL, &reply);
+    if (!reached)
+    {
+        if ((u32)reply.result == RESULT_TLS && https)
+        {
+            Link off = *link;
+            Reply again;
+
+            TestLine("TLS FAIL %08lX", (unsigned long)(u32)reply.result);
+            /* Certificate or handshake: the same without checking it. */
+            off.verify = false;
+            if (Http(&off, HTTPC_METHOD_GET, "/api/health", NULL, 0, NULL, &again))
+                TestLine("CERT NOT ACCEPTED");
+            else
+                TestLine("HANDSHAKE FAILS %08lX", (unsigned long)(u32)again.result);
+            ReplyFree(&again);
+        }
+        else
+            TestLine("NO CONNECTION %08lX", (unsigned long)(u32)reply.result);
+        ReplyFree(&reply);
+        SetStatus(CTR_ONLINE_ERROR, "SERVER TEST FAILED");
+        return;
+    }
+    TestLine("%s OK", https ? "TLS" : "HTTP");
+    if (reply.status == 200 && JsonNumber((const char *)reply.body, "ok", &ok) && ok && JsonNumber((const char *)reply.body, "api", &api))
+        TestLine("HEALTH OK API %ld", api);
+    else
+        TestLine("HEALTH HTTP %d", reply.status);
+    ReplyFree(&reply);
+    /* This console's link. */
+    if (link->token[0] == 0)
+        TestLine("NOT LINKED YET");
+    else if (Http(link, HTTPC_METHOD_GET, "/api/me", NULL, 0, NULL, &reply) && reply.status == 200
+             && JsonString((const char *)reply.body, "user", user, sizeof(user)))
+        TestLine("LINKED AS %s", user);
+    else if (reply.status == 401)
+        TestLine("TOKEN NOT ACCEPTED");
+    else
+        TestLine("ME HTTP %d", reply.status);
+    ReplyFree(&reply);
+    SetStatus(api ? CTR_ONLINE_DONE : CTR_ONLINE_ERROR, api ? "SERVER OK" : "SERVER ANSWERS ODDLY");
+}
+
 static void Worker(void *arg)
 {
     Job job = sJob;
@@ -1534,6 +1613,7 @@ static void Worker(void *arg)
         case JOB_FLUSH: DoFlush(&link); break;
         case JOB_INDEX: DoIndex(&link); break;
         case JOB_DELETE: DoDelete(&job, &link); break;
+        case JOB_TEST: DoTest(&link); break;
         }
         /* After a sync, the Pokédex's counts; and any vote still on the
          * card goes along while the server is there. */
@@ -1575,7 +1655,7 @@ static bool Start(const Job *job)
         SetStatus(CTR_ONLINE_ERROR, "NO SERVER ADDRESS");
         return false;
     }
-    if (job->type != JOB_PAIR && link.token[0] == 0)
+    if (job->type != JOB_PAIR && job->type != JOB_TEST && link.token[0] == 0)
     {
         SetStatus(CTR_ONLINE_ERROR, "NOT LINKED");
         return false;
@@ -1749,6 +1829,26 @@ bool CtrOnline_UploadPair(uint16_t id, uint16_t other)
     job.id = id;
     job.id2 = other;
     return Start(&job);
+}
+
+bool CtrOnline_TestServer(void)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_TEST;
+    return Start(&job);
+}
+
+unsigned CtrOnline_TestResult(char lines[][24], unsigned max)
+{
+    unsigned n;
+
+    Lock();
+    n = sLastJob == JOB_TEST && !sBusy ? sTestCount : 0;
+    for (unsigned i = 0; i < n && i < max; ++i) memcpy(lines[i], sTestLines[i], sizeof(sTestLines[0]));
+    Unlock();
+    return n < max ? n : max;
 }
 
 bool CtrOnline_Delete(uint16_t id, uint32_t version)
@@ -2143,6 +2243,7 @@ static void TestFrame(void)
         CtrStereoMonGame_OpenEditor();
     }
     else if (strncmp(line, "editor", 6) == 0) CtrStereoMonGame_OpenEditor();
+    else if (strncmp(line, "testserver", 10) == 0) CtrOnline_TestServer();
     else if (strncmp(line, "index", 5) == 0)
     {
         CtrOnline_FetchIndex();

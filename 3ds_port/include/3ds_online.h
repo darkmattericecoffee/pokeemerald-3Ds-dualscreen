@@ -103,6 +103,14 @@ bool CtrOnline_CurrentAuthor(uint16_t id, char *out, unsigned size);
  * own edit the server does not have). Reads the card: not every frame. */
 uint32_t CtrOnline_CardVersion(uint16_t id);
 bool CtrOnline_Busy(void);
+/* TEST SERVER: the server in use checked as tools/tlsprobe does - the HTTPS
+ * handshake with the pinned root (and, when it fails, again without the
+ * certificate check, to tell the two apart), GET /api/health, and the
+ * token with GET /api/me. TestResult gives its lines ("TLS OK",
+ * "TLS FAIL D8A0A03C", "HEALTH OK API 1", "LINKED AS NAME"...) once
+ * it is the last job and done; each goes to port.log too. */
+bool CtrOnline_TestServer(void);
+unsigned CtrOnline_TestResult(char lines[][24], unsigned max);
 /* The last list fetched (count 0 before one); returns a serial that moves
  * on with every new list. */
 unsigned CtrOnline_GetVersions(CtrOnlineVersions *out);
