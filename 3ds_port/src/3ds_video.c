@@ -9208,10 +9208,17 @@ static void RenderBattleWorld(uint32_t clear, float slider)
         VoxelBloomPrepare();
     if (stereo)
     {
-        /* Its columns only: the scenery beside it may be kept from the
-         * last frame (sSceneCached). */
-        DrawnClear(sScene, C2D_Color32(0, 0, 0, 255), 0, 0, WORLD_COLUMNS, SCENE_H);
-        DrawnClear(sScene, 0, WORLD_COLUMNS, 0, WORLD_GAP, SCENE_H);
+        /* The whole surface, as a memory fill, every frame: a drawn clear
+         * of the slots' columns did not land on hardware (the dumps of
+         * frames 1705, 2343 and after: the planes' cell of frames before
+         * came back under the opponent's slot at a battle's end, as a lit
+         * copy of the player's Pokémon), so nothing of a frame before is
+         * left for a slot or a cell to sample. The scenery beside the
+         * world is composed again when it is there (a move's background,
+         * a few frames). */
+        ColourClear(sScene, 0);
+        sSceneOn = NULL;
+        sSceneCached = false;
     }
     else
         C2D_TargetClear(world, C2D_Color32(0, 0, 0, 255));
