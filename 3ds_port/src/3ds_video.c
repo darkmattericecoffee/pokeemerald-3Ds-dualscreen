@@ -7990,11 +7990,17 @@ static void BattleMonsPlace(C3D_RenderTarget *target)
 
         if (!cell->cell) continue;
         tex = sRegions[cell->region].tex;
-        const Tex3DS_SubTexture cut = {MON_CELL_W, MON_CELL_H, cell->sx / (float)tex->width, 1 - cell->sy / (float)tex->height,
-                                       (cell->sx + MON_CELL_W) / (float)tex->width, 1 - (cell->sy + MON_CELL_H) / (float)tex->height};
+        /* A texel inside the cell's top and bottom: two cells share a
+         * column strip with no row between them, and the filter at the
+         * edge took in the other cell's row - a line of the trainer's feet
+         * above the opponent at a battle's start. */
+        const Tex3DS_SubTexture cut = {MON_CELL_W, MON_CELL_H - 2, cell->sx / (float)tex->width,
+                                       1 - (cell->sy + 1) / (float)tex->height,
+                                       (cell->sx + MON_CELL_W) / (float)tex->width,
+                                       1 - (cell->sy + MON_CELL_H - 1) / (float)tex->height};
 
         C2D_DrawImageAt((C2D_Image){tex, &cut}, (cell->x - MON_CELL_MARGIN) * sZoom + sOffX + BattleSpriteShift(cell->y + 32),
-                        cell->y * sZoom + sOffY, 0, NULL, scale, scale);
+                        cell->y * sZoom + sOffY + scale, 0, NULL, scale, scale);
     }
     C2D_Flush();
     BlendForget();

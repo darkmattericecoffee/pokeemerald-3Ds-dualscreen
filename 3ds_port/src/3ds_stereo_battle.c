@@ -20,6 +20,7 @@
 #include <3ds.h>
 #include <citro2d.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include "3ds_platform.h"
 #include "3ds_video.h"
@@ -108,6 +109,8 @@ typedef struct
      * slides down (SpriteCB_AnimFaintOpponent), the buffer itself zeroed. */
     unsigned cut;
     int x, y;
+    /* Where it was found last (the log of a jump). */
+    int lastOam, lastX, lastY;
     unsigned priority;
     /* The sprite's own affine matrix (a squish, a bounce, a lean, a turn)
      * as the GBA holds it, target to texture; the identity when plain. */
@@ -133,7 +136,7 @@ static uint8_t sBackPlanes[2][BACK_FRAMES * FRAME_BYTES];
 static C3D_Tex sTex;
 static bool sTexAllocated, sTexFailed;
 static Tex3DS_SubTexture sTiles[TEX_TILES];
-static unsigned sLogged;
+static unsigned sLogged, sJumpLogged;
 
 /* The texture made at boot, while the linear heap still has a run of
  * 128 KiB: made at a battle's start it failed on hardware once the voxel
@@ -170,6 +173,7 @@ static void SlotsInit(void)
             sSlots[i].playerBack.planes = sBackPlanes[i / 2];
         }
         sSlots[i].oam = -1;
+        sSlots[i].lastOam = -1;
     }
 }
 
@@ -442,11 +446,12 @@ void CtrStereoBattle_SetSlot(unsigned position, unsigned tileNum, const uint8_t 
 void CtrStereoBattle_ClearBattlers(void)
 {
     SlotsInit();
-    sLogged = 0;    /* a few lines per battle, not per session */
+    sLogged = sJumpLogged = 0;    /* a few lines per battle, not per session */
     for (unsigned i = 0; i < SLOTS; ++i)
     {
         sSlots[i].set = false;
         sSlots[i].oam = -1;
+        sSlots[i].lastOam = -1;
     }
 }
 
@@ -704,6 +709,19 @@ unsigned CtrStereoBattle_Frame(const void *memory, bool battle, uint32_t skip[4]
             Compose(s, shownPlanes[i], pal, spriteGroups, base);
         skip[s->oam >> 5] |= 1u << (s->oam & 31);
         ++found;
+        /* A slot's sprite found at another OAM entry, or far from where
+         * it was: the copies seen on hardware at a battle's end. */
+        if ((s->oam != s->lastOam || abs(s->x - s->lastX) > 24 || abs(s->y - s->lastY) > 24) && s->lastOam >= 0
+            && sJumpLogged < 12)
+        {
+            ++sJumpLogged;
+            CtrLog_Write(CTR_LOG_VIDEO, "stereo battle: slot %u (tile %u) moved from OAM %d (%d,%d) to OAM %d (%d,%d): id %04x frame %d shows %u cut %u pal %u",
+                         i, s->tileNum, s->lastOam, s->lastX, s->lastY, s->oam, s->x, s->y, shownPlanes[i]->id, s->frame,
+                         s->shows, s->cut, attr2 >> 12);
+        }
+        s->lastOam = s->oam;
+        s->lastX = s->x;
+        s->lastY = s->y;
         if (sLogged < 8)
         {
             ++sLogged;
