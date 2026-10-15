@@ -107,6 +107,21 @@ settings-file switch for debugging. Test on hardware early: the Azahar emulator'
 reimplementation does its own TLS with the host's stack, so **a working transfer in Azahar
 says nothing about TLS on the console**.
 
+### 3.1 Hosting: Cloudflare Tunnel (decided 2026-10-15)
+
+The server will sit behind a Cloudflare Tunnel (`cloudflared`), so no port forwarding and
+Cloudflare terminates TLS. Measured from the Mac against a `trycloudflare.com` quick tunnel:
+
+- Cloudflare's edge still accepts **TLS 1.0** with `ECDHE-RSA-AES128-SHA` and serves an
+  **RSA** certificate to clients that offer only RSA suites. Modern clients get ECDSA + TLS 1.3.
+- That RSA chain is leaf → Google Trust Services WR1 → GTS Root R1 → **GlobalSign Root CA**
+  (R1, RSA, valid to 2028-01-28). None of these are in the 3DS's eleven built-in roots, so
+  the console needs GlobalSign Root CA added with `httpcAddTrustedRootCA`.
+- Plain `http://` through the tunnel also answers 200, so §3 option 3 stays available.
+
+Whether the console's `sslc` actually completes this handshake is what `tools/tlsprobe`
+measures on hardware.
+
 ## 4. What travels
 
 The on-device editor writes, per picture, `sdmc:/3ds/emerald3ds/stereo/<key>.bin` where
