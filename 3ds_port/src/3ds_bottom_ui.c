@@ -1362,7 +1362,7 @@ static void DrawStrIn(const Font *font, const u8 *str, int x0, int x1, int y0, i
 /* Latin labels for the few words the game has no standalone string for. */
 static const u8 *Ascii(const char *text)
 {
-    static u8 ring[8][40];
+    static u8 ring[8][64];
     static u8 next;
     u8 *out = ring[next++ & 7];
     CtrLocale_ToGame(out, sizeof(ring[0]), text);
@@ -6335,7 +6335,7 @@ static struct
 #ifndef CTR_APP_VERSION
 #define CTR_APP_VERSION "dev"
 #endif
-#define CTR_EDITOR_CREDIT "Editor by darkmatter"
+#define CTR_EDITOR_CREDIT "Stereoscopic sprites and editor by darkmatter"
 #define TITLE_MARGIN_X 16
 #define TITLE_MARGIN_Y 6
 #define TITLE_GREY 100   /* the logo's coverage at its strongest */

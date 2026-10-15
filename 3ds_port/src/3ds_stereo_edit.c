@@ -3534,8 +3534,8 @@ static void DrawChooser(void)
             {
                 int w = CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOU"), ax = x + 2 + (32 - w) / 2;
 
-                FillMix(ax - 2, y + 22, w + 4, 11, Rgb(31, 63, 31), 1, 2);
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 22, CTR_DRAW_RED);
+                FillMix(ax - 2, y + 19, w + 4, 11, Rgb(31, 63, 31), 1, 2);
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 19, CTR_DRAW_RED);
             }
             else if (CtrOnline_CurrentAuthor(front, author, sizeof(author)) || (back && CtrOnline_CurrentAuthor(back, author, sizeof(author))))
             {

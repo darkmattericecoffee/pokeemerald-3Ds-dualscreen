@@ -442,8 +442,8 @@ API 2` and `LINKED AS <name>` when a signed request and its signed answer went t
 - **The editor's Pokédex no longer flickers**: the bottom screen's Pokémon icon cache held six
   icons (the party's), the page shows ten, so every frame loaded one and dropped another. It
   now holds 40.
-- **The build is "Pokémon Emerald 3D Editor"**, "Editor by darkmatter" (HOME menu / Homebrew
-  Launcher), with a globe-and-pencil icon; the title screen's bottom says "Editor by darkmatter"
+- **The build is "Pokémon Emerald 3D Editor"**, "Stereoscopic sprites and editor by darkmatter" (HOME menu / Homebrew
+  Launcher), with a globe-and-pencil icon; the title screen's bottom says that credit
   above the version.
 - Test aids for online_test.txt: `verscreen` opens the versions screen, `shot NAME` and
   `bottomshot NAME` write the editor's or the bottom screen's canvas to `shot-NAME.bin`.
