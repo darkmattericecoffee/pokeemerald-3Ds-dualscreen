@@ -6767,6 +6767,22 @@ static void BattleSceneCompose(int margin, unsigned exclude)
  */
 static C3D_RenderTarget *sSceneOn;
 
+/*
+ * The PICA's texture cache dropped. Citro3D only asks for that when a
+ * texture binding changes, and Citro2D only rebinds a texture other than the
+ * one it drew with last: the tile atlas, the planes texture and the HD info
+ * boxes are the same texture frame after frame, updated by the CPU, and on
+ * hardware the GPU went on sampling what their texels were - a sprite's
+ * tiles came out as the sand path that had the atlas slots before (the
+ * hardware dump of frame 2630). Azahar has no such cache. The same bit
+ * Citro3D's own context update writes (GPUREG_TEXUNIT_CONFIG bit 16).
+ */
+static void TexCacheClear(void)
+{
+    C2D_Flush();
+    GPUCMD_AddMaskedWrite(GPUREG_TEXUNIT_CONFIG, 0x4, 1u << 16);
+}
+
 static void SceneOn(C3D_RenderTarget *target)
 {
     if (target != sSceneOn)
@@ -6774,6 +6790,8 @@ static void SceneOn(C3D_RenderTarget *target)
         C2D_Flush();
         GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
         GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
+        /* What was drawn into the last target is sampled from now on. */
+        GPUCMD_AddMaskedWrite(GPUREG_TEXUNIT_CONFIG, 0x4, 1u << 16);
         sSceneOn = target;
     }
     C2D_SceneBegin(target);
@@ -6783,6 +6801,7 @@ static void SplitFrame(void)
 {
     C3D_FrameSplit(0);
     sSceneOn = NULL;
+    GPUCMD_AddMaskedWrite(GPUREG_TEXUNIT_CONFIG, 0x4, 1u << 16);
 }
 
 /*
@@ -10586,6 +10605,8 @@ void CtrVideo_Present(void)
     uint64_t waitStart = svcGetSystemTick();
     if (!C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) return;
     ClearsRun();
+    /* Before anything samples what the CPU wrote since the last frame. */
+    TexCacheClear();
     sUploadCommands = 0;
     sRenderReserve = sBattle ? 28u : 24u;
     Flat2D();
