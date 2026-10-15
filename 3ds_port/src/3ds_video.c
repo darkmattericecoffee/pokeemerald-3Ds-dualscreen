@@ -325,6 +325,15 @@ static int sSurfaceH = 256;
 #define SCENE_W 1024
 #define SCENE_H 256
 /*
+ * The voxel battle's world picture lives in the scene surface's first
+ * WORLD_COLUMNS columns (RenderBattleWorld): no VRAM surface of its own,
+ * which on hardware the battle found no room for in one battle of two
+ * (404 KiB free in blocks under 140 KiB: "3D voxel surface not made", the
+ * whole battle flat). The scenery and the slots then start past it.
+ */
+#define WORLD_COLUMNS 400
+static int sSceneColumn;
+/*
  * The GBA line the battle scene is composed down to: the top of the text box
  * frame (CTR_BATTLE_BOX_TOP), which floats a few lines lower than the GBA's
  * picture ends; below that, behind the box's margins, the scene's last line
@@ -6526,6 +6535,7 @@ static uint32_t SceneCacheKey(int left, int top, int width, int height, unsigned
     union { float f; uint32_t u; } fade = {sPaletteFade}, origin = {sLayerOrigin};
 
     h = SceneCacheMix(h, (uint32_t)left);
+    h = SceneCacheMix(h, (uint32_t)sSceneColumn);
     h = SceneCacheMix(h, (uint32_t)top);
     h = SceneCacheMix(h, (uint32_t)width);
     h = SceneCacheMix(h, (uint32_t)height);
@@ -6735,7 +6745,7 @@ static void BattleSceneCompose(int margin, unsigned exclude)
             return;
         }
 #endif
-        SceneComposeInto(sScene, 0, left, top, width, height, layers);
+        SceneComposeInto(sScene, sSceneColumn, left, top, width, height, layers);
         SceneCacheSync(layers);
         memcpy(sSceneCacheDrawn, sBgDrawn, sizeof(sBgDrawn));
         sSceneCacheKey = key;
@@ -6755,7 +6765,7 @@ static void BattleSceneCompose(int margin, unsigned exclude)
         return;
     }
     sSceneCached = false;
-    SceneComposeInto(sScene, 0, left, top, width, height, 1 | sWorldLayers | exclude | BattleBoxLayers());
+    SceneComposeInto(sScene, sSceneColumn, left, top, width, height, 1 | sWorldLayers | exclude | BattleBoxLayers());
 }
 
 /*
@@ -6892,7 +6902,7 @@ static void SceneTexFilter(GPU_TEXTURE_FILTER_PARAM filter)
 /* The composed scene on `target`, `shift` screen pixels across. */
 static void BattleScenePlace(C3D_RenderTarget *target, float shift)
 {
-    ScenePlaceFrom(target, shift, &sSceneTex, 0, true);
+    ScenePlaceFrom(target, shift, &sSceneTex, sSceneColumn, true);
 }
 
 /*
@@ -7450,6 +7460,7 @@ typedef struct
     C3D_RenderTarget *target;
     C3D_Tex *tex;
     int column;
+    int end;    /* the first column past the region */
 } SlotRegion;
 static SlotRegion sRegions[2];
 static unsigned sRegionCount;
@@ -7683,13 +7694,13 @@ static bool SlotsPack(void)
         {
             const SlotRegion *at = &sRegions[region];
 
-            if (cursor + tw > at->tex->width)
+            if (cursor + tw > at->end)
             {
                 shelf += shelfH;
                 cursor = at->column;
                 shelfH = 0;
             }
-            if (cursor + tw <= at->tex->width && shelf + th <= at->tex->height) break;
+            if (cursor + tw <= at->end && shelf + th <= at->tex->height) break;
             /* On to the next region, from its top. */
             if (++region == sRegionCount) return false;
             cursor = sRegions[region].column;
@@ -7772,7 +7783,7 @@ static void SlotsCompose(void)
         if (k == 0 || slot->region != sSlots[k - 1].region)
         {
             C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
-            DrawnClear(region->target, 0, region->column, 0, region->tex->width - region->column,
+            DrawnClear(region->target, 0, region->column, 0, region->end - region->column,
                        region->tex->height);
             SceneOn(region->target);
             sTargetW = region->tex->width;
@@ -7864,10 +7875,14 @@ static void SlotsPlace(C3D_RenderTarget *target, bool front, bool patches)
 static void BattleWorldEye(C3D_RenderTarget *target, C3D_Tex *world)
 {
     const Tex3DS_SubTexture whole = {CTR_GAME_WIDTH, CTR_GAME_HEIGHT, 0, 1,
-        CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-    const Tex3DS_SubTexture left = {4, CTR_GAME_HEIGHT, 0, 1, 4 / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
-    const Tex3DS_SubTexture right = {4, CTR_GAME_HEIGHT, (CTR_GAME_WIDTH - 4) / 512.0f, 1,
-        CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
+        CTR_GAME_WIDTH / (float)world->width, 1 - CTR_GAME_HEIGHT / (float)world->height};
+    /* Stretched across by the shift, so that both edges stay covered: the
+     * strip the shift uncovered used to be filled with the picture's edge
+     * columns, which stood out as a line down the screen's side whenever
+     * the picture's edge held something dark (a map's end, a wall). A few
+     * per cent across, nothing at the middle where the Pokémon stand. */
+    float shift = roundf(-sEyeParallax * BATTLE_BACK_DEPTH), reach = fabsf(shift);
+    float scaleX = (CTR_GAME_WIDTH + 2.0f * reach) / CTR_GAME_WIDTH;
 
     BlendForget();
     SceneOn(target);
@@ -7875,9 +7890,10 @@ static void BattleWorldEye(C3D_RenderTarget *target, C3D_Tex *world)
     C2D_Flush();
     C3D_AlphaTest(false, GPU_ALWAYS, 0);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
-    C2D_DrawImageAt((C2D_Image){world, &left}, 0, 0, 0, NULL, 1, 1);
-    C2D_DrawImageAt((C2D_Image){world, &right}, CTR_GAME_WIDTH - 4, 0, 0, NULL, 1, 1);
-    C2D_DrawImageAt((C2D_Image){world, &whole}, roundf(-sEyeParallax * BATTLE_BACK_DEPTH), 0, 0, NULL, 1, 1);
+    /* Nearest: the picture stays pixel-sharp, a column doubled now and then. */
+    if (world == &sSceneTex) SceneTexFilter(GPU_NEAREST);
+    C2D_DrawImageAt((C2D_Image){world, &whole}, shift - reach, 0, 0, NULL, scaleX, 1);
+    if (world == &sSceneTex) SceneTexFilter(GPU_LINEAR);
     C2D_Flush();
     BlendForget();
 }
@@ -7931,7 +7947,7 @@ static void MonCellsPack(void)
         cell->cell = false;
         if (row == 2)
         {
-            while (r < sRegionCount && (sRegions[r].column + MON_CELL_W > sRegions[r].tex->width || sRegions[r].tex->height < 2 * MON_CELL_H))
+            while (r < sRegionCount && (sRegions[r].column + MON_CELL_W > sRegions[r].end || sRegions[r].tex->height < 2 * MON_CELL_H))
                 ++r;
             if (r == sRegionCount) continue;
             sRegions[r].column += MON_CELL_W;
@@ -8097,6 +8113,8 @@ static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
     sParallax = 0;
     sLayerShift = 0;
     sHudFlatScene = false;
+    /* The scenery and the slots past the world's picture (RenderBattleWorld). */
+    sSceneColumn = world ? WORLD_COLUMNS : 0;
     BlendForget();
     /* The scene's placement first: the sprites are clipped to it. */
     sObjWinSlotted = sObjWin.ready;
@@ -8188,8 +8206,8 @@ static void RenderBattleStereo(uint32_t clear, float slider, C3D_Tex *world)
 
         sRegionCount = 0;
         if (scenery && !world && sSlotTarget)
-            sRegions[sRegionCount++] = (SlotRegion){sSlotTarget, &sSlotTex, 0};
-        sRegions[sRegionCount++] = (SlotRegion){sScene, &sSceneTex, scenery ? after : 0};
+            sRegions[sRegionCount++] = (SlotRegion){sSlotTarget, &sSlotTex, 0, sSlotTex.width};
+        sRegions[sRegionCount++] = (SlotRegion){sScene, &sSceneTex, sSceneColumn + (scenery ? after : 0), SCENE_W};
         if (!scenery) sSceneCached = false;   /* the slots go over its columns */
         for (unsigned r = 0; r < sRegionCount; ++r) columns[r] = sRegions[r].column;
         if (sMonCount) MonCellsPack();
@@ -9116,8 +9134,12 @@ static void RenderBattleWorld(uint32_t clear, float slider)
     unsigned control = Reg(0x50), effect = (control >> 6) & 3;
     float bright = effect >= 2 ? Min(Reg(0x54) & 31, 16) / 16.0f : 0.0f;
     float bloom;
-    bool stereo = slider > 0.0f && sStereoTarget && sScene;
-    C3D_RenderTarget *world = stereo ? sStereoTarget : sTop;
+    bool stereo = slider > 0.0f && sScene;
+    /* With the slider up the picture goes into the scene surface's first
+     * columns, where RenderBattleStereo copies it behind each eye. */
+    C3D_RenderTarget *world = stereo ? sScene : sTop;
+
+    sSceneColumn = stereo ? WORLD_COLUMNS : 0;
     CtrVoxelBattleIntro intro;
 
     /* The world is BG3: its brightness is BG3's. */
@@ -9141,7 +9163,14 @@ static void RenderBattleWorld(uint32_t clear, float slider)
         bloom = fminf(bloom + 0.7f * intro.impact, 1.0f);
     if (bloom > 0.005f)
         VoxelBloomPrepare();
-    C2D_TargetClear(world, C2D_Color32(0, 0, 0, 255));
+    if (stereo)
+    {
+        /* Its columns only: the scenery beside it may be kept from the
+         * last frame (sSceneCached). */
+        DrawnClear(sScene, C2D_Color32(0, 0, 0, 255), 0, 0, WORLD_COLUMNS, SCENE_H);
+    }
+    else
+        C2D_TargetClear(world, C2D_Color32(0, 0, 0, 255));
     C2D_SceneBegin(world);
     C2D_ViewReset();
     Blend(5, false, false);
@@ -9169,8 +9198,7 @@ static void RenderBattleWorld(uint32_t clear, float slider)
     PORT_PROF_BEGIN(bwScene);
     if (stereo)
     {
-        sStereoUsedFrame = sStats.frames;
-        RenderBattleStereo(clear, slider, &sStereoTex);
+        RenderBattleStereo(clear, slider, &sSceneTex);
         BattleIntroBars(&intro, true);
         PORT_PROF_END(bwScene, PORT_PROF_BW_SCENE);
         return;
@@ -10851,10 +10879,9 @@ void CtrVideo_Present(void)
     /* The surface is kept through the whole voxel battle with the slider up,
      * the frames a move's background hides the world included: made only
      * when the world came back, the frame it took dropped the 3D out. */
-    if (worldStereo || (sBattle && sScene && CtrVoxel_InBattle() && !bottom && sTopRight && slider > 0.02f))
-        sStereoWanted = true;
+    /* The world's picture goes into the scene surface (RenderBattleWorld):
+     * no surface of its own to wait for. */
     bool worldWanted = worldStereo;
-    worldStereo = worldStereo && sStereoTarget;
 #else
     const bool worldStereo = false;
 #endif
