@@ -828,14 +828,24 @@ def api_sync(req: Request) -> Response:
 
 @route("GET", r"/api/mons", "any")
 def api_mons(req: Request) -> Response:
+    """Every picture with a current version: how many versions it has, and how many of them are the
+    caller's favourites (a console's Pokédex marks both)."""
     rows = req.conn.execute(
         "SELECT c.mon_key, c.version_id, c.pinned, v.final, u.name AS author, "
-        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n "
+        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n, "
+        "(SELECT COUNT(*) FROM votes t WHERE t.mon_key = c.mon_key AND t.user_id = ?) AS mine "
         "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id "
-        "ORDER BY c.mon_key").fetchall()
-    return json_resp({"items": [{"key": r["mon_key"], "name": CFG.name(r["mon_key"]), "current": r["version_id"],
+        "ORDER BY c.mon_key", (_voter(req),)).fetchall()
+    return json_resp({"rev": db.current_rev(req.conn),
+                      "items": [{"key": r["mon_key"], "name": CFG.name(r["mon_key"]), "current": r["version_id"],
                                  "pinned": bool(r["pinned"]), "final": bool(r["final"]), "author": r["author"],
-                                 "versions": r["n"]} for r in rows]})
+                                 "versions": r["n"], "mine": r["mine"]} for r in rows]})
+
+
+@route("GET", r"/api/rev", "any")
+def api_rev(req: Request) -> Response:
+    """What the web pages poll: moves on with every upload, vote, pin and delete."""
+    return json_resp({"rev": db.current_rev(req.conn), "seq": db.current_seq(req.conn)})
 
 
 # ── The HTTP server ─────────────────────────────────────────────────────────

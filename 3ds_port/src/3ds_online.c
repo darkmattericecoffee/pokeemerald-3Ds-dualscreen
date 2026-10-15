@@ -41,6 +41,12 @@
 #define LINK_PATH DATA_DIR "/online.txt"
 #define SENT_PATH DATA_DIR "/online_sent.txt"
 #define NEW_PATH DATA_DIR "/online_new.txt"
+/* The favourites (votes) per picture, sent or still to send: "key pending v1 v2". */
+#define VOTES_PATH DATA_DIR "/online_votes.txt"
+#define MAX_FAVS 800
+#define MAX_INDEX 1024
+/* A vote kept on the card is tried again this often while it waits. */
+#define FLUSH_RETRY_MS 60000
 #define MAX_NEW 512
 #define EDIT_DIR DATA_DIR "/" CTR_STEREO_EDIT_DIR
 #define BACKUP_DIR EDIT_DIR "/backup"
@@ -72,7 +78,7 @@ typedef struct
     bool verify;
 } Link;
 
-enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_VOTE };
+enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX };
 
 typedef struct
 {
@@ -81,8 +87,6 @@ typedef struct
     char code[16];
     char consoleName[40];
     uint32_t version;
-    uint32_t votes[2];
-    unsigned voteCount;
 } Job;
 
 static CtrLock sLock;
@@ -109,6 +113,30 @@ static CtrOnlineVersions sVersions;
 static char sVersionSha[CTR_ONLINE_MAX_VERSIONS][65];
 static unsigned sVersionsSerial;
 static bool sShownWritten;
+/* The last request found no server (no answer at all): votes wait. */
+static bool sNetFailed;
+/* The favourites, as the console knows them (online_votes.txt). */
+typedef struct Fav Fav;
+struct Fav
+{
+    uint16_t id;
+    uint8_t n;
+    bool pending;
+    uint32_t v[2];
+};
+static Fav sFavs[MAX_FAVS];
+static unsigned sFavCount;
+static bool sFavsRead;
+/* Per picture on the server: how many versions, how many are this
+ * account's favourites (GET /api/mons). */
+typedef struct
+{
+    uint16_t id;
+    uint8_t count, mine;
+} IndexEntry;
+static IndexEntry sIndex[MAX_INDEX];
+static unsigned sIndexCount, sIndexSerial;
+static uint64_t sIndexAt;
 /* Main thread only. */
 static bool sSleepHeld;
 static char sUserCopy[USER_MAX];
@@ -386,6 +414,7 @@ typedef struct
 {
     char key[8];
     char sha[65];
+    uint32_t version; /* the server's version number, 0 when unknown */
 } Sent;
 
 typedef struct
@@ -412,7 +441,13 @@ static void SentLoad(SentList *list)
     {
         Sent *s = &list->items[list->count];
 
-        if (sscanf(line, "%7s %64s", s->key, s->sha) == 2 && strlen(s->sha) == 64) ++list->count;
+        unsigned long version = 0;
+
+        if (sscanf(line, "%7s %64s %lu", s->key, s->sha, &version) >= 2 && strlen(s->sha) == 64)
+        {
+            s->version = (uint32_t)version;
+            ++list->count;
+        }
     }
     fclose(f);
 }
@@ -424,7 +459,7 @@ static bool SentHas(const SentList *list, const char *key, const char *sha)
     return false;
 }
 
-static void SentPut(SentList *list, const char *key, const char *sha)
+static void SentPut(SentList *list, const char *key, const char *sha, uint32_t version)
 {
     unsigned i;
 
@@ -434,7 +469,11 @@ static void SentPut(SentList *list, const char *key, const char *sha)
     {
         if (list->count == MAX_SENT) return;
         ++list->count;
+        list->items[i].version = 0;
+        list->items[i].sha[0] = 0;
     }
+    /* The same file without a number (an older line) keeps the one it had. */
+    if (version || strcmp(list->items[i].sha, sha) != 0) list->items[i].version = version;
     snprintf(list->items[i].key, sizeof(list->items[i].key), "%s", key);
     snprintf(list->items[i].sha, sizeof(list->items[i].sha), "%s", sha);
     list->changed = true;
@@ -448,7 +487,8 @@ static void SentSave(SentList *list)
     if (list->items && list->changed && (text = malloc(list->count * 80 + 1)) != NULL)
     {
         for (unsigned i = 0; i < list->count; ++i)
-            n += (size_t)sprintf(text + n, "%s %s\n", list->items[i].key, list->items[i].sha);
+            n += (size_t)sprintf(text + n, "%s %s %lu\n", list->items[i].key, list->items[i].sha,
+                                 (unsigned long)list->items[i].version);
         if (!WriteWhole(SENT_PATH, text, (uint32_t)n))
             CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", SENT_PATH);
         free(text);
@@ -530,6 +570,17 @@ static bool Http(const Link *link, HTTPC_RequestMethod method, const char *path,
         CtrLog_Write(CTR_LOG_ERROR, "online: %s %s failed %08lx after %lums%s", method == HTTPC_METHOD_POST ? "POST" : "GET",
                      path, (unsigned long)r, (unsigned long)(CtrPlatform_Milliseconds() - t0),
                      (u32)r == RESULT_TLS ? " (TLS: certificate or handshake)" : "");
+        httpcCloseContext(&ctx);
+        return false;
+    }
+    /* No server behind the address: some http:C answer "success" with a
+     * status that is no HTTP status at all (Azahar's 0xFFFFFFFF). */
+    if (status < 100 || status > 599)
+    {
+        reply->result = -1;
+        CtrLog_Write(CTR_LOG_ERROR, "online: %s %s: no answer (status %lu) after %lums",
+                     method == HTTPC_METHOD_POST ? "POST" : "GET", path, (unsigned long)status,
+                     (unsigned long)(CtrPlatform_Milliseconds() - t0));
         httpcCloseContext(&ctx);
         return false;
     }
@@ -616,6 +667,8 @@ static void FailStatus(const Reply *reply, const char *what)
     {
         bool wifiDown;
 
+        sNetFailed = true;
+
         Lock();
         wifiDown = sWifiDown;
         Unlock();
@@ -693,7 +746,7 @@ static int UploadOne(const Link *link, uint16_t id, SentList *sent, bool *stop)
 
         JsonNumber((const char *)reply.body, "version_id", &version);
         JsonNumber((const char *)reply.body, "current", &current);
-        SentPut(sent, key, sha);
+        SentPut(sent, key, sha, (uint32_t)version);
         CtrLog_Write(CTR_LOG_FS, "online: %s %s as version %ld%s", key, reply.status == 201 ? "uploaded" : "already there",
                      version, current ? ", current" : "");
         result = reply.status == 201 ? 1 : 0;
@@ -891,7 +944,7 @@ static void DoSync(Link *link)
             Sha256Hex(local, localSize, localSha);
             if (strcmp(localSha, sha) == 0)
             {
-                SentPut(&sent, key, sha);
+                SentPut(&sent, key, sha, (uint32_t)version);
                 ++same;
                 free(local);
                 continue;
@@ -926,7 +979,7 @@ static void DoSync(Link *link)
             }
             else
             {
-                SentPut(&sent, key, sha);
+                SentPut(&sent, key, sha, (uint32_t)version);
                 if (got < MAX_NEW) fetched[got] = IdOf(key);
                 ++got;
                 kept += local != NULL;
@@ -999,6 +1052,9 @@ static unsigned JsonNumbers(const char *json, const char *name, long *out, unsig
 
 /* The server's list of a picture's versions (GET .../versions, or a vote's
  * answer) into sVersions. */
+static Fav *FavLocked(uint16_t id, bool create);
+static void LearnFavouritesLocked(uint16_t id, const long *fav, unsigned favs);
+
 static bool ParseVersions(uint16_t id, const char *json)
 {
     CtrOnlineVersions list;
@@ -1040,7 +1096,29 @@ static bool ParseVersions(uint16_t id, const char *json)
         v->onCard = card[0] && strcmp(card, shas[list.count]) == 0;
         ++list.count;
     }
+    /* The card's file is one of these: its number kept with it. */
+    for (unsigned i = 0; i < list.count; ++i)
+        if (list.v[i].onCard)
+        {
+            SentList sent;
+            char key[8];
+
+            KeyOf(id, key, sizeof(key));
+            SentLoad(&sent);
+            SentPut(&sent, key, shas[i], list.v[i].version);
+            SentSave(&sent);
+            break;
+        }
     Lock();
+    LearnFavouritesLocked(id, fav, favs);
+    {
+        /* The console's own favourites, while they wait to be sent. */
+        Fav *fv = FavLocked(id, false);
+
+        if (fv && fv->pending)
+            for (unsigned i = 0; i < list.count; ++i)
+                list.v[i].favourite = (fv->n > 0 && fv->v[0] == list.v[i].version) || (fv->n > 1 && fv->v[1] == list.v[i].version);
+    }
     sVersions = list;
     memcpy(sVersionSha, shas, sizeof(shas));
     ++sVersionsSerial;
@@ -1123,7 +1201,7 @@ static void DoUse(const Job *job, const Link *link)
     else
     {
         SentLoad(&sent);
-        SentPut(&sent, key, sha);
+        SentPut(&sent, key, sha, job->version);
         SentSave(&sent);
         Lock();
         for (unsigned i = 0; i < sVersions.count && sVersions.id == job->id; ++i)
@@ -1138,33 +1216,216 @@ static void DoUse(const Job *job, const Link *link)
     ReplyFree(&reply);
 }
 
-static void DoVote(const Job *job, const Link *link)
-{
-    char key[8], path[48], body[64];
-    Reply reply;
-    int n;
+/* ── Favourites (votes), kept on the card until the server has them ─── */
 
-    SetStatus(CTR_ONLINE_BUSY, "VOTING...");
-    KeyOf(job->id, key, sizeof(key));
-    snprintf(path, sizeof(path), "/api/mons/%s/votes", key);
-    if (job->voteCount == 0) n = snprintf(body, sizeof(body), "{\"version_ids\":[]}");
-    else if (job->voteCount == 1)
-        n = snprintf(body, sizeof(body), "{\"version_ids\":[%lu]}", (unsigned long)job->votes[0]);
-    else
-        n = snprintf(body, sizeof(body), "{\"version_ids\":[%lu,%lu]}", (unsigned long)job->votes[0],
-                     (unsigned long)job->votes[1]);
-    if (!Http(link, HTTPC_METHOD_POST, path, body, (uint32_t)n, "application/json", &reply) || reply.status != 200)
+/* Called with sLock held. */
+static void ReadFavsLocked(void)
+{
+    FILE *f;
+    char line[48];
+
+    if (sFavsRead) return;
+    sFavsRead = true;
+    sFavCount = 0;
+    if ((f = fopen(VOTES_PATH, "r")) == NULL) return;
+    while (sFavCount < MAX_FAVS && fgets(line, sizeof(line), f))
     {
-        FailStatus(&reply, "vote");
-        if (reply.status == 400) SetStatus(CTR_ONLINE_ERROR, "VOTE REFUSED");
+        char key[16];
+        unsigned pending = 0;
+        unsigned long a = 0, b = 0;
+        int n = sscanf(line, "%15s %u %lu %lu", key, &pending, &a, &b);
+        Fav *fv = &sFavs[sFavCount];
+
+        if (n < 2 || (fv->id = IdOf(key)) == 0) continue;
+        fv->pending = pending != 0;
+        fv->v[0] = (uint32_t)a;
+        fv->v[1] = (uint32_t)b;
+        fv->n = (uint8_t)((a != 0) + (b != 0));
+        if (fv->v[0] == 0 && fv->v[1] != 0)
+        {
+            fv->v[0] = fv->v[1];
+            fv->v[1] = 0;
+        }
+        ++sFavCount;
     }
-    else if (!ParseVersions(job->id, (const char *)reply.body)) SetStatus(CTR_ONLINE_ERROR, "BAD ANSWER");
-    else
+    fclose(f);
+}
+
+/* Called with sLock held. */
+static Fav *FavLocked(uint16_t id, bool create)
+{
+    ReadFavsLocked();
+    for (unsigned i = 0; i < sFavCount; ++i)
+        if (sFavs[i].id == id) return &sFavs[i];
+    if (!create || sFavCount == MAX_FAVS) return NULL;
+    memset(&sFavs[sFavCount], 0, sizeof(sFavs[0]));
+    sFavs[sFavCount].id = id;
+    return &sFavs[sFavCount++];
+}
+
+static void WriteFavs(void)
+{
+    static char text[MAX_FAVS * 40];
+    size_t n = 0;
+
+    Lock();
+    for (unsigned i = 0; i < sFavCount; ++i)
     {
-        CtrLog_Write(CTR_LOG_FS, "online: %s favourites %s", key, body);
-        SetStatus(CTR_ONLINE_DONE, job->voteCount ? "VOTE SENT" : "VOTES TAKEN BACK");
+        char key[8];
+
+        KeyOf(sFavs[i].id, key, sizeof(key));
+        n += (size_t)snprintf(text + n, sizeof(text) - n, "%s %u %lu %lu\n", key, sFavs[i].pending ? 1u : 0u,
+                              (unsigned long)(sFavs[i].n > 0 ? sFavs[i].v[0] : 0),
+                              (unsigned long)(sFavs[i].n > 1 ? sFavs[i].v[1] : 0));
+    }
+    Unlock();
+    if (!WriteWhole(VOTES_PATH, text, (uint32_t)n)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", VOTES_PATH);
+}
+
+static unsigned PendingVotes(void)
+{
+    unsigned count = 0;
+
+    Lock();
+    ReadFavsLocked();
+    for (unsigned i = 0; i < sFavCount; ++i) count += sFavs[i].pending;
+    Unlock();
+    return count;
+}
+
+/* The server's own list of a picture's favourites: kept unless the
+ * console's are still on their way. Called with sLock held. */
+static void LearnFavouritesLocked(uint16_t id, const long *fav, unsigned favs)
+{
+    Fav *fv = FavLocked(id, favs > 0);
+
+    if (fv == NULL || fv->pending) return;
+    fv->n = (uint8_t)(favs < 2 ? favs : 2);
+    for (unsigned i = 0; i < 2; ++i) fv->v[i] = i < fv->n ? (uint32_t)fav[i] : 0;
+}
+
+/* Every vote still on the card to the server, one picture at a time. A
+ * server that cannot be reached leaves them for the next time. */
+static void DoFlush(const Link *link)
+{
+    unsigned sent = 0, refused = 0;
+
+    for (;;)
+    {
+        Fav fv;
+        bool found = false;
+        char key[8], path[48], body[64];
+        Reply reply;
+        int n;
+
+        Lock();
+        ReadFavsLocked();
+        for (unsigned i = 0; i < sFavCount && !found; ++i)
+            if (sFavs[i].pending)
+            {
+                fv = sFavs[i];
+                found = true;
+            }
+        Unlock();
+        if (!found) break;
+        SetStatus(CTR_ONLINE_BUSY, "SENDING VOTE...");
+        KeyOf(fv.id, key, sizeof(key));
+        snprintf(path, sizeof(path), "/api/mons/%s/votes", key);
+        if (fv.n == 0) n = snprintf(body, sizeof(body), "{\"version_ids\":[]}");
+        else if (fv.n == 1) n = snprintf(body, sizeof(body), "{\"version_ids\":[%lu]}", (unsigned long)fv.v[0]);
+        else
+            n = snprintf(body, sizeof(body), "{\"version_ids\":[%lu,%lu]}", (unsigned long)fv.v[0],
+                         (unsigned long)fv.v[1]);
+        if (!Http(link, HTTPC_METHOD_POST, path, body, (uint32_t)n, "application/json", &reply) || reply.status == 0)
+        {
+            ReplyFree(&reply);
+            CtrLog_Write(CTR_LOG_FS, "online: no server: the votes wait on the card");
+            SetStatus(CTR_ONLINE_DONE, "SAVED - SENDS LATER");
+            WriteFavs();
+            return;
+        }
+        if (reply.status == 401 || reply.status == 429 || reply.status >= 500)
+        {
+            FailStatus(&reply, "vote");
+            ReplyFree(&reply);
+            WriteFavs();
+            return;
+        }
+        Lock();
+        {
+            Fav *now = FavLocked(fv.id, false);
+
+            /* Sent as it stands (the player may have changed it meanwhile). */
+            if (now && now->n == fv.n && now->v[0] == fv.v[0] && now->v[1] == fv.v[1]) now->pending = false;
+        }
+        Unlock();
+        if (reply.status == 200)
+        {
+            bool shown;
+
+            Lock();
+            shown = sVersions.id == fv.id;
+            Unlock();
+            if (shown) ParseVersions(fv.id, (const char *)reply.body);
+            CtrLog_Write(CTR_LOG_FS, "online: %s favourites %s sent", key, body);
+            ++sent;
+        }
+        else
+        {
+            /* A version that is gone: the vote is dropped, not retried for ever. */
+            CtrLog_Write(CTR_LOG_ERROR, "online: %s favourites %s refused (HTTP %d)", key, body, reply.status);
+            ++refused;
+        }
+        ReplyFree(&reply);
+    }
+    WriteFavs();
+    if (refused) SetStatus(CTR_ONLINE_ERROR, "VOTE REFUSED");
+    else if (sent) SetStatus(CTR_ONLINE_DONE, sent == 1 ? "VOTE SENT" : "%u VOTES SENT", sent);
+}
+
+/* How many versions each picture has on the server, and how many of them
+ * this account voted for (the Pokédex's marks). */
+static void DoIndex(const Link *link)
+{
+    static IndexEntry list[MAX_INDEX];
+    unsigned count = 0;
+    Reply reply;
+    const char *p;
+
+    SetStatus(CTR_ONLINE_BUSY, "COUNTING VERSIONS...");
+    if (!Http(link, HTTPC_METHOD_GET, "/api/mons", NULL, 0, NULL, &reply) || reply.status != 200
+        || (p = strstr((const char *)reply.body, "\"items\":[")) == NULL)
+    {
+        FailStatus(&reply, "index");
+        ReplyFree(&reply);
+        return;
+    }
+    for (const char *item = strchr(p, '{'); item != NULL && count < MAX_INDEX; item = strchr(item + 1, '{'))
+    {
+        char object[320], key[16];
+        const char *end = strchr(item, '}');
+        long versions = 0, mine = 0;
+
+        if (end == NULL || (size_t)(end - item) >= sizeof(object)) break;
+        memcpy(object, item, (size_t)(end - item + 1));
+        object[end - item + 1] = 0;
+        if (!JsonString(object, "key", key, sizeof(key)) || IdOf(key) == 0) continue;
+        JsonNumber(object, "versions", &versions);
+        JsonNumber(object, "mine", &mine);
+        list[count].id = IdOf(key);
+        list[count].count = (uint8_t)(versions < 255 ? versions : 255);
+        list[count].mine = (uint8_t)(mine < 255 ? mine : 255);
+        ++count;
     }
     ReplyFree(&reply);
+    Lock();
+    memcpy(sIndex, list, count * sizeof(list[0]));
+    sIndexCount = count;
+    sIndexAt = CtrPlatform_Milliseconds();
+    ++sIndexSerial;
+    Unlock();
+    CtrLog_Write(CTR_LOG_FS, "online: %u pictures on the server", count);
+    SetStatus(CTR_ONLINE_DONE, "%u ON THE SERVER", count);
 }
 
 static void Worker(void *arg)
@@ -1184,6 +1445,7 @@ static void Worker(void *arg)
     Lock();
     sWifiDown = wifi == 0;
     Unlock();
+    sNetFailed = false;
     CtrLog_Write(CTR_LOG_FS, "online: job %d on %s (Wi-Fi %lu%s)", job.type, link.server, (unsigned long)wifi,
                  link.verify ? "" : ", certificate checks OFF");
     r = httpcInit(HTTPC_SHARED);
@@ -1202,8 +1464,14 @@ static void Worker(void *arg)
         case JOB_SYNC: DoSync(&link); break;
         case JOB_VERSIONS: DoVersions(&job, &link); break;
         case JOB_USE: DoUse(&job, &link); break;
-        case JOB_VOTE: DoVote(&job, &link); break;
+        case JOB_FLUSH: DoFlush(&link); break;
+        case JOB_INDEX: DoIndex(&link); break;
         }
+        /* After a sync, the Pokédex's counts; and any vote still on the
+         * card goes along while the server is there. */
+        if (job.type == JOB_SYNC && !sNetFailed) DoIndex(&link);
+        if (job.type != JOB_FLUSH && job.type != JOB_PAIR && !sNetFailed && link.token[0] && PendingVotes())
+            DoFlush(&link);
         httpcExit();
     }
     Lock();
@@ -1400,13 +1668,136 @@ bool CtrOnline_UseVersion(uint16_t id, uint32_t version)
 bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count)
 {
     Job job;
+    bool busy;
+
+    /* Kept on the card first, so a vote is never lost; then sent. */
+    Lock();
+    {
+        Fav *fv = FavLocked(id, true);
+
+        if (fv)
+        {
+            fv->n = (uint8_t)(count < 2 ? count : 2);
+            for (unsigned i = 0; i < 2; ++i) fv->v[i] = i < fv->n ? versions[i] : 0;
+            fv->pending = true;
+        }
+        if (sVersions.id == id)
+        {
+            for (unsigned i = 0; i < sVersions.count; ++i)
+            {
+                bool on = false;
+
+                for (unsigned k = 0; k < count && k < 2; ++k) on |= versions[k] == sVersions.v[i].version;
+                sVersions.v[i].favourite = on;
+            }
+            ++sVersionsSerial;
+        }
+        for (unsigned i = 0; i < sIndexCount; ++i)
+            if (sIndex[i].id == id) sIndex[i].mine = (uint8_t)(count < 2 ? count : 2);
+        ++sIndexSerial;
+        busy = sBusy;
+    }
+    Unlock();
+    WriteFavs();
+    CtrLog_Write(CTR_LOG_FS, "online: favourites of %04x kept (%u)%s", id, count, busy ? ", sent after this job" : "");
+    if (busy || !CtrOnline_Linked()) return true;
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_FLUSH;
+    Start(&job);
+    return true;
+}
+
+unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[2], bool *pending)
+{
+    unsigned n = 0;
+
+    Lock();
+    {
+        Fav *fv = FavLocked(id, false);
+
+        if (fv)
+        {
+            n = fv->n;
+            out[0] = fv->v[0];
+            out[1] = fv->v[1];
+            if (pending) *pending = fv->pending;
+        }
+        else if (pending) *pending = false;
+    }
+    Unlock();
+    return n;
+}
+
+unsigned CtrOnline_PendingVotes(void) { return PendingVotes(); }
+
+bool CtrOnline_FetchIndex(void)
+{
+    Job job;
 
     memset(&job, 0, sizeof(job));
-    job.type = JOB_VOTE;
-    job.id = id;
-    job.voteCount = count < 2 ? count : 2;
-    for (unsigned i = 0; i < job.voteCount; ++i) job.votes[i] = versions[i];
+    job.type = JOB_INDEX;
     return Start(&job);
+}
+
+unsigned CtrOnline_IndexSerial(unsigned *ageMs)
+{
+    unsigned serial;
+
+    Lock();
+    serial = sIndexSerial;
+    if (ageMs)
+        *ageMs = sIndexAt ? (unsigned)(CtrPlatform_Milliseconds() - sIndexAt) : 0xFFFFFFFFu;
+    Unlock();
+    return serial;
+}
+
+unsigned CtrOnline_VersionCount(uint16_t id, bool *voted)
+{
+    unsigned count = 0;
+    bool mine = false;
+
+    Lock();
+    for (unsigned i = 0; i < sIndexCount; ++i)
+        if (sIndex[i].id == id)
+        {
+            count = sIndex[i].count;
+            mine = sIndex[i].mine > 0;
+            break;
+        }
+    {
+        Fav *fv = FavLocked(id, false);
+
+        if (fv) mine = fv->n > 0;
+    }
+    Unlock();
+    if (voted) *voted = mine;
+    return count;
+}
+
+uint32_t CtrOnline_CardVersion(uint16_t id)
+{
+    SentList sent;
+    char key[8], card[65];
+    uint32_t version = 0;
+
+    CardSha(id, card);
+    if (card[0] == 0) return 0;
+    KeyOf(id, key, sizeof(key));
+    SentLoad(&sent);
+    for (unsigned i = 0; i < sent.count; ++i)
+        if (strcmp(sent.items[i].key, key) == 0 && strcmp(sent.items[i].sha, card) == 0) version = sent.items[i].version;
+    free(sent.items);
+    return version;
+}
+
+bool CtrOnline_Busy(void)
+{
+    bool busy;
+
+    Lock();
+    busy = sBusy;
+    Unlock();
+    return busy;
 }
 
 unsigned CtrOnline_GetVersions(CtrOnlineVersions *out)
@@ -1522,7 +1913,8 @@ unsigned CtrOnline_Serial(void)
  * sdmc:/3ds/emerald3ds/online_test.txt exists, its lines one after the
  * other, ten seconds after start and each once the job before it ended: "wait <frames>", "pair <code>", "upload <key>",
  * "uploadall", "sync", "unlink", "versions <key>",
- * "use <key> <version>", "vote <key> [<version> [<version>]]". Each step and its result go to port.log.
+ * "use <key> <version>", "vote <key> [<version> [<version>]]", "index", "flush",
+ * "count <key>" (what the console knows of a picture). Each step and its result go to port.log.
  */
 static void TestFrame(void)
 {
@@ -1579,6 +1971,30 @@ static void TestFrame(void)
     else if (strncmp(line, "sync", 4) == 0) CtrOnline_Sync();
     else if (strncmp(line, "unlink", 6) == 0) CtrOnline_Unlink();
     else if (strncmp(line, "versions", 8) == 0) CtrOnline_FetchVersions(IdOf(arg));
+    else if (strncmp(line, "index", 5) == 0)
+    {
+        CtrOnline_FetchIndex();
+    }
+    else if (strncmp(line, "flush", 5) == 0)
+    {
+        Job job;
+
+        memset(&job, 0, sizeof(job));
+        job.type = JOB_FLUSH;
+        Start(&job);
+    }
+    else if (strncmp(line, "count", 5) == 0)
+    {
+        bool voted;
+        uint32_t fav[2] = {0, 0};
+        bool pending = false;
+        unsigned n = CtrOnline_Favourites(IdOf(arg), fav, &pending);
+        unsigned count = CtrOnline_VersionCount(IdOf(arg), &voted);
+
+        CtrLog_Write(CTR_LOG_FS, "online test:    %s: %u versions%s, favourites %u (%lu %lu)%s, card version %lu", arg,
+                     count, voted ? ", voted" : "", n, (unsigned long)fav[0], (unsigned long)fav[1],
+                     pending ? " PENDING" : "", (unsigned long)CtrOnline_CardVersion(IdOf(arg)));
+    }
     else if (strncmp(line, "use", 3) == 0)
     {
         unsigned long version = 0;
@@ -1621,6 +2037,24 @@ void CtrOnline_Frame(void)
     {
         aptSetSleepAllowed(!busy);
         sSleepHeld = busy;
+    }
+    /* Votes left on the card by a missing connection: tried again now and then. */
+    {
+        static uint64_t lastTry;
+        uint64_t now = CtrPlatform_Milliseconds();
+
+        if (!busy && now - lastTry > FLUSH_RETRY_MS)
+        {
+            lastTry = now;
+            if (PendingVotes() && CtrOnline_Linked())
+            {
+                Job job;
+
+                memset(&job, 0, sizeof(job));
+                job.type = JOB_FLUSH;
+                Start(&job);
+            }
+        }
     }
     if (written) CtrStereoMon_EditsChanged();
     /* A version picked on the console: the picture on show (the editor's

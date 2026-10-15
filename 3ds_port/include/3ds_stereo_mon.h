@@ -238,7 +238,7 @@ void CtrStereoMon_SetDepth(int percent);
  */
 #define CTR_HELP_CELL_W 128
 #define CTR_HELP_CELL_H 14
-#define CTR_HELP_CELLS 21
+#define CTR_HELP_CELLS 36
 enum
 {
     CTR_HELP_NAME, CTR_HELP_FRAME, CTR_HELP_PLANE, CTR_HELP_DEPTH, CTR_HELP_REVISION, CTR_HELP_STATE,
@@ -247,9 +247,21 @@ enum
     CTR_HELP_R_DEX,
     CTR_HELP_HOLD,
     /* The words beside the shaded START and SELECT pictures. */
-    CTR_HELP_WORD_START, CTR_HELP_WORD_SELECT
+    CTR_HELP_WORD_START, CTR_HELP_WORD_SELECT,
+    /* Which version of the picture is on the card, by whom, its votes
+     * (3ds_online.c); the editor's and the Pokédex's top right. */
+    CTR_HELP_VERSION, CTR_HELP_VERSION_BY, CTR_HELP_VERSION_VOTES,
+    /* The Pokédex (the editor's chooser) on the top screen: the picture
+     * under the cursor, the page, and its controls. */
+    CTR_HELP_CHOOSE_NAME, CTR_HELP_PAGE,
+    CTR_HELP_C_POKEMON, CTR_HELP_C_VERSIONS, CTR_HELP_C_PREV_PAGE, CTR_HELP_C_NEXT_PAGE, CTR_HELP_C_EDIT,
+    CTR_HELP_C_VOTE, CTR_HELP_C_SEARCH, CTR_HELP_C_FILTER, CTR_HELP_C_CLOSE,
+    CTR_HELP_COUNT
 };
 void CtrStereoMon_HelpCell(unsigned cell, const uint8_t *alpha, unsigned width);
+/* The top screen is the Pokédex's (the editor's chooser): the picture under
+ * the cursor with the chooser's cells instead of the gallery's words. */
+void CtrStereoMon_SetChooser(bool chooser);
 /*
  * Who edited a picture, and how far: an edit file ends with a 32-byte
  * trailer (older files have none): "EM3DSMD1", u8 flags (bit 0 finalized),
@@ -409,9 +421,12 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held);
 /* The bottom screen's frame while the editor is open: its touches and its
  * drawing. False when the editor is not open (the bottom UI goes on). */
 bool CtrStereoEdit_BottomFrame(void);
-/* After a sync brought pictures (3ds_stereo_mon_game.c): the next open lists
- * only the new ones (PreferNew); or, open already, it turns to `id`. */
+/* After a sync brought pictures (3ds_stereo_mon_game.c): the next open shows
+ * the Pokédex with only the new ones (PreferNew); or, open already, it turns
+ * to `id` (or, after the globe's sync, opens the Pokédex on it). */
 void CtrStereoEdit_PreferNew(void);
+/* The next open goes straight to the Pokédex (the new pictures only, or all). */
+void CtrStereoEdit_PreferDex(bool newOnes);
 void CtrStereoEdit_GoTo(uint16_t id, bool newOnes);
 
 #endif

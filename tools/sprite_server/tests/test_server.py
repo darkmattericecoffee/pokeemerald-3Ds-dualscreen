@@ -268,8 +268,12 @@ class ServerTest(unittest.TestCase):
         listing = json.loads(body)
         self.assertEqual((status, listing["current"], listing["favourites"]), (200, ids[2], []))
         self.assertEqual([v["version_id"] for v in listing["versions"]], ids[::-1])
+        rev = json.loads(api("GET", "/api/rev", gina)[2])["rev"]
         # Two favourites from the console; the voted one wins over the newest.
         status, _, body = api("POST", "/api/mons/030/votes", gina, {"version_ids": [ids[0], ids[1]]})
+        self.assertGreater(json.loads(api("GET", "/api/rev", gina)[2])["rev"], rev)
+        mons = {m["key"]: m for m in json.loads(api("GET", "/api/mons", gina)[2])["items"]}
+        self.assertEqual((mons["030"]["versions"], mons["030"]["mine"]), (3, 2))
         self.assertEqual(status, 200, body)
         listing = json.loads(body)
         self.assertEqual(listing["favourites"], [ids[0], ids[1]])

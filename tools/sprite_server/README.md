@@ -23,6 +23,34 @@ Everything lives in `~/emerald3ds-sprite-server` (`--data` / `DATA=` to change):
 `sprites.db` is the database and the only thing to back up; `sprites.json` is the exported
 game pictures and can be made again.
 
+## Docker (the easy install)
+
+Everything in one go, on any machine with Docker: the server and its Cloudflare tunnel.
+
+```bash
+cd tools/sprite_server
+DATA_DIR=~/emerald3ds-sprite-server docker compose --profile quick up -d --build
+docker compose --profile quick logs tunnel | grep trycloudflare      # the https address
+docker compose exec server python server.py --data /data adduser NAME --admin
+```
+
+- `DATA_DIR` is the data folder (database and `sprites.json`); it defaults to `./data`. An
+  existing folder works as it is. On a Mac with colima the folder must be one colima mounts.
+- `sprites.json` (the game pictures for the previews) is made on a computer with the game
+  built: `python3 server.py export-sprites --upstream build/upstream --data <DATA_DIR>`.
+- Profile `named` instead of `quick` runs a named tunnel that keeps its address:
+  `TUNNEL_TOKEN=... docker compose --profile named up -d --build` (make the tunnel in the
+  Cloudflare dashboard, public hostname pointing at `http://server:8787`).
+- The server's port is published on the host's 127.0.0.1 only; the internet reaches it
+  through the tunnel.
+
+## Live pages
+
+The progress grid and every Pokémon's page follow the server by themselves: every few
+seconds (while the tab is visible) they ask `/api/rev`, which moves on with every upload,
+vote, pin and delete, and swap in the new page when it moved. A small "live" mark in the
+header shows it working (grey when the server cannot be reached).
+
 ## Accounts and linking
 
 - **Users**: an admin adds people on the website's Users page. The server makes the
@@ -35,11 +63,13 @@ game pictures and can be made again.
 
 ## The 3DS client
 
-OPTIONS › EDITOR › LINK CONSOLE, then the code from the Account page (the first time also
-the server's address). After that: FINALIZE in the plane editor uploads the picture, UPLOAD
-ALL EDITS sends everything new, SELECT in the gallery or SYNC FROM SERVER fetches the current
-versions (and opens the editor on what came in), and the editor's MORE › VERSIONS ON SERVER
-lists a picture's versions to switch between and star. Details: `3ds_port/src/3ds_online.c` and
+OPTIONS › ONLINE › LINK CONSOLE, then the code from the Account page (the first time also
+the server's address). After that, in the plane editor (the column's EDITOR button): the globe
+loads what is new and opens the Pokédex on it; the star votes for the version on screen (two
+per Pokémon, kept on the card and sent when the server can be reached); the C-stick down shows
+the next version on the server. In the Pokédex (DEX): the Circle Pad moves through the
+Pokémon, the D-pad through the one under the cursor's versions, X votes, A edits. OPTIONS ›
+ONLINE also has LOAD NEW ONES, UPLOAD ALL EDITS and SEE AND VOTE. Details: `3ds_port/src/3ds_online.c` and
 section 7.1 of the design doc.
 
 ## The PC client
@@ -78,9 +108,10 @@ has a `Content-Length`. There are no redirects.
 | `GET /api/sync?since=<seq>` | `{"seq","items":[{"key","version_id","sha256","size","revision","final"}]}`: what changed since `seq` |
 | `GET /api/versions/<id>` | the `.bin`, with `ETag`, `X-Version-Id`, `X-Sha256` |
 | `GET /api/mons/<key>/current` | the current `.bin`; `If-None-Match` gives 304 |
-| `GET /api/mons` | every Pokémon with a current version |
+| `GET /api/mons` | every Pokémon with a current version: `versions` (how many), `mine` (how many are the caller's favourites) |
 | `GET /api/mons/<key>/versions` | `{"current","pinned","favourites","max_favourites","versions":[{"version_id","author","signed","revision","final","votes","sha256","size","uploaded_at"}]}`, newest first; `favourites` are the caller's |
 | `POST /api/mons/<key>/votes` `{"version_ids":[…]}` | consoles only: the caller's favourites (0 to 2) for the picture, replacing the earlier ones; answers like `…/versions` |
+| `GET /api/rev` | `{"rev","seq"}`: `rev` moves on with every upload, vote, pin and delete (the web pages poll it) |
 
 `<key>` is the edit file's name: `006` front, `b006` back, `t012` trainer, `p001` player.
 `seq` is a server counter, so the console's clock never matters.

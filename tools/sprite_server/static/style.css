@@ -113,3 +113,9 @@ pre { background: var(--bg); padding: 8px 10px; border-radius: 8px; overflow-x: 
   td.actions > * { margin: 0 6px 0 0; }
   table.versions td:first-child { grid-row: span 3; }
 }
+
+/* The live pages' marker (app.js): green while polling works, grey when it does not. */
+.live { margin-left: auto; font-size: 12px; color: #2e8b57; padding: 2px 8px; border: 1px solid currentColor;
+        border-radius: 10px; transition: background 0.3s; }
+.live.off { color: #999; }
+.live.pulse { background: rgba(46, 139, 87, 0.2); }

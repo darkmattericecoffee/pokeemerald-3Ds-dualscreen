@@ -4827,7 +4827,7 @@ static void DrawTab(int x, int y, int w, int h, const PlateLook *p, bool8 presse
 
 static void DrawOptionTabs(const ViewState *s)
 {
-    static const char *const names[CTR_EXTRAS_PAGES] = {CTR_TEXT("SETTINGS", "AJUSTES", "RÉGLAGES", "OPZIONI"), CTR_TEXT("ENHANCEMENTS", "MEJORAS", "AMÉLIOR.", "MIGLIORIE"), CTR_TEXT("EDITOR", "EDITOR", "ÉDITEUR", "EDITOR")};
+    static const char *const names[CTR_EXTRAS_PAGES] = {CTR_TEXT("SETTINGS", "AJUSTES", "RÉGLAGES", "OPZIONI"), CTR_TEXT("ENHANCEMENTS", "MEJORAS", "AMÉLIOR.", "MIGLIORIE"), CTR_TEXT("ONLINE", "EN LINEA", "EN LIGNE", "ONLINE")};
     u8 pages[CTR_EXTRAS_PAGES], count = 0;
     int capTop, capBottom, cap, widths[CTR_EXTRAS_PAGES], need = 0, x = 4;
     bool8 fit = TRUE;

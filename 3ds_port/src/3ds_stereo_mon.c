@@ -135,6 +135,8 @@ static uint32_t sEditMark;
 /* The editor's other views: every pixel in its plane's colour (composed
  * from sTinted instead of the picture), and the battle's. */
 static bool sEditLayers, sEditBattle, sEditControls = true;
+/* The Pokédex's view (CtrStereoMon_SetChooser). */
+static bool sChooser;
 static uint16_t sTinted[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
 /* The editor's own depth (CtrStereoMon_Depth), -1 until read. */
 static int sEditDepth = -1;
@@ -1418,6 +1420,8 @@ static C3D_Tex sHelpTex;
 static bool sHelpAllocated, sHelpFailed;
 static uint8_t sHelpWidth[CTR_HELP_CELLS];
 
+void CtrStereoMon_SetChooser(bool chooser) { sChooser = chooser; }
+
 void CtrStereoMon_HelpCell(unsigned cell, const uint8_t *alpha, unsigned width)
 {
     uint8_t *texels;
@@ -1686,6 +1690,39 @@ static void DrawControls(void)
     DrawButton(BTN_A, x, y + 2);
 }
 
+/*
+ * The Pokédex's top screen (the editor's chooser): the picture under the
+ * cursor, its name and the page at the top left, which version is on the
+ * card at the top right, and the controls down both sides: the Circle Pad
+ * moves through the Pokémon, the D-pad through a Pokémon's versions.
+ */
+static void DrawChooserHelp(void)
+{
+    static const Help left[] = {
+        {BTN_PAD, false, CTR_HELP_C_POKEMON},
+        {BTN_DPAD_LR, false, CTR_HELP_C_VERSIONS},
+        {BTN_L, false, CTR_HELP_C_PREV_PAGE},
+    };
+    static const Help right[] = {
+        {BTN_A, false, CTR_HELP_C_EDIT},
+        {BTN_X, false, CTR_HELP_C_VOTE},
+        {BTN_R, false, CTR_HELP_C_NEXT_PAGE},
+        {BTN_Y, false, CTR_HELP_C_SEARCH},
+        {BTN_START, false, CTR_HELP_C_FILTER},
+        {BTN_B, false, CTR_HELP_C_CLOSE},
+    };
+    const uint32_t white = C2D_Color32(240, 242, 248, 255), cyan = C2D_Color32(80, 230, 240, 255);
+    const uint32_t gold = C2D_Color32(255, 214, 72, 255), dim = C2D_Color32(185, 190, 205, 255);
+
+    DrawHelpCell(CTR_HELP_CHOOSE_NAME, 8, 4, white);
+    DrawHelpCell(CTR_HELP_PAGE, 8, 18, cyan);
+    DrawHelpCell(CTR_HELP_VERSION, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION), 4, gold);
+    DrawHelpCell(CTR_HELP_VERSION_BY, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_BY), 18, white);
+    DrawHelpCell(CTR_HELP_VERSION_VOTES, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_VOTES), 32, dim);
+    DrawHelp(false, 154, left, sizeof(left) / sizeof(left[0]));
+    DrawHelp(true, 114, right, sizeof(right) / sizeof(right[0]));
+}
+
 static void DrawEditEye(float sign, float slider, unsigned frame)
 {
     static const uint16_t colours[CTR_STEREO_EDIT_PLANES] = CTR_STEREO_EDIT_COLOURS;
@@ -1734,7 +1771,15 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
      * plane in its colour, the depth, who, how far) at the top right. */
     DrawHelpCell(CTR_HELP_NAME, 8, 4, white);
     DrawHelpCell(CTR_HELP_FRAME, 8, 18, cyan);
+    /* Which version this is (by whom, its votes) first, where it is seen. */
     y = 4;
+    if (HelpWidth(CTR_HELP_VERSION))
+    {
+        DrawHelpCell(CTR_HELP_VERSION, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION), y, C2D_Color32(255, 214, 72, 255));
+        DrawHelpCell(CTR_HELP_VERSION_BY, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_BY), y + 14, white);
+        DrawHelpCell(CTR_HELP_VERSION_VOTES, CTR_GAME_WIDTH - 8 - HelpWidth(CTR_HELP_VERSION_VOTES), y + 28, dim);
+        y += 42;
+    }
     if (sEditPlane < CTR_STEREO_EDIT_PLANES)
     {
         uint16_t c = colours[sEditPlane];
@@ -1784,6 +1829,12 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
                           C2D_Color32(40, 46, 70, 160), C2D_Color32(40, 46, 70, 160));
     }
     DrawPlanes(sign, slider, frame, NULL, SCALE);
+    if (sChooser)
+    {
+        DrawChooserHelp();
+        C2D_Flush();
+        return;
+    }
     if ((sId & 0xC000) == 0) snprintf(line, sizeof(line), "NO.%03u %s", sId, sName);
     else snprintf(line, sizeof(line), "%s", sName);
     DrawText(8, 6, line, C2D_Color32(235, 235, 240, 255));
@@ -1832,7 +1883,7 @@ typedef struct
 {
     uint16_t id;
     uint8_t frame, groups, editing, editPlane, editOutline, edited, gallery, stereo;
-    uint8_t editBattle, editLayers, editControls, backdrop, mate, final, undrawn;
+    uint8_t editBattle, editLayers, editControls, backdrop, mate, final, undrawn, chooser;
     int depth, slider, boxLeft, boxRight, boxBottom;
     uint32_t mark;
     unsigned planesVersion, composed, toCompose, helpVersion, frames;
@@ -1860,6 +1911,7 @@ static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
     k->editBattle = sEditBattle;
     k->editLayers = sEditLayers;
     k->editControls = sEditControls;
+    k->chooser = sChooser;
     k->backdrop = sBackdropReady;
     k->mate = sMateReady;
     k->final = sMeta.finalized;

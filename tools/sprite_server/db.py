@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS votes (
 CREATE INDEX IF NOT EXISTS votes_by_mon ON votes (mon_key, user_id);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 INSERT OR IGNORE INTO meta (k, v) VALUES ('seq', 0);
+-- Moves on with every upload, vote, pin and delete: the web pages poll it.
+INSERT OR IGNORE INTO meta (k, v) VALUES ('rev', 0);
 """
 
 PBKDF2_ROUNDS = 200_000
@@ -149,6 +151,15 @@ def next_seq(conn: sqlite3.Connection) -> int:
 
 def current_seq(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT v FROM meta WHERE k = 'seq'").fetchone()[0]
+
+
+def bump_rev(conn: sqlite3.Connection) -> None:
+    conn.execute("UPDATE meta SET v = v + 1 WHERE k = 'rev'")
+
+
+def current_rev(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT v FROM meta WHERE k = 'rev'").fetchone()
+    return row[0] if row else 0
 
 
 # ── Users ───────────────────────────────────────────────────────────────────
@@ -246,6 +257,7 @@ def add_version(conn: sqlite3.Connection, edit, user_id: int, device_id: Optiona
             "saved_at, sha256, size, data, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (edit.key, user_id, device_id, edit.planes, edit.frames, int(edit.final), edit.revision,
              edit.author, edit.saved, edit.sha256, len(edit.data), edit.data, now())).lastrowid
+        bump_rev(conn)
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
         if cur is not None and cur["pinned"]:
             return vid, False, False
@@ -302,6 +314,7 @@ def set_votes(conn: sqlite3.Connection, user_id: int, key: str, version_ids) -> 
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
         if cur is None or not cur["pinned"]:
             _set_best(conn, key)
+        bump_rev(conn)
     return None
 
 
@@ -311,6 +324,7 @@ def pin(conn: sqlite3.Connection, key: str, version_id: int) -> bool:
             return False
         conn.execute("INSERT OR REPLACE INTO current (mon_key, version_id, pinned, seq) VALUES (?, ?, 1, ?)",
                      (key, version_id, next_seq(conn)))
+        bump_rev(conn)
         return True
 
 
@@ -318,6 +332,7 @@ def unpin(conn: sqlite3.Connection, key: str) -> None:
     """Back to 'the most votes win, else the newest'."""
     with Tx(conn):
         _set_best(conn, key)
+        bump_rev(conn)
 
 
 def _set_best(conn: sqlite3.Connection, key: str) -> None:
@@ -343,4 +358,5 @@ def delete_version(conn: sqlite3.Connection, version_id: int) -> Optional[str]:
         conn.execute("DELETE FROM versions WHERE id = ?", (version_id,))
         if cur is not None and (cur["version_id"] == version_id or not cur["pinned"]):
             _set_best(conn, row["mon_key"])
+        bump_rev(conn)
         return row["mon_key"]

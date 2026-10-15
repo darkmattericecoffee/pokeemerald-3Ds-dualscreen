@@ -1,0 +1,36 @@
+# The plane-sharing server and its Cloudflare tunnel.
+#
+#   cd tools/sprite_server
+#   DATA_DIR=~/emerald3ds-sprite-server docker compose --profile quick up -d --build
+#   docker compose --profile quick logs tunnel | grep trycloudflare    # the https address
+#   docker compose exec server python server.py --data /data adduser NAME --admin
+#
+# Profile "quick": a quick tunnel, a new *.trycloudflare.com address every start.
+# Profile "named": a named tunnel that keeps its address. Make it in the Cloudflare dashboard
+# (Zero Trust > Networks > Tunnels, public hostname -> http://server:8787) and start with
+#   TUNNEL_TOKEN=... docker compose --profile named up -d --build
+# Without a profile only the server starts (on 127.0.0.1:8787 of this machine).
+services:
+  server:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+    ports:
+      - "127.0.0.1:${PORT:-8787}:8787"
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["quick"]
+    restart: unless-stopped
+    depends_on:
+      - server
+    command: ["tunnel", "--no-autoupdate", "--url", "http://server:8787"]
+  tunnel-named:
+    image: cloudflare/cloudflared:latest
+    profiles: ["named"]
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    command: ["tunnel", "--no-autoupdate", "run"]

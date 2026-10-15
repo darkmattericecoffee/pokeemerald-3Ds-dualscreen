@@ -58,6 +58,7 @@
 #include "3ds_bottom_draw.h"
 #include "3ds_edit_icons.h"
 #include "3ds_edit_sprites.h"
+#include "3ds_menu_icon.h"
 #include "3ds_input.h"
 #include "3ds_log.h"
 #include "3ds_online.h"
@@ -88,11 +89,17 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 #define DEX_W 28
 #define MORE_X (DEX_X + DEX_W + 2)
 #define MORE_W 22
+/* The server (3ds_online.c): the globe loads what is new; the star votes
+ * for the version on the card. */
+#define ONLINE_X (MORE_X + MORE_W + 2)
+#define ONLINE_W 26
 #define UNDO_W 22
 #define UNDO_X (CAN_X + CAN_W / 2 - UNDO_W - 1)
 #define REDO_X (CAN_X + CAN_W / 2 + 1)
 #define SAVE_W 26
 #define SAVE_X (RIGHT_X - 4 - SAVE_W)
+#define VOTE_W 26
+#define VOTE_X (SAVE_X - 2 - VOTE_W)
 /* At the picture's bottom right: the grid under the save, the tint (its
  * strength written on it) at its left. */
 #define GRID_X SAVE_X
@@ -159,7 +166,7 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 enum { T_BRUSH, T_ERASE, T_LASSO, T_FILL, T_PAN, T_COUNT };
 enum { B_OPACITY, B_GRID, B_COUNT };
 /* The pressed button's number: the tools', the right's, the bars'. */
-enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B, P_BATTLE };
+enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B, P_BATTLE, P_ONLINE, P_VOTE };
 /* What the top screen shows: the colours, the planes tinted, the battle. */
 /* The mock battle view is gone: START plays the real battle. */
 enum { V_COLOURS, V_LAYERS, V_COUNT };
@@ -304,6 +311,23 @@ static struct
      * card is taken up as a new picture). */
     CtrOnlineVersions versions;
     unsigned versionsSerial, verCursor, statusSerial, reloads;
+    /* The picture the server's words are about (the one edited, or under
+     * the Pokédex's cursor), since when, whether its list came; which
+     * version of it is on the card (and when that was read); a cycle
+     * waiting for the list or for the server; the list last asked for. */
+    uint16_t focusId, cardFor, askedFor;
+    uint32_t focusSince, askedAt, indexAskedAt;
+    uint32_t cardVersion;
+    unsigned cardSerial, cardReloads, indexSerial;
+    bool versionsLoaded;
+    int cycleWanted;
+    /* The globe: a sync it started (and the new pictures' serial then),
+     * or one waiting for the server to be free. */
+    bool globeSync, globeWanted;
+    unsigned globeNewSerial;
+    /* The Circle Pad's repeat in the Pokédex. */
+    int padDir;
+    unsigned padFrames;
     uint32_t tick;
     bool touching;
     char name[CTR_STEREO_MON_NAME];
@@ -1011,9 +1035,13 @@ static bool Bind(void)
 
 bool CtrStereoEdit_Active(void) { return sE.active; }
 static void Choose(unsigned index);
+static void OpenChooser(void);
+static void ToggleVote(void);
+static void CycleVersion(int dir);
+static void GlobeTap(void);
 static void VersionsKeys(unsigned down);
 /* The next open shows the new pictures (CtrStereoEdit_PreferNew). */
-static bool sPreferNew;
+static bool sPreferNew, sPreferDex;
 
 void CtrStereoEdit_Open(bool fromGallery)
 {
@@ -1038,16 +1066,24 @@ void CtrStereoEdit_Open(bool fromGallery)
     sE.reloads = CtrStereoMon_ReloadCount();
     CtrStereoMon_EditScan();
     Bind();
-    if (sPreferNew)
+    if (sPreferDex)
     {
-        /* Opened on what a sync brought: the chooser lists only those. */
+        /* Opened to see and vote: straight into the Pokédex, on what a
+         * sync brought when it brought something. */
+        sPreferDex = false;
+        sE.show = sPreferNew ? SHOW_NEW : SHOW_ALL;
         sPreferNew = false;
-        sE.show = SHOW_NEW;
-        Toast("NEW FROM THE SERVER  -  DEX LISTS THEM");
+        OpenChooser();
     }
 }
 
-void CtrStereoEdit_PreferNew(void) { sPreferNew = true; }
+void CtrStereoEdit_PreferDex(bool newOnes)
+{
+    sPreferDex = true;
+    sPreferNew = newOnes;
+}
+
+void CtrStereoEdit_PreferNew(void) { CtrStereoEdit_PreferDex(true); }
 
 void CtrStereoEdit_GoTo(uint16_t id, bool newOnes)
 {
@@ -1055,6 +1091,16 @@ void CtrStereoEdit_GoTo(uint16_t id, bool newOnes)
 
     if (!sE.active) return;
     if (newOnes) sE.show = SHOW_NEW;
+    if (sE.globeSync && index >= 0 && !sE.inBattle)
+    {
+        /* The globe's sync: the Pokédex on the new pictures, to see them
+         * (the D-pad turns their versions) and to vote. */
+        sE.globeSync = false;
+        OpenChooser();
+        for (unsigned k = 0; k < sListCount; ++k)
+            if (sList[k] == (unsigned)index) sE.chooseCursor = k;
+        return;
+    }
     if (index >= 0 && id != sE.id && !sE.inBattle)
     {
         Choose((unsigned)index);
@@ -1067,6 +1113,7 @@ static void Close(bool leaveGallery)
     if (!sE.active) return;
     Save(true);
     CtrStereoMon_SetEditing(false, 0);
+    CtrStereoMon_SetChooser(false);
     CtrStereoBattle_SetLive(0, NULL, 0);
     sE.active = false;
     sE.pl = NULL;
@@ -1301,22 +1348,58 @@ static void ChooseKeys(unsigned down)
 {
     unsigned count = sListCount;
 
+    /* The Pokédex: the Circle Pad moves through the Pokémon (ChoosePad),
+     * the D-pad's left and right through the one under the cursor's
+     * versions on the server, up and down a row; A edits it, X votes for
+     * the version shown, L and R turn the page, Y searches, START filters
+     * (ALL, EDITED, NEW), B and SELECT go back. */
     if (down & (CTR_KEY_B | CTR_KEY_SELECT)) { CloseChooser(); return; }
     if (down & CTR_KEY_Y) { OpenKeyboard(KB_SEARCH); return; }
-    if (down & CTR_KEY_X)
+    if (down & CTR_KEY_START)
     {
         sE.show = (uint8_t)((sE.show + 1) % SHOW_COUNT);
         BuildList();
+        sE.helpDirty = true;
         return;
     }
     if (count == 0) return;
     if (down & CTR_KEY_A) Choose(sList[sE.chooseCursor]);
-    else if (down & CTR_KEY_RIGHT) sE.chooseCursor = (sE.chooseCursor + 1) % count;
-    else if (down & CTR_KEY_LEFT) sE.chooseCursor = (sE.chooseCursor + count - 1) % count;
+    else if (down & CTR_KEY_X) ToggleVote();
+    else if (down & CTR_KEY_RIGHT) CycleVersion(1);
+    else if (down & CTR_KEY_LEFT) CycleVersion(-1);
     else if (down & CTR_KEY_DOWN) sE.chooseCursor = (sE.chooseCursor + CH_COLS) % count;
     else if (down & CTR_KEY_UP) sE.chooseCursor = (sE.chooseCursor + count - CH_COLS % count) % count;
     else if (down & CTR_KEY_R) sE.chooseCursor = (sE.chooseCursor + CH_PER_PAGE) % count;
     else if (down & CTR_KEY_L) sE.chooseCursor = (sE.chooseCursor + count - CH_PER_PAGE % count) % count;
+    if (down & (CTR_KEY_DPAD | CTR_KEY_L | CTR_KEY_R)) sE.helpDirty = true;
+}
+
+/* The Circle Pad in the Pokédex: one Pokémon at a time, held it runs on
+ * (faster after a while); up and down a row. */
+static void ChoosePad(const CtrInput *in)
+{
+    int cx = in->circleX, cy = in->circleY, dir = 0;
+    unsigned count = sListCount;
+
+    if (cx > 60) dir = 1;
+    else if (cx < -60) dir = -1;
+    else if (cy > 60) dir = -CH_COLS;
+    else if (cy < -60) dir = CH_COLS;
+    if (dir == 0 || count == 0)
+    {
+        sE.padDir = 0;
+        sE.padFrames = 0;
+        return;
+    }
+    if (dir != sE.padDir) sE.padFrames = 0;
+    sE.padDir = dir;
+    if (sE.padFrames == 0 || (sE.padFrames >= 16 && sE.padFrames % (sE.padFrames > 60 ? 3 : 6) == 0))
+    {
+        sE.chooseCursor = (unsigned)(((int)sE.chooseCursor + dir + (int)count * CH_COLS) % (int)count);
+        sE.dirtyDraw = true;
+        sE.helpDirty = true;
+    }
+    ++sE.padFrames;
 }
 
 void CtrStereoEdit_Keys(unsigned down, unsigned held)
@@ -1587,6 +1670,8 @@ static bool BarAct(int x, int y)
     if (y < BAR_Y || y >= BAR_Y + BAR_H) return false;
     if (x >= DEX_X && x < DEX_X + DEX_W) { sE.pressed = P_DEX; OpenChooser(); }
     else if (x >= MORE_X && x < MORE_X + MORE_W) { sE.pressed = P_MORE; sE.screen = S_OPTIONS; }
+    else if (x >= ONLINE_X && x < ONLINE_X + ONLINE_W) { sE.pressed = P_ONLINE; GlobeTap(); }
+    else if (x >= VOTE_X && x < VOTE_X + VOTE_W) { sE.pressed = P_VOTE; ToggleVote(); }
     else if (x >= UNDO_X && x < UNDO_X + UNDO_W) { sE.pressed = P_UNDO; Undo(); }
     else if (x >= REDO_X && x < REDO_X + UNDO_W) { sE.pressed = P_REDO; Redo(); }
     else if (x >= SAVE_X && x < SAVE_X + SAVE_W) { sE.pressed = P_SAVE; SaveTap(); }
@@ -1810,6 +1895,305 @@ static void TouchEdit(const CtrInput *in)
 #define OPT_Y 30
 #define OPT_W 200
 #define OPT_ROW 26
+
+/* ── The server's versions of the picture in focus (3ds_online.c) ──── */
+
+static void BuildList(void);
+
+/* The picture the server's words are about: the one under the Pokédex's
+ * cursor while it is open, else the one edited. */
+static uint16_t FocusId(void)
+{
+    if (sE.screen == S_CHOOSE && sListCount) return CtrStereoMon_GalleryIdAt(sList[sE.chooseCursor]);
+    return sE.id;
+}
+
+/* The version on the card's place in the list (newest first), or -1. */
+static int CardAt(void)
+{
+    for (unsigned i = 0; i < sE.versions.count; ++i)
+        if (sE.cardVersion && sE.versions.v[i].version == sE.cardVersion) return (int)i;
+    return -1;
+}
+
+/* Whether this account voted for that version of the picture. */
+static bool Voted(uint16_t id, uint32_t version)
+{
+    uint32_t fav[2];
+    unsigned n = CtrOnline_Favourites(id, fav, NULL);
+
+    return version && ((n > 0 && fav[0] == version) || (n > 1 && fav[1] == version));
+}
+
+/* The three lines about the version on the card (the top right). */
+static void VersionLines(uint16_t id, char *a, char *b, char *c)
+{
+    a[0] = b[0] = c[0] = 0;
+    if (id == 0 || !CtrOnline_Linked()) return;
+    if (sE.versionsLoaded && sE.versions.id == id && sE.cardFor == id)
+    {
+        int at = CardAt();
+        unsigned count = sE.versions.count;
+
+        if (count == 0)
+        {
+            snprintf(a, 40, "NOT ON THE SERVER YET");
+            return;
+        }
+        if (at < 0)
+        {
+            snprintf(a, 40, "%s", CtrStereoMon_HasEdit(id) ? "YOUR OWN EDIT" : "THE GAME'S PLANES");
+            snprintf(b, 40, "%u ON THE SERVER", count);
+            snprintf(c, 40, "%s", sE.screen == S_CHOOSE ? "D-PAD: SEE THEM" : "C-STICK DOWN: SEE THEM");
+            return;
+        }
+        {
+            const CtrOnlineVersion *v = &sE.versions.v[at];
+            bool mine = Voted(id, v->version);
+
+            /* Numbered oldest first: the newest is the highest. */
+            snprintf(a, 40, "VERSION %u OF %u", count - (unsigned)at, count);
+            snprintf(b, 40, "BY %s", v->author[0] ? v->author : "?");
+            snprintf(c, 40, "%u VOTE%s%s%s", v->votes, v->votes == 1 ? "" : "S", mine ? "  YOUR VOTE" : "",
+                     v->current ? "  CURRENT" : "");
+        }
+        return;
+    }
+    {
+        bool voted;
+        unsigned count = CtrOnline_VersionCount(id, &voted);
+
+        if (count) snprintf(a, 40, "%u VERSION%s ON THE SERVER", count, count == 1 ? "" : "S");
+        if (voted) snprintf(c, 40, "YOU VOTED");
+    }
+}
+
+static void UseVersionOf(uint16_t id, uint32_t version);
+
+/* The next (or previous) version of the picture in focus to the card and
+ * the screens: the D-pad in the Pokédex, the C-stick down in the editor. */
+static void CycleVersion(int dir)
+{
+    uint16_t id = FocusId();
+    unsigned count;
+    int at, next;
+
+    if (!CtrOnline_Linked())
+    {
+        Toast("LINK THE CONSOLE: OPTIONS, ONLINE");
+        return;
+    }
+    if (!sE.versionsLoaded || sE.versions.id != id || sE.cardFor != id)
+    {
+        /* Asked for; it turns as soon as the list is in. */
+        sE.cycleWanted = dir;
+        if (!CtrOnline_Busy() && sE.askedFor != id)
+        {
+            sE.askedFor = id;
+            sE.askedAt = sE.tick;
+            CtrOnline_FetchVersions(id);
+        }
+        Toast("ASKING THE SERVER...");
+        return;
+    }
+    count = sE.versions.count;
+    if (count == 0)
+    {
+        Toast("NO VERSIONS ON THE SERVER YET");
+        return;
+    }
+    at = CardAt();
+    next = at < 0 ? 0 : (at + (dir > 0 ? 1 : -1) + (int)count) % (int)count;
+    if (count == 1 && at == 0)
+    {
+        Toast("THE ONLY VERSION ON THE SERVER");
+        return;
+    }
+    UseVersionOf(id, sE.versions.v[next].version);
+}
+
+static void UseVersionOf(uint16_t id, uint32_t version)
+{
+    char line[40];
+
+    if (sE.dirtyFile && id == sE.id) Save(true);
+    if (!CtrOnline_UseVersion(id, version))
+    {
+        /* The server is busy: tried again once it is free. */
+        sE.cycleWanted = sE.cycleWanted ? sE.cycleWanted : 1;
+        return;
+    }
+    snprintf(line, sizeof(line), "LOADING VERSION %lu...", (unsigned long)version);
+    Toast(line);
+    sE.onlineWatch = true;
+    sE.onlineSerial = 0;
+}
+
+/* The star: a vote for the version on the card, or the vote taken back.
+ * Two at most per Pokémon; kept on the card and sent (now or later). */
+static void ToggleVote(void)
+{
+    uint16_t id = FocusId();
+    uint32_t fav[2], list[2];
+    unsigned n, m = 0;
+    uint32_t version;
+
+    if (!CtrOnline_Linked())
+    {
+        Toast("LINK THE CONSOLE: OPTIONS, ONLINE");
+        return;
+    }
+    if (sE.cardFor != id) sE.cardVersion = CtrOnline_CardVersion(id), sE.cardFor = id;
+    version = sE.cardVersion;
+    if (version == 0)
+    {
+        Toast(CtrStereoMon_HasEdit(id) ? "NOT ON THE SERVER: UPLOAD IT FIRST" : "PICK A SERVER VERSION FIRST");
+        return;
+    }
+    n = CtrOnline_Favourites(id, fav, NULL);
+    for (unsigned i = 0; i < n; ++i)
+        if (fav[i] != version) list[m++] = fav[i];
+    if (m == n)
+    {
+        if (n >= 2)
+        {
+            Toast("TWO VOTES ALREADY: TAKE ONE BACK");
+            return;
+        }
+        list[m++] = version;
+    }
+    CtrOnline_Vote(id, list, m);
+    Toast(m > n ? "SENDING VOTE..." : "TAKING THE VOTE BACK...");
+    sE.onlineWatch = true;
+    sE.onlineSerial = CtrOnline_Serial();
+    sE.helpDirty = true;
+    sE.dirtyDraw = true;
+}
+
+/* The globe: what is new on the server to the card (a sync); then the
+ * Pokédex opens on the new pictures (CtrStereoEdit_GoTo). */
+static void GlobeTap(void)
+{
+    if (!CtrOnline_Linked())
+    {
+        Toast("LINK THE CONSOLE: OPTIONS, ONLINE");
+        return;
+    }
+    Save(true);
+    sE.globeNewSerial = CtrOnline_NewSerial();
+    if (CtrOnline_Busy())
+    {
+        sE.globeWanted = true;
+        Toast("LOOKING FOR NEW ONES SOON...");
+        return;
+    }
+    if (CtrOnline_Sync())
+    {
+        sE.globeSync = true;
+        Toast("LOOKING FOR NEW ONES...");
+    }
+}
+
+/* Each frame: the picture in focus's list and card version, the
+ * Pokédex's counts, the globe's sync, and what waits for the server. */
+static void OnlineFrame(void)
+{
+    CtrOnlineVersions list;
+    unsigned serial, age;
+    uint16_t id = FocusId();
+    bool busy;
+
+    if (sE.tick % 8 == 0 && !CtrOnline_Linked())
+    {
+        if (sE.versionsLoaded) sE.helpDirty = true;
+        sE.versionsLoaded = false;
+        return;
+    }
+    busy = CtrOnline_Busy();
+    if (id != sE.focusId)
+    {
+        sE.focusId = id;
+        sE.focusSince = sE.tick;
+        sE.versionsLoaded = sE.versions.id == id && sE.versionsLoaded;
+        sE.helpDirty = true;
+    }
+    /* Which version the card holds: read again after a job or a reload,
+     * and in the Pokédex once the cursor rests. */
+    if ((sE.cardFor != id || CtrOnline_Serial() != sE.cardSerial || CtrStereoMon_ReloadCount() != sE.cardReloads)
+        && (sE.screen != S_CHOOSE || sE.tick - sE.focusSince >= 10) && !busy)
+    {
+        sE.cardVersion = CtrOnline_CardVersion(id);
+        sE.cardFor = id;
+        sE.cardSerial = CtrOnline_Serial();
+        sE.cardReloads = CtrStereoMon_ReloadCount();
+        sE.helpDirty = true;
+        sE.dirtyDraw = true;
+    }
+    serial = CtrOnline_GetVersions(&list);
+    if (serial != sE.versionsSerial)
+    {
+        sE.versionsSerial = serial;
+        if (list.id == id)
+        {
+            sE.versions = list;
+            sE.versionsLoaded = true;
+            sE.helpDirty = true;
+            sE.dirtyDraw = true;
+        }
+    }
+    /* The list of the picture in focus, once the cursor rests on it. */
+    if ((!sE.versionsLoaded || sE.versions.id != id) && !busy && id != 0
+        && sE.tick - sE.focusSince >= (sE.screen == S_CHOOSE ? 20u : 2u)
+        && (sE.askedFor != id || sE.tick - sE.askedAt > 600))
+    {
+        sE.askedFor = id;
+        sE.askedAt = sE.tick;
+        CtrOnline_FetchVersions(id);
+        busy = true;
+    }
+    /* A turn asked for before the list (or the server) was there. */
+    if (sE.cycleWanted && !busy && sE.versionsLoaded && sE.versions.id == id && sE.cardFor == id)
+    {
+        int dir = sE.cycleWanted;
+
+        sE.cycleWanted = 0;
+        CycleVersion(dir);
+        busy = CtrOnline_Busy();
+    }
+    /* The Pokédex's counts and votes, fetched again after two minutes. */
+    if (sE.screen == S_CHOOSE)
+    {
+        unsigned is = CtrOnline_IndexSerial(&age);
+
+        if (is != sE.indexSerial)
+        {
+            sE.indexSerial = is;
+            sE.dirtyDraw = true;
+            sE.helpDirty = true;
+        }
+        if (age > 120000 && !busy && sE.tick - sE.indexAskedAt > 600)
+        {
+            sE.indexAskedAt = sE.tick;
+            CtrOnline_FetchIndex();
+            busy = true;
+        }
+    }
+    if (sE.globeWanted && !busy)
+    {
+        sE.globeWanted = false;
+        if (CtrOnline_Sync()) sE.globeSync = true;
+        busy = true;
+    }
+    if (sE.globeSync && !busy)
+    {
+        char text[CTR_ONLINE_TEXT];
+        CtrOnlineStatus st = CtrOnline_Status(text, sizeof(text));
+
+        sE.globeSync = false;
+        if (CtrOnline_NewSerial() == sE.globeNewSerial)
+            Toast(st == CTR_ONLINE_ERROR ? text : "NOTHING NEW. DEX: SEE AND VOTE");
+    }
+}
 
 /* ── The versions on the server (3ds_online.c) ─────────────────────── */
 
@@ -2478,6 +2862,35 @@ static void DrawTools(void)
 }
 
 /* The bar along the picture's top. */
+static void DrawStar(int x, int y, bool on);
+
+/* The globe (the user's picture, 3ds_menu_icon.h) at its own size: a dot
+ * on it while the server is being talked to, an orange one while votes
+ * wait on the card. */
+static void DrawGlobe(void)
+{
+    int x0 = ONLINE_X + (ONLINE_W - ONLINE_ICON_W) / 2, y0 = BAR_Y + (BAR_H - ONLINE_ICON_H) / 2 + (sE.pressed == P_ONLINE);
+    bool linked = CtrOnline_Linked();
+
+    for (int r = 0; r < ONLINE_ICON_H; ++r)
+        for (int c = 0; c < ONLINE_ICON_W; ++c)
+        {
+            uint16_t px = sOnlineIcon[r * ONLINE_ICON_W + c];
+
+            if (px != MENU_ICON_CLEAR) Px(x0 + c, y0 + r, linked ? px : Grey(px));
+        }
+    if (CtrOnline_Busy() || sE.globeSync || sE.globeWanted)
+    {
+        DrawDisc(x0 + ONLINE_ICON_W - 3, y0 + 3, 4, Rgb(1, 2, 2));
+        DrawDisc(x0 + ONLINE_ICON_W - 3, y0 + 3, 3, (sE.tick / 15) % 2 ? Rgb(6, 40, 31) : Rgb(14, 56, 31));
+    }
+    else if (CtrOnline_PendingVotes())
+    {
+        DrawDisc(x0 + ONLINE_ICON_W - 3, y0 + 3, 4, Rgb(1, 2, 2));
+        DrawDisc(x0 + ONLINE_ICON_W - 3, y0 + 3, 3, Rgb(31, 40, 4));
+    }
+}
+
 static void DrawBar(void)
 {
     const bool final = CtrStereoMon_EditMeta()->finalized, gridOn = sE.grid != GRID_OFF;
@@ -2486,6 +2899,17 @@ static void DrawBar(void)
     CtrBottomDraw_Plate(DEX_X, BAR_Y, DEX_W, BAR_H, 0, sE.pressed == P_DEX);
     CtrBottomDraw_GamePic(CTR_DRAW_PIC_DEX, DEX_X + DEX_W / 2, BAR_Y + BAR_H / 2);
     PlateIcon(MORE_X, BAR_Y, MORE_W, BAR_H, 0, sE.pressed == P_MORE, ICON_SETTINGS, false, INK_DARK);
+    DrawGlobe();
+    /* The vote: a star, gold when the version on the card has this
+     * account's vote; greyed when there is nothing to vote for. */
+    {
+        uint16_t id = FocusId();
+        bool on = sE.cardFor == id && Voted(id, sE.cardVersion);
+        bool live = CtrOnline_Linked() && sE.cardFor == id && sE.cardVersion != 0;
+
+        CtrBottomDraw_Plate(VOTE_X, BAR_Y, VOTE_W, BAR_H, on ? 1 : live ? 0 : 2, sE.pressed == P_VOTE);
+        DrawStar(VOTE_X + (VOTE_W - 11) / 2, BAR_Y + (BAR_H - 11) / 2 + (sE.pressed == P_VOTE), on);
+    }
     PlateIcon(UNDO_X, BAR_Y, UNDO_W, BAR_H, sUndoCount ? 0 : 2, sE.pressed == P_UNDO, ICON_UNDO, false,
               sUndoCount ? INK_DARK : INK_OFF);
     PlateIcon(REDO_X, BAR_Y, UNDO_W, BAR_H, sRedoCount ? 0 : 2, sE.pressed == P_REDO, ICON_REDO, false,
@@ -2841,6 +3265,7 @@ static void DrawChooser(void)
     CtrBottomDraw_Plate(CH_NEXT_X, 2, CH_PAGE_W, 20, 0, false);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "L", CH_PREV_X + CH_PAGE_W / 2, 5, CTR_DRAW_DARK);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "R", CH_NEXT_X + CH_PAGE_W / 2, 5, CTR_DRAW_DARK);
+    DrawToast();
     sE.iconsMissing = false;
     if (count == 0)
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_NORMAL, sE.show == SHOW_EDITED ? "NO EDITED PICTURES YET"
@@ -2873,6 +3298,19 @@ static void DrawChooser(void)
         else snprintf(line, sizeof(line), "%c%03u", kind == CTR_STEREO_ID_BACK ? 'B' : kind == CTR_STEREO_ID_TRAINER ? 'T' : 'P', number);
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 3, cur ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, name, x + 36, y + 16, cur ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+        /* On the server: how many versions (and a star when this account
+         * voted for one), left of the edit mark. */
+        {
+            bool voted;
+            unsigned versions = CtrOnline_VersionCount(id, &voted);
+
+            if (versions)
+            {
+                snprintf(line, sizeof(line), "%uV", versions);
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 58, y + 3, cur ? CTR_DRAW_WHITE : CTR_DRAW_BLUE);
+            }
+            if (voted) DrawStar(x + 73, y + 4, true);
+        }
         /* Edited (either side): a pencil; finished (both sides): a tick. */
         {
             uint16_t other = CtrStereoMon_Counterpart(id);
@@ -2884,7 +3322,7 @@ static void DrawChooser(void)
         }
     }
     /* (The game font's strings take 39 characters at most.) */
-    snprintf(line, sizeof(line), "%u SHOWN   PAGE %u/%u   X EDITED ONLY", count, count ? page + 1 : 1, pages);
+    snprintf(line, sizeof(line), "%u SHOWN   PAGE %u OF %u   L/R PAGES", count, count ? page + 1 : 1, pages);
     CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, CH_Y0 + CH_ROWS * CH_ROW_H + 1, CTR_DRAW_DARK);
 }
 
@@ -2942,11 +3380,15 @@ static void DrawKeyboard(void)
  * this canvas with the bottom screen's font, then handed to the viewer as
  * a cell of its help sheet (CtrStereoMon_HelpCell). The game font has no
  * percent sign, so the depth is "3D DEPTH 50". */
+/* The canvas's rows hold this many cells at once (two to a row of 14). */
+#define HELP_PASS 32
 static void MakeHelpSheet(void)
 {
     static const char *const fixed[] = {"NEXT/PICK PLANE", "OUTLINE", "PAN", "ZOOM", "UNDO/REDO", "ANIMATE", "VIEW",
-                                        "FRAME", "SWITCH PKMN", "BATTLE", "BACK", "POKEDEX", "HOLD", "START", "SELECT"};
+                                        "FRAME", "PKMN, DOWN: VERSION", "BATTLE", "BACK", "POKEDEX", "HOLD", "START", "SELECT"};
     static const char *const views[V_COUNT] = {"", "  LAYERS"};
+    static const char *const chooser[] = {"POKEMON", "VERSIONS", "PAGE BACK", "NEXT PAGE", "EDIT", "VOTE", "SEARCH",
+                                          "ALL/EDITED/NEW", "BACK"};
     static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
     const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();
     char text[CTR_HELP_CELLS][40];
@@ -2963,28 +3405,48 @@ static void MakeHelpSheet(void)
     else text[CTR_HELP_REVISION][0] = 0;
     snprintf(text[CTR_HELP_STATE], 40, "%s", meta->finalized ? "FINAL" : sE.dirtyFile || CtrStereoMon_HasEdit(sE.id) ? "EDITED" : "");
     for (unsigned k = 0; k < sizeof(fixed) / sizeof(fixed[0]); ++k) snprintf(text[CTR_HELP_L_PLANE + k], 40, "%s", fixed[k]);
-    /* All the lines at once into the canvas, white on black. */
-    CtrBottomDraw_Begin(sCanvas);
-    CtrBottomDraw_Fill(0, 0, W, H, 0);
-    for (unsigned cell = 0; cell < CTR_HELP_CELLS; ++cell)
-        if (text[cell][0])
-            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, text[cell], (int)(cell % 2) * CTR_HELP_CELL_W + 1,
-                               (int)(cell / 2) * CTR_HELP_CELL_H, CTR_DRAW_WHITE);
-    CtrBottomDraw_End();
-    for (unsigned cell = 0; cell < CTR_HELP_CELLS; ++cell)
+    /* The server's words about the picture in focus, the Pokédex's. */
+    VersionLines(FocusId(), text[CTR_HELP_VERSION], text[CTR_HELP_VERSION_BY], text[CTR_HELP_VERSION_VOTES]);
+    for (unsigned k = 0; k < sizeof(chooser) / sizeof(chooser[0]); ++k)
+        snprintf(text[CTR_HELP_C_POKEMON + k], 40, "%s", chooser[k]);
+    text[CTR_HELP_CHOOSE_NAME][0] = text[CTR_HELP_PAGE][0] = 0;
+    if (sE.screen == S_CHOOSE && sListCount)
     {
-        int x0 = (int)(cell % 2) * CTR_HELP_CELL_W, y0 = (int)(cell / 2) * CTR_HELP_CELL_H;
-        int width = text[cell][0] ? CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, text[cell]) + 2 : 0;
+        uint16_t id = FocusId();
+        char name[CTR_STEREO_MON_NAME];
 
-        for (int y = 0; y < CTR_HELP_CELL_H; ++y)
-            for (int x = 0; x < CTR_HELP_CELL_W; ++x)
-            {
-                /* The letters are white; their shadow (dark) and the black are not ink. */
-                uint16_t c = sCanvas[(x0 + x) * H + (H - 1 - (y0 + y))];
+        CtrStereoMonGame_Name(id, name, sizeof(name));
+        if ((id & 0xC000) == 0) snprintf(text[CTR_HELP_CHOOSE_NAME], 40, "No.%03u %s", id, name);
+        else snprintf(text[CTR_HELP_CHOOSE_NAME], 40, "%s", name);
+        snprintf(text[CTR_HELP_PAGE], 40, "PAGE %u OF %u   %u OF %u", sE.chooseCursor / CH_PER_PAGE + 1,
+                 (sListCount + CH_PER_PAGE - 1) / CH_PER_PAGE, sE.chooseCursor + 1, sListCount);
+    }
+    /* The lines into the canvas, white on black, as many at a time as its
+     * rows hold, and from there into the sheet. */
+    for (unsigned base = 0; base < CTR_HELP_CELLS; base += HELP_PASS)
+    {
+        CtrBottomDraw_Begin(sCanvas);
+        CtrBottomDraw_Fill(0, 0, W, H, 0);
+        for (unsigned cell = base; cell < CTR_HELP_CELLS && cell < base + HELP_PASS; ++cell)
+            if (text[cell][0])
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, text[cell], (int)(cell % 2) * CTR_HELP_CELL_W + 1,
+                                   (int)((cell - base) / 2) * CTR_HELP_CELL_H, CTR_DRAW_WHITE);
+        CtrBottomDraw_End();
+        for (unsigned cell = base; cell < CTR_HELP_CELLS && cell < base + HELP_PASS; ++cell)
+        {
+            int x0 = (int)(cell % 2) * CTR_HELP_CELL_W, y0 = (int)((cell - base) / 2) * CTR_HELP_CELL_H;
+            int width = text[cell][0] ? CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, text[cell]) + 2 : 0;
 
-                alpha[y * CTR_HELP_CELL_W + x] = ((c >> 11) & 31) > 20 ? 255 : 0;
-            }
-        CtrStereoMon_HelpCell(cell, alpha, (unsigned)(width < 0 ? 0 : width));
+            for (int y = 0; y < CTR_HELP_CELL_H; ++y)
+                for (int x = 0; x < CTR_HELP_CELL_W; ++x)
+                {
+                    /* The letters are white; their shadow (dark) and the black are not ink. */
+                    uint16_t c = sCanvas[(x0 + x) * H + (H - 1 - (y0 + y))];
+
+                    alpha[y * CTR_HELP_CELL_W + x] = ((c >> 11) & 31) > 20 ? 255 : 0;
+                }
+            CtrStereoMon_HelpCell(cell, alpha, (unsigned)(width < 0 ? 0 : width));
+        }
     }
     sE.dirtyDraw = true;
 }
@@ -3162,12 +3624,19 @@ static const CtrInput *TestInput(const CtrInput *real)
 /* The C-stick: pushed left or right, another Pokémon; once per push. */
 static void CstickMon(const CtrInput *in)
 {
-    int cx = in->cstickX, ax = cx < 0 ? -cx : cx;
+    int cx = in->cstickX, ax = cx < 0 ? -cx : cx, cy = in->cstickY, ay = cy < 0 ? -cy : cy;
     unsigned count = CtrStereoMon_GalleryCount();
 
     if (sE.cstickMoved)
     {
-        if (ax < CSTICK_OFF) sE.cstickMoved = false;
+        if (ax < CSTICK_OFF && ay < CSTICK_OFF) sE.cstickMoved = false;
+        return;
+    }
+    /* Down: the next version on the server (another player's), up the one before. */
+    if (ay >= CSTICK_ON && ay > ax)
+    {
+        sE.cstickMoved = true;
+        CycleVersion(cy < 0 ? 1 : -1);
         return;
     }
     if (ax < CSTICK_ON || count == 0) return;
@@ -3241,7 +3710,7 @@ bool CtrStereoEdit_BottomFrame(void)
             Toast("BACK FROM THE BATTLE");
         }
     }
-    if (sE.screen == S_CHOOSE) { TouchChoose(in); PreviewChosen(); }
+    if (sE.screen == S_CHOOSE) { TouchChoose(in); ChoosePad(in); PreviewChosen(); }
     else if (sE.screen == S_KEYBOARD) TouchKeyboard(in);
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
     else if (sE.screen == S_VERSIONS) { TouchVersions(in); VersionsFrame(); }
@@ -3260,7 +3729,9 @@ bool CtrStereoEdit_BottomFrame(void)
     }
     /* Changes go to the card by themselves once the stylus has rested. */
     if (sE.dirtyFile && !sE.touching && sE.screen == S_EDIT && sE.tick - sE.changedAt > AUTOSAVE_FRAMES) Save(true);
-    if (sE.helpDirty && sE.pl != NULL)
+    OnlineFrame();
+    CtrStereoMon_SetChooser(sE.screen == S_CHOOSE || (sE.screen == S_KEYBOARD && sE.kbReturn == S_CHOOSE));
+    if (sE.helpDirty && (sE.pl != NULL || sE.screen == S_CHOOSE))
     {
         sE.helpDirty = false;
         MakeHelpSheet();

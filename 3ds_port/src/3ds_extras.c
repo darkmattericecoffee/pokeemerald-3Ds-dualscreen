@@ -11,9 +11,9 @@
 #include "3ds_locale_text.h"
 #include "3ds_online.h"
 
-/* This build's third tab is the plane editor's (CTR_EXTRAS_EDITOR); the
- * cheats it held are left out. 1 brings them back (on a tab of their own
- * only if CTR_EXTRAS_EDITOR is given back its own number). */
+/* This build's third tab is ONLINE (CTR_EXTRAS_ONLINE); the cheats it held
+ * are left out. 1 brings them back (on a tab of their own only if
+ * CTR_EXTRAS_ONLINE is given back its own number). */
 #ifndef CTR_CHEATS_MENU
 #define CTR_CHEATS_MENU 0
 #endif
@@ -211,15 +211,7 @@ static const u8 *SpeedText(void)
     return text;
 }
 
-/* The stereoscopic planes' editor (3ds_stereo_edit.c), opened from OPTIONS. */
-static const char *const sStereoEditText[] = {"TAP TO OPEN"};
 void CtrStereoMonGame_OpenEditor(void);
-static void OpenStereoEditor(void)
-{
-    PlaySE(SE_SELECT);
-    CtrStereoMonGame_OpenEditor();
-}
-
 /*
  * Sharing plane edits over Wi-Fi (3ds_online.c): a screen of its own,
  * opened from ENHANCEMENTS' second. LINK asks for the website's code with
@@ -312,17 +304,20 @@ static void OnlineStatusTap(void)
 /* NEW FROM SERVER: the editor on what the last sync brought, its chooser
  * showing only those. */
 void CtrStereoMonGame_OpenEditorAt(u16 id, bool8 newOnes);
+void CtrStereoEdit_PreferDex(bool newOnes);
 static void OnlineOpenNew(void)
 {
     u16 first;
 
-    if (CtrOnline_NewIds(&first, 1) == 0)
-    {
-        PlaySE(SE_FAILURE);
-        return;
-    }
     PlaySE(SE_SELECT);
-    CtrStereoMonGame_OpenEditorAt(first, TRUE);
+    if (CtrOnline_NewIds(&first, 1) > 0)
+        CtrStereoMonGame_OpenEditorAt(first, TRUE);
+    else
+    {
+        /* Nothing new: the whole Pokédex, to see and vote. */
+        CtrStereoEdit_PreferDex(FALSE);
+        CtrStereoMonGame_OpenEditor();
+    }
 }
 
 static const u8 *OnlineNewText(void)
@@ -330,8 +325,8 @@ static const u8 *OnlineNewText(void)
     char text[24];
     unsigned count = CtrOnline_NewIds(NULL, 0);
 
-    if (count == 0) return OnlineGame(CTR_TEXT("NONE YET", "NINGUNO", "AUCUN", "NESSUNO"));
-    snprintf(text, sizeof(text), CTR_TEXT("OPEN %u", "ABRIR %u", "OUVRIR %u", "APRI %u"), count);
+    if (count == 0) return OnlineGame(CTR_TEXT("OPEN THE POKEDEX", "ABRIR POKEDEX", "OUVRIR POKEDEX", "APRI POKEDEX"));
+    snprintf(text, sizeof(text), CTR_TEXT("%u NEW: OPEN", "%u NUEVOS: ABRIR", "%u NOUV.: OUVRIR", "%u NUOVI: APRI"), count);
     return OnlineGame(text);
 }
 
@@ -348,6 +343,12 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE MONS", "POKÉMON COMBATE", "POKÉMON COMBAT", "POKÉMON LOTTA"), "battle_mon_depth", 5, 2, sBattleMons, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("MON PLANES", "PLANOS POKÉMON", "PLANS POKÉMON", "PIANI POKÉMON"), "battle_plane_spread", 6, 2, sPlaneSpreads, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("PLANES SIT", "POSICIÓN PLANOS", "POSITION PLANS", "POSIZ. PIANI"), "battle_plane_pivot", 3, 1, sPlanePivots, NULL, NULL, NULL},
+    /* The plane editor's and sharing's switches (read by 3ds_stereo_edit.c
+     * and 3ds_stereo_mon_game.c): a sync that brings pictures opens the
+     * Pokédex on them; FINAL uploads; the editor's controls on its top screen. */
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("OPEN NEW ONES", "ABRIR NUEVOS", "OUVRIR NOUV.", "APRI NUOVI"), "online_open_new", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("EDITOR CONTROLS", "CONTROLES EDITOR", "COMMANDES ÉDIT.", "COMANDI EDITOR"), "edit_controls", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
     {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("SPEED", "VELOC. JUEGO", "VITESSE", "VELOCITA"), "speed", 0, 0, NULL, NULL, SpeedStep, SpeedText},
     /* The game and the music keep real time on a slow frame; the sound
      * engine mixes on the DSP's clock (3ds_platform.c, 3ds_audio.c). */
@@ -391,25 +392,21 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("CLOCK SPEED", "VELOC. RELOJ", "VITESSE HORLOGE", "VELOC. OROLOGIO"), "clock_speed", CTR_DAYNIGHT_SPEED_COUNT, 0, sClockSpeeds, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("WILD POKEMON", "POKéMON SALV.", "POKÉMON SAUV.", "POKéMON SELV."), "timed_encounters", 2, 0, sTimedEncounters, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SHOW CLOCK", "VER RELOJ", "VOIR HORLOGE", "MOSTRA OROLOGIO"), "show_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    /* The plane editor and sharing its edits (3ds_stereo_edit.c, 3ds_online.c):
-     * the third tab. The status takes the first row whole (with the
-     * pictures the last sync brought; 3ds_bottom_ui.c), so the right
-     * column's first cell is a gap. */
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("3D SPRITE EDITOR", "EDITOR 3D", "ÉDITEUR 3D", "EDITOR 3D"), "stereo_edit", 0, 0, sStereoEditText, OpenStereoEditor, NULL, NULL},
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("SYNC FROM SERVER", "SINCRONIZAR", "SYNCHRONISER", "SINCRONIZZA"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("UNLINK", "DESENLAZAR", "DÉLIER", "SCOLLEGA"), "online_unlink", 0, 0, NULL, OnlineUnlink, NULL, OnlineUnlinkText},
-    {CTR_EXTRAS_EDITOR, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("NEW FROM SERVER", "NUEVOS", "NOUVEAUX", "NUOVI"), "online_new", 0, 0, NULL, OnlineOpenNew, NULL, OnlineNewText},
-    /* A sync that brings pictures opens the editor on them (3ds_stereo_mon_game.c). */
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("OPEN NEW ONES", "ABRIR NUEVOS", "OUVRIR NOUV.", "APRI NUOVI"), "online_open_new", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
-    /* Read by the editor (3ds_stereo_edit.c ToggleFinal): a picture marked
-     * FINAL is uploaded at once. */
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
-    /* Read by the editor when it opens (3ds_stereo_edit.c). */
-    {CTR_EXTRAS_EDITOR, CTR_TEXT("SHOW CONTROLS", "VER CONTROLES", "COMMANDES", "COMANDI"), "edit_controls", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    /* Sharing the plane editor's edits (3ds_online.c): the third tab, only
+     * to load what is new and to send what is done (voting is in the
+     * editor's Pokédex). The status takes the first row whole (with the
+     * pictures the last sync brought; 3ds_bottom_ui.c); gaps keep the
+     * cells in two short columns. */
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("LOAD NEW ONES", "BAJAR NUEVOS", "CHARGER NOUV.", "SCARICA NUOVI"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("SEE AND VOTE", "VER Y VOTAR", "VOIR, VOTER", "VEDI E VOTA"), "online_new", 0, 0, NULL, OnlineOpenNew, NULL, OnlineNewText},
+    {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
+    {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
+    {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
+    {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("UNLINK", "DESENLAZAR", "DÉLIER", "SCOLLEGA"), "online_unlink", 0, 0, NULL, OnlineUnlink, NULL, OnlineUnlinkText},
     {0},
 };
 

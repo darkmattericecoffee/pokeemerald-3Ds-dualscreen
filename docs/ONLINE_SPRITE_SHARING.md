@@ -336,6 +336,29 @@ pinned GlobalSign root, and a version made on the PC synced down. Then, on the u
 - **Top-screen help**: on the START and SELECT rows the action word was placed against the
   button rather than the "START"/"SELECT" label, so BATTLE and POKEDEX overlapped those labels.
 
+### 7.3 Round three (2026-10-15): voting where the pictures are
+
+- **Editor's bar**: a globe next to DEX and MORE (the user's picture, `sprites/online.png`):
+  a sync, then the Pokédex opens on what it brought. A star next to SAVE votes for the version
+  on the card (two per Pokémon). The C-stick down shows the next server version (up: the one
+  before). The top right says which: "VERSION 2 OF 3 / BY TESTER2 / 1 VOTE  YOUR VOTE".
+- **Votes never get lost**: a vote is written to `online_votes.txt` first (pending), then
+  sent; with no server it waits ("SAVED - SENDS LATER") and goes out after the next job
+  that reaches the server, or on a retry every minute. Azahar's http:C answers an
+  unreachable server with "success" and status 0xFFFFFFFF; anything outside 100-599 now
+  counts as no answer.
+- **The Pokédex** (the editor's chooser) is the voting view: Circle Pad through the Pokémon
+  (held, it runs), D-pad left/right through the one's versions, X votes, A edits, L/R pages,
+  START filters ALL/EDITED/NEW, Y searches. Tiles show the number of versions ("3V") and a
+  star where this account voted (`GET /api/mons` gives `versions` and `mine`). The top screen
+  shows the controls, the page ("PAGE 3 OF 43"), and the version on the card.
+- **Menus**: the third tab is ONLINE (status, LOAD NEW ONES, SEE AND VOTE, UPLOAD ALL EDITS,
+  LINK, UNLINK); OPEN NEW ONES, UPLOAD ON FINAL and EDITOR CONTROLS moved to SETTINGS.
+- **Website**: polls `/api/rev` and refreshes the grid and Pokémon pages in place; Docker
+  (`Dockerfile`, `docker-compose.yml` with quick and named tunnel profiles).
+- `online_sent.txt` lines carry the server's version number (`key sha256 version`), so the
+  console knows which version is on the card.
+
 ## 8. Open questions and risks
 
 | Item | Status |

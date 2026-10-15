@@ -69,7 +69,25 @@ typedef struct
 } CtrOnlineVersions;
 bool CtrOnline_FetchVersions(uint16_t id);
 bool CtrOnline_UseVersion(uint16_t id, uint32_t version);
+/* A picture's favourites (0 to 2 version numbers): kept on the card at once
+ * (online_votes.txt) and sent when the server can be reached, now or after
+ * the next job that reaches it, else tried again every minute; the status
+ * reads SENDING VOTE... and VOTE SENT, or SAVED, SENDS LATER. Favourites
+ * gives what the console knows (pending: not sent yet); PendingVotes how
+ * many pictures wait. */
 bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count);
+unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[2], bool *pending);
+unsigned CtrOnline_PendingVotes(void);
+/* Per picture: how many versions the server has and whether this account
+ * voted for one (the Pokédex's marks), from FetchIndex (a sync fetches it
+ * too); IndexSerial moves on with each, ageMs how old it is. */
+bool CtrOnline_FetchIndex(void);
+unsigned CtrOnline_IndexSerial(unsigned *ageMs);
+unsigned CtrOnline_VersionCount(uint16_t id, bool *voted);
+/* The server's number of the version on the card (0: none, or the card's
+ * own edit the server does not have). Reads the card: not every frame. */
+uint32_t CtrOnline_CardVersion(uint16_t id);
+bool CtrOnline_Busy(void);
 /* The last list fetched (count 0 before one); returns a serial that moves
  * on with every new list. */
 unsigned CtrOnline_GetVersions(CtrOnlineVersions *out);
