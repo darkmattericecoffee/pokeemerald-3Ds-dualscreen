@@ -244,7 +244,7 @@ static unsigned SweetInFile(const uint8_t *file, uint32_t size)
     frames = file[11];
     if (size < 16 + frames * (DIM * DIM / 2) + 32) return 0;
     t = file + 16 + frames * (DIM * DIM / 2);
-    return memcmp(t, "EM3DSMD1", 8) == 0 && t[9] <= 3 ? t[9] : 0;
+    return memcmp(t, "EM3DSMD1", 8) == 0 && t[9] <= CTR_SWEET_SPOTS ? t[9] : 0;
 }
 
 /* A version's planes (its file from the online cache) into a slot's half:
@@ -338,14 +338,43 @@ void CtrStereoStrip_Compose(void)
     }
 }
 
+/* Compose runs in a frame drawn, and the frame is held while nothing
+ * changes: this keeps the frames coming while columns wait. */
+bool CtrStereoStrip_Pending(void)
+{
+    int first;
+
+    if (!sOpen || sTex == NULL || sSlots == 0) return false;
+    if (CtrOnline_FilesSerial() != sFilesSerial) return true;
+    for (unsigned d = 0; d < 2; ++d)
+    {
+        const uint16_t *p = sIds[d] ? CtrStereoMon_SidePicture(sIds[d]) : NULL;
+
+        if (p && (!sPictureOk[d] || memcmp(p, sPicture[d], sizeof(sPicture[d])) != 0)) return true;
+    }
+    first = (int)floorf(sScroll);
+    if (first < 0) first = 0;
+    for (unsigned k = 0; k < sSlots && (unsigned)first + k < sCount; ++k)
+    {
+        unsigned c = (unsigned)first + k;
+
+        for (unsigned d = 0; d < 2; ++d)
+        {
+            const Half *h = &sHalves[c % sSlots][d];
+
+            if (h->column != (int)c || h->version != sCells[c][d].version || !(h->ready || h->tried)) return true;
+        }
+    }
+    return false;
+}
+
 /* ── Drawing ─────────────────────────────────────────────────────────── */
 
 /*
- * The depths: the scene's (battle back, battle mons, planes sit) and the
- * picture's own sweet spot when this build has the shared depth standard
- * (CTR_SWEET_SPOTS, 3ds_stereo_mon.h), else the editor's depth setting.
+ * The depths as the viewer's (3ds_stereo_mon.c StackShift and on): the
+ * scene's (BATTLE BACK, BATTLE MONS, PLANES SIT) and each picture's own
+ * sweet spot (CtrStereoDepths_Spread).
  */
-#ifdef CTR_SWEET_SPOTS
 static float StackShift(float sign, float slider, unsigned sweet, bool back)
 {
     return sign * slider * CtrStereoDepths_Spread(sweet) * CTR_BATTLE_ZOOM / DEPTH_SPAN * (back ? BACK_DEPTH : 1.0f);
@@ -353,22 +382,6 @@ static float StackShift(float sign, float slider, unsigned sweet, bool back)
 static float PictureShift(float sign, float slider, bool back) { return back ? 0.0f : -sign * slider * CtrStereoDepths_Get().mon; }
 static float Pivot(void) { return CtrStereoDepths_Get().pivot; }
 static float BackdropShift(float sign, float slider) { return -sign * slider * CtrStereoDepths_Get().back; }
-#else
-static float StackShift(float sign, float slider, unsigned sweet, bool back)
-{
-    (void)sweet;
-    return sign * slider * CtrStereoMon_Depth() / 100.0f * 0.7f * 2.0f * (back ? BACK_DEPTH : 1.0f);
-}
-static float PictureShift(float sign, float slider, bool back)
-{
-    (void)sign;
-    (void)slider;
-    (void)back;
-    return 0.0f;
-}
-static float Pivot(void) { return 0.62f; }
-static float BackdropShift(float sign, float slider) { return -sign * slider * 3.0f; }
-#endif
 
 static void Label(unsigned cell, float x, float y, uint32_t colour)
 {
@@ -427,7 +440,9 @@ static void DrawHalf(unsigned column, unsigned side, float cx, float sign, float
     }
     if (h->ready && h->column == (int)column && h->version == cell->version)
     {
-        const float shift = StackShift(sign, slider, CtrStereoStrip_SweetOf(cell->version), back);
+        /* The server's word on its sweet spot, else its file's trailer. */
+        const unsigned sweet = cell->sweet ? cell->sweet : CtrStereoStrip_SweetOf(cell->version);
+        const float shift = StackShift(sign, slider, sweet, back);
         const float pivot = Pivot() * (GROUPS - 1), spacing = DEPTH_SPAN / (float)(GROUPS - 1);
         const float left = cx - SIZE / 2 + PictureShift(sign, slider, back);
 

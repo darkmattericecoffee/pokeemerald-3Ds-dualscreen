@@ -27,7 +27,7 @@ import signing  # noqa: E402
 
 
 def make_edit(key: str, planes: int = 4, frames: int = 2, seed: int = 0, meta: bool = True, author: str = "TESTER",
-              revision: int = 1, final: bool = False) -> bytes:
+              revision: int = 1, final: bool = False, depth: int = 0) -> bytes:
     ident = editfile.key_to_id(key)
     head = editfile.MAGIC + struct.pack("<HBBBBBB", ident, planes, frames, 64, 0, 64, 0)
     body = bytearray()
@@ -39,7 +39,7 @@ def make_edit(key: str, planes: int = 4, frames: int = 2, seed: int = 0, meta: b
             body.append(lo | (hi << 4))
     out = head + bytes(body)
     if meta:
-        t = editfile.META_MAGIC + bytes([1 if final else 0, 0]) + struct.pack("<HI", revision, 800000000)
+        t = editfile.META_MAGIC + bytes([1 if final else 0, depth]) + struct.pack("<HI", revision, 800000000)
         out += t + author.encode().ljust(16, b"\0")
     return out
 
@@ -305,6 +305,35 @@ class ServerTest(unittest.TestCase):
         status, _, _ = client.request("POST", base + "/api/pair", body=json.dumps({"code": "AAAA-BBBB"}).encode(),
                                       ctype="application/json")
         self.assertEqual(status, 403)
+
+    def test_depth_sweet_spots(self):
+        """A version's sweet spot comes from its file, travels in the API and shows on the site."""
+        self.assertEqual(editfile.parse(make_edit("009")).depth, 0)
+        self.assertEqual(editfile.parse(make_edit("009", depth=3)).depth, 3)
+        self.assertEqual(editfile.parse(make_edit("009", depth=9)).depth, 0)  # unknown: Standard
+        self.assertEqual(editfile.sweet_name(0), "2 Standard")
+        browser, cfg = self.linked_client("hana")
+        token, base = cfg["token"], self.base
+        for seed, depth in ((1, 1), (2, 3), (3, 0)):
+            status, _, _ = client.request("POST", base + "/api/mons/009/versions", token,
+                                          make_edit("009", seed=seed, depth=depth))
+            self.assertEqual(status, 201)
+        # The same planes at another sweet spot are a version of their own.
+        status, _, _ = client.request("POST", base + "/api/mons/009/versions", token,
+                                      make_edit("009", seed=1, depth=2))
+        self.assertEqual(status, 201)
+        status, _, body = client.request("GET", base + "/api/mons/009/versions", token)
+        depths = sorted(v["depth"] for v in json.loads(body)["versions"])
+        self.assertEqual(depths, [1, 2, 2, 3])
+        # The newest is current: the Standard one, which sync says too.
+        status, _, body = client.request("GET", base + "/api/sync?since=0", token)
+        self.assertEqual([i["depth"] for i in json.loads(body)["items"] if i["key"] == "009"], [2])
+        _, _, html = browser.go("GET", "/mon/009")
+        self.assertIn(b"depth 3 Deep", html)
+        self.assertIn(b"depth 1 Shallow", html)
+        _, _, html = browser.go("GET", "/")
+        self.assertIn(b"Depth sweet spots", html)
+        self.assertRegex(html, rb"3 Deep</strong><br>\d+ versions?, \d+ votes?, \d+ current")
 
     def test_votes(self):
         _, frank = self.linked_client("frank")

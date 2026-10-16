@@ -33,6 +33,7 @@
 typedef struct
 {
     uint32_t version; /* 0: this half is empty */
+    uint8_t sweet;    /* its sweet spot as the server says, 0: read from its file */
     bool voted, final, mine, web;
 } CtrStripCell;
 
@@ -77,6 +78,9 @@ void CtrStereoStrip_Label(unsigned cell, const uint8_t *alpha, unsigned width, u
 
 /* Per frame before drawing: the next stacks into the texture. */
 void CtrStereoStrip_Compose(void);
+/* Whether Compose has work waiting (a column shown but not composed, a
+ * file or a picture come since): the viewer draws a frame for it then. */
+bool CtrStereoStrip_Pending(void);
 /* One eye of the top screen (sign +1 the left eye, slider 0..1). */
 void CtrStereoStrip_DrawEye(float sign, float slider);
 /* Moves on with anything that changes what the strip shows. */

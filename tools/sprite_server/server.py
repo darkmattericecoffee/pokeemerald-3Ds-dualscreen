@@ -354,9 +354,34 @@ def grid(req: Request) -> Response:
     summary = ('<p class="summary"><strong>%d</strong> of %d done, <strong>%d</strong> marked final.</p>'
                % (done, total, final)) if kind != "other" else ""
     empty = '<p class="muted">Nothing here yet.</p>' if not tiles else ""
-    body = ('<div class="bar"><div class="tabs">%s</div><div class="filters">%s</div></div>%s'
-            '<div class="grid">%s</div>%s') % ("".join(tabs), "".join(filters), summary, "".join(tiles), empty)
+    body = ('<div class="bar"><div class="tabs">%s</div><div class="filters">%s</div></div>%s%s'
+            '<div class="grid">%s</div>%s') % ("".join(tabs), "".join(filters), summary,
+                                              sweet_tally(req.conn, set(keys), cur), "".join(tiles), empty)
     return Response(page(req, "Progress", body, MESSAGES.get(req.q("msg"), "")))
+
+
+def sweet_tally(conn, keys: set, cur: dict) -> str:
+    """The depth sweet spots against each other over these pictures: how many versions each
+    has, the votes those got, and how many current pictures stand at it."""
+    rows = conn.execute(
+        "SELECT v.id, v.mon_key, v.depth, (SELECT COUNT(*) FROM votes t WHERE t.version_id = v.id) AS n "
+        "FROM versions v").fetchall()
+    tally = {n: [0, 0, 0] for n in editfile.SWEET_SPOTS}
+    current = {c["version_id"] for k, c in cur.items() if k in keys}
+    for r in rows:
+        if r["mon_key"] not in keys:
+            continue
+        t = tally[editfile.sweet_spot(r["depth"])]
+        t[0] += 1
+        t[1] += r["n"]
+        t[2] += r["id"] in current
+    if not any(t[0] for t in tally.values()):
+        return ""
+    cells = "".join('<td><strong>%s</strong><br>%d version%s, %d vote%s, %d current</td>'
+                    % (e(editfile.sweet_name(n)), t[0], "" if t[0] == 1 else "s", t[1], "" if t[1] == 1 else "s", t[2])
+                    for n, t in sorted(tally.items()))
+    return ('<table class="sweet"><tbody><tr><td class="muted">Depth sweet spots</td>%s</tr></tbody></table>'
+            % cells)
 
 
 def neighbours(key: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -374,9 +399,11 @@ def neighbours(key: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
 def layer_stack(vid: int, edit: editfile.Edit) -> str:
     used = edit.used_planes()
     n = edit.planes
+    # The sway's reach follows the picture's sweet spot, Standard's being the stylesheet's.
+    reach = editfile.SWEET_SPOTS[editfile.sweet_spot(edit.depth)][1] / editfile.SWEET_SPOTS[editfile.SWEET_STANDARD][1]
     imgs = []
     for p in used:
-        d = (p - (n - 1) / 2) / ((n - 1) / 2) if n > 1 else 0
+        d = reach * (p - (n - 1) / 2) / ((n - 1) / 2) if n > 1 else 0
         imgs.append('<img src="/img/v%d/layer%d.png" data-d="%.3f" alt="">' % (vid, p, d))
     return '<div class="sway" title="The planes, swaying: nearer planes move more">%s</div>' % "".join(imgs)
 
@@ -386,7 +413,7 @@ def mon_page(req: Request, key: str) -> Response:
     if editfile.key_to_id(key) is None:
         return Response(page(req, "Not found", "<p>No such picture.</p>"), 404)
     versions = req.conn.execute(
-        "SELECT v.id, v.planes, v.frames, v.final, v.revision, v.author_tag, v.saved_at, v.size, v.uploaded_at, "
+        "SELECT v.id, v.planes, v.frames, v.final, v.depth, v.revision, v.author_tag, v.saved_at, v.size, v.uploaded_at, "
         "COALESCE(u.display_name, u.name) AS uploader, d.console_name FROM versions v JOIN users u ON u.id = v.user_id "
         "LEFT JOIN devices d ON d.id = v.device_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
         (key,)).fetchall()
@@ -418,11 +445,11 @@ def mon_page(req: Request, key: str) -> Response:
                              'Unpin (newest wins again)</button></form>') % (key, csrf_field(req))
         sprite = ('<figure><img class="big" src="/img/sprite/%s.png" alt=""><figcaption>Game picture</figcaption></figure>'
                   % key) if key in CFG.sprites else ""
-        hero = ('<div class="hero">%s<figure>%s<figcaption>Planes in motion</figcaption></figure>'
+        hero = ('<div class="hero">%s<figure>%s<figcaption>Planes in motion, depth %s</figcaption></figure>'
                 '<figure><img class="big" src="/img/v%d/tint.png" alt=""><figcaption>Tinted by plane</figcaption></figure>'
                 '<figure><img class="big" src="/img/v%d/planes.png" alt=""><figcaption>Planes only</figcaption></figure>'
                 '</div><div class="current-note"><p>Current version: #%d. %s</p>%s</div>') % (
-            sprite, layer_stack(vid, edit), vid, vid,
+            sprite, layer_stack(vid, edit), e(editfile.sweet_name(edit.depth)), vid, vid,
             vid, "Consoles download this one when they sync.", pin_note)
     elif key in CFG.sprites:
         hero = ('<div class="hero"><figure><img class="big faded" src="/img/sprite/%s.png" alt="">'
@@ -460,10 +487,11 @@ def mon_page(req: Request, key: str) -> Response:
         rev = "rev %d" % v["revision"] if v["revision"] else ""
         rows.append(
             '<tr class="%s"><td><img src="/img/v%d/tint.png" width="64" height="64" alt=""></td>'
-            '<td><strong>#%d</strong> %s<br>by %s%s</td><td>%d planes, %d frame%s<br>%s</td>'
+            '<td><strong>#%d</strong> %s<br>by %s%s</td><td>%d planes, %d frame%s<br>depth %s%s</td>'
             '<td class="votes">%s</td><td title="%s">%s</td><td class="actions">%s</td></tr>'
             % ("is-current" if is_cur else "", v["id"], v["id"], " ".join(tags), author, where, v["planes"],
-               v["frames"], "s" if v["frames"] > 1 else "", rev,
+               v["frames"], "s" if v["frames"] > 1 else "", e(editfile.sweet_name(v["depth"])),
+               ", " + rev if rev else "",
                "%d vote%s" % (counts.get(v["id"], 0), "" if counts.get(v["id"], 0) == 1 else "s"),
                e(utc(v["uploaded_at"])), ago(v["uploaded_at"]), " ".join(actions)))
     table = ('<h2>Versions</h2><table class="versions"><tbody>%s</tbody></table>' % "".join(rows)) if rows else ""
@@ -816,7 +844,7 @@ def _voter(req: Request) -> int:
 
 def _versions_json(req: Request, key: str) -> dict:
     rows = req.conn.execute(
-        "SELECT v.id, v.user_id, v.revision, v.final, v.author_tag, v.sha256, v.size, v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader "
+        "SELECT v.id, v.user_id, v.revision, v.final, v.depth, v.author_tag, v.sha256, v.size, v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader "
         "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
@@ -825,7 +853,8 @@ def _versions_json(req: Request, key: str) -> dict:
     return {"key": key, "current": cur["version_id"] if cur else None, "pinned": bool(cur and cur["pinned"]),
             "favourites": db.favourites(req.conn, _voter(req), key), "max_favourites": db.MAX_FAVOURITES,
             "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],
-                          "revision": r["revision"], "final": bool(r["final"]), "votes": counts.get(r["id"], 0),
+                          "revision": r["revision"], "final": bool(r["final"]), "depth": editfile.sweet_spot(r["depth"]),
+                          "votes": counts.get(r["id"], 0),
                           "sha256": r["sha256"], "size": r["size"], "uploaded_at": r["uploaded_at"],
                           "mine": r["user_id"] == _voter(req)} for r in rows]}
 
@@ -887,11 +916,12 @@ def api_sync(req: Request) -> Response:
     except ValueError:
         return api_error(400, "since must be a number")
     rows = req.conn.execute(
-        "SELECT c.mon_key, c.version_id, c.seq, v.sha256, v.size, v.revision, v.final FROM current c "
+        "SELECT c.mon_key, c.version_id, c.seq, v.sha256, v.size, v.revision, v.final, v.depth FROM current c "
         "JOIN versions v ON v.id = c.version_id WHERE c.seq > ? ORDER BY c.seq", (since,)).fetchall()
     return json_resp({"seq": db.current_seq(req.conn),
                       "items": [{"key": r["mon_key"], "version_id": r["version_id"], "sha256": r["sha256"],
-                                 "size": r["size"], "revision": r["revision"], "final": bool(r["final"])}
+                                 "size": r["size"], "revision": r["revision"], "final": bool(r["final"]),
+                                 "depth": editfile.sweet_spot(r["depth"])}
                                 for r in rows]})
 
 

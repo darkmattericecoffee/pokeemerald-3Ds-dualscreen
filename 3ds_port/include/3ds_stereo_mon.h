@@ -223,13 +223,46 @@ void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16
  * (its card edit, else the pack's) composed into a stack of its own, so the
  * versions screen and the Pokédex show both sides in 3D; NULL for none. */
 void CtrStereoMon_SetCompanion(uint16_t id, const uint16_t *picture, unsigned frames);
-/* The editor's 3D depth (percent, 0..CTR_STEREO_EDIT_DEPTH_MAX): its own
- * setting, capped at half the gallery's usual depth to spare the eyes over
- * a long session; the gallery and the Pokédex keep theirs. */
-#define CTR_STEREO_EDIT_DEPTH_MAX 50
-#define CTR_STEREO_EDIT_DEPTH_STEP 10
-int CtrStereoMon_Depth(void);
-void CtrStereoMon_SetDepth(int percent);
+/*
+ * The 3D depths. The scene's are OPTIONS' BATTLE BACK, BATTLE MONS and
+ * PLANES SIT (3ds_extras.c), taken alike by the battle, the editor's views,
+ * the Pokédex and the versions screen, so a picture stands as deep wherever
+ * it is seen. `back` and `mon` are screen pixels per eye at the slider's
+ * top: the scenery behind the screen, and an opponent's picture (a
+ * player's side stands on the screen). `pivot` is where a picture's stack
+ * stands against its depth: the plane that far along it, 0 the farthest
+ * and 1 the nearest. The settings' choices are numbered as OPTIONS lists
+ * them; the standard (6PX, 2PX, AROUND) is the default, and a card set
+ * otherwise before there was one is put on it once.
+ */
+typedef struct { float back, mon, pivot; } CtrStereoDepths;
+#define CTR_DEPTH_BACK_KEY "battle_back_depth"
+#define CTR_DEPTH_MON_KEY "battle_mon_depth"
+#define CTR_DEPTH_PIVOT_KEY "battle_plane_pivot"
+#define CTR_DEPTH_BACK_STANDARD 3
+#define CTR_DEPTH_MON_STANDARD 2
+#define CTR_DEPTH_PIVOT_STANDARD 1
+#define CTR_DEPTH_BACK_CHOICES 6
+#define CTR_DEPTH_MON_CHOICES 5
+#define CTR_DEPTH_PIVOT_CHOICES 3
+CtrStereoDepths CtrStereoDepths_Get(void);
+/*
+ * How deep a picture's own planes go is the picture's: one of three sweet
+ * spots, chosen in the editor and kept in its edit file's trailer, so it
+ * travels with the planes to the server and every console. 1 SHALLOW,
+ * 2 STANDARD, 3 DEEP: the stack from its farthest plane to its nearest,
+ * in GBA pixels per eye at the slider's top (CTR_BATTLE_ZOOM screen pixels
+ * each). A file without one, and the pack's planes, take STANDARD.
+ */
+#define CTR_SWEET_SPOTS 3
+#define CTR_SWEET_STANDARD 2
+float CtrStereoDepths_Spread(unsigned sweet);
+const char *CtrStereoDepths_SweetName(unsigned sweet);
+/* An id's sweet spot, from its card edit file (STANDARD without one). */
+unsigned CtrStereoMon_SweetSpotOf(uint16_t id);
+/* The shown picture's, chosen but maybe not saved yet, and choosing it. */
+unsigned CtrStereoMon_SweetSpot(void);
+void CtrStereoMon_SetSweetSpot(unsigned sweet);
 /*
  * The editor's words on the top screen in the game's own small font: the
  * editor renders each line with the bottom screen's font and hands it over
@@ -270,7 +303,7 @@ void CtrStereoMon_SetVersionsView(bool on);
 /*
  * Who edited a picture, and how far: an edit file ends with a 32-byte
  * trailer (older files have none): "EM3DSMD1", u8 flags (bit 0 finalized),
- * u8 0, u16 revision (one more on every save), u32 seconds since 2000-01-01
+ * u8 sweet spot (1..CTR_SWEET_SPOTS; 0 in files from before, STANDARD), u16 revision (one more on every save), u32 seconds since 2000-01-01
  * of the last save (0 unknown), char author[16] (ASCII, NUL-padded). The
  * author is the console's user name unless CTR_STEREO_EDIT_DIR/author.txt
  * names someone else (CtrStereoMon_SetAuthor writes it).
@@ -279,6 +312,7 @@ void CtrStereoMon_SetVersionsView(bool on);
 typedef struct
 {
     bool finalized;
+    uint8_t sweet;          /* 0 none chosen */
     uint16_t revision;
     uint32_t saved;
     char author[CTR_STEREO_EDIT_AUTHOR + 1];
