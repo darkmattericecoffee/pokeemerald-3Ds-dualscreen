@@ -299,17 +299,11 @@ def app_page(req: Request) -> Response:
 # and, on every POST, the session's CSRF token in the X-CSRF-Token header. /api/web/events is
 # the live channel (Server-Sent Events, events.py) that tells open pages what changed.
 
-# The depth sweet spot, byte 9 of the edit file's EM3DSMD1 trailer: 1 shallow, 2 standard,
-# 3 deep (0: not set, older editors). Read straight from the stored file.
-DEPTH_SQL = ("CASE WHEN length(v.data) = 16 + v.frames * 2048 + 32 "
-             "AND substr(v.data, 17 + v.frames * 2048, 8) = X'454D3344534D4431' "
-             "THEN hex(substr(v.data, 26 + v.frames * 2048, 1)) END")
-DEPTHS = (1, 2, 3)
-
-
-def depth_of(hex_byte: Optional[str]) -> Optional[int]:
-    value = int(hex_byte, 16) if hex_byte else 0
-    return value if value in DEPTHS else None
+# The depth sweet spot (versions.depth, the edit file's trailer byte, editfile.SWEET_SPOTS):
+# 1 shallow, 2 standard, 3 deep. The web app gets null for 0 (none chosen, older editors) and
+# shows it as Standard, "not set"; the console API maps it to Standard (editfile.sweet_spot).
+def depth_of(depth: Optional[int]) -> Optional[int]:
+    return depth if depth in editfile.SWEET_SPOTS else None
 
 
 def neighbours(key: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -391,7 +385,7 @@ def web_grid(req: Request) -> Response:
     """Everything the progress grid shows: each picture's current version, and the caller's own."""
     rows = req.conn.execute(
         "SELECT c.mon_key, c.version_id, c.pinned, v.final, v.uploaded_at, COALESCE(u.display_name, u.name) AS author, "
-        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n, " + DEPTH_SQL + " AS depth "
+        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n, v.depth "
         "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id").fetchall()
     uid = req.user["id"]
     mine = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM versions WHERE user_id = ?", (uid,))]
@@ -403,9 +397,9 @@ def web_grid(req: Request) -> Response:
     keys = fronts + ["b" + k for k in fronts] + others
     # The depth sweet spots against each other, per tab: versions, their votes, current ones.
     current_ids = {r["version_id"] for r in rows}
-    sweet = {kind: {str(d): [0, 0, 0] for d in (0,) + DEPTHS} for kind in ("front", "back", "other")}
+    sweet = {kind: {str(d): [0, 0, 0] for d in [0] + sorted(editfile.SWEET_SPOTS)} for kind in ("front", "back", "other")}
     for r in req.conn.execute(
-            "SELECT v.id, v.mon_key, " + DEPTH_SQL + " AS depth, "
+            "SELECT v.id, v.mon_key, v.depth, "
             "(SELECT COUNT(*) FROM votes t WHERE t.version_id = v.id) AS n FROM versions v"):
         kind = "front" if r["mon_key"] in fronts_set else "back" if r["mon_key"] in known else "other"
         t = sweet[kind][str(depth_of(r["depth"]) or 0)]
@@ -427,7 +421,7 @@ def mon_json(req: Request, key: str) -> dict:
     """A picture's page: every version with its uploader, console, votes (and who), depth and flags."""
     rows = req.conn.execute(
         "SELECT v.id, v.user_id, v.planes, v.frames, v.final, v.revision, v.author_tag, v.saved_at, v.sha256, v.size, "
-        "v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader, d.console_name, " + DEPTH_SQL + " AS depth "
+        "v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader, d.console_name, v.depth "
         "FROM versions v JOIN users u ON u.id = v.user_id LEFT JOIN devices d ON d.id = v.device_id "
         "WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC", (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
@@ -783,7 +777,7 @@ def _voter(req: Request) -> int:
 
 def _versions_json(req: Request, key: str) -> dict:
     rows = req.conn.execute(
-        "SELECT v.id, v.user_id, v.revision, v.final, v.author_tag, v.sha256, v.size, v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader "
+        "SELECT v.id, v.user_id, v.revision, v.final, v.depth, v.author_tag, v.sha256, v.size, v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader "
         "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
@@ -792,7 +786,8 @@ def _versions_json(req: Request, key: str) -> dict:
     return {"key": key, "current": cur["version_id"] if cur else None, "pinned": bool(cur and cur["pinned"]),
             "favourites": db.favourites(req.conn, _voter(req), key), "max_favourites": db.MAX_FAVOURITES,
             "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],
-                          "revision": r["revision"], "final": bool(r["final"]), "votes": counts.get(r["id"], 0),
+                          "revision": r["revision"], "final": bool(r["final"]), "depth": editfile.sweet_spot(r["depth"]),
+                          "votes": counts.get(r["id"], 0),
                           "sha256": r["sha256"], "size": r["size"], "uploaded_at": r["uploaded_at"],
                           "mine": r["user_id"] == _voter(req)} for r in rows]}
 
@@ -856,11 +851,12 @@ def api_sync(req: Request) -> Response:
     except ValueError:
         return api_error(400, "since must be a number")
     rows = req.conn.execute(
-        "SELECT c.mon_key, c.version_id, c.seq, v.sha256, v.size, v.revision, v.final FROM current c "
+        "SELECT c.mon_key, c.version_id, c.seq, v.sha256, v.size, v.revision, v.final, v.depth FROM current c "
         "JOIN versions v ON v.id = c.version_id WHERE c.seq > ? ORDER BY c.seq", (since,)).fetchall()
     return json_resp({"seq": db.current_seq(req.conn),
                       "items": [{"key": r["mon_key"], "version_id": r["version_id"], "sha256": r["sha256"],
-                                 "size": r["size"], "revision": r["revision"], "final": bool(r["final"])}
+                                 "size": r["size"], "revision": r["revision"], "final": bool(r["final"]),
+                                 "depth": editfile.sweet_spot(r["depth"])}
                                 for r in rows]})
 
 

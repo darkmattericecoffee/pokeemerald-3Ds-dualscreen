@@ -6,7 +6,8 @@ An edit file is what the on-device editor saves as sdmc:/3ds/emerald3ds/stereo/<
     16 bytes   "EM3DSED1", id (u16 LE), planes, frames, 64, 0, 64, 0
     2048 * frames   one nibble per pixel (low nibble first), the pixel's plane;
                     0 = farthest, planes-1 = nearest, >= planes = transparent
-    32 bytes   optional trailer "EM3DSMD1", flags (1 = final), 0, revision (u16 LE),
+    32 bytes   optional trailer "EM3DSMD1", flags (1 = final), depth (the sweet spot,
+               1..3; 0 in files from before it, Standard), revision (u16 LE),
                saved (u32 LE, seconds since 2000-01-01), author (16 bytes, NUL padded)
 
 The key is the file's name: NNN for a front (national dex), bNNN a back, tNNN a
@@ -39,6 +40,22 @@ KIND_PREFIX = {0x0000: "", 0x4000: "t", 0x8000: "b", 0xC000: "p"}
 PREFIX_KIND = {v: k for k, v in KIND_PREFIX.items()}
 KEY_RE = re.compile(r"^([btp]?)(\d{3,5})$")
 KIND_NAMES = {"": "front", "b": "back", "t": "trainer", "p": "player"}
+
+# How deep a picture's planes go, chosen per picture in the editor (3ds_stereo_mon.h
+# CTR_SWEET_SPOTS): the stack from its farthest plane to its nearest in GBA pixels per eye.
+SWEET_SPOTS = {1: ("Shallow", 2.0), 2: ("Standard", 3.0), 3: ("Deep", 4.5)}
+SWEET_STANDARD = 2
+
+
+def sweet_spot(depth: int) -> int:
+    """The trailer's depth byte as a sweet spot: 0 (none chosen) and anything odd are Standard."""
+    return depth if depth in SWEET_SPOTS else SWEET_STANDARD
+
+
+def sweet_name(depth: int) -> str:
+    n = sweet_spot(depth)
+    return "%d %s" % (n, SWEET_SPOTS[n][0])
+
 
 # The editor's plane colours (CTR_STEREO_EDIT_COLOURS, RGB565 0xF800 0xFFE0 0x07FF 0xF81F).
 EDITOR_COLOURS = [(0xFF, 0x00, 0x00), (0xFF, 0xFF, 0x00), (0x00, 0xFF, 0xFF), (0xFF, 0x00, 0xFF)]
@@ -82,6 +99,7 @@ class Edit:
     data: bytes
     has_meta: bool = False
     final: bool = False
+    depth: int = 0  # the trailer's sweet spot byte, 0 if none was chosen (sweet_spot)
     revision: int = 0
     saved: int = 0  # unix time, 0 if unknown
     author: str = ""
@@ -138,6 +156,7 @@ def parse(data: bytes, expect_key: Optional[str] = None) -> Edit:
         if t[:8] == META_MAGIC:
             edit.has_meta = True
             edit.final = bool(t[8] & META_FINAL)
+            edit.depth = t[9] if t[9] in SWEET_SPOTS else 0
             edit.revision = t[10] | (t[11] << 8)
             saved = struct.unpack_from("<I", t, 12)[0]
             edit.saved = saved + META_EPOCH if saved else 0

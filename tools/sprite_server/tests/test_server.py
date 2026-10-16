@@ -27,7 +27,7 @@ import signing  # noqa: E402
 
 
 def make_edit(key: str, planes: int = 4, frames: int = 2, seed: int = 0, meta: bool = True, author: str = "TESTER",
-              revision: int = 1, final: bool = False) -> bytes:
+              revision: int = 1, final: bool = False, depth: int = 0) -> bytes:
     ident = editfile.key_to_id(key)
     head = editfile.MAGIC + struct.pack("<HBBBBBB", ident, planes, frames, 64, 0, 64, 0)
     body = bytearray()
@@ -39,7 +39,7 @@ def make_edit(key: str, planes: int = 4, frames: int = 2, seed: int = 0, meta: b
             body.append(lo | (hi << 4))
     out = head + bytes(body)
     if meta:
-        t = editfile.META_MAGIC + bytes([1 if final else 0, 0]) + struct.pack("<HI", revision, 800000000)
+        t = editfile.META_MAGIC + bytes([1 if final else 0, depth]) + struct.pack("<HI", revision, 800000000)
         out += t + author.encode().ljust(16, b"\0")
     return out
 
@@ -309,11 +309,11 @@ class ServerTest(unittest.TestCase):
         self.assertIn("025", grid["items"])
         self.assertNotIn("026", grid["items"])
         self.assertEqual(sorted(grid["mine"]), ["025", "150", "b025"])
-        # make_edit leaves the depth byte 0: every version counts as "not set" (other tests add more).
+        # Every current front counts once in the sweet-spot tally; make_edit's are "not set" (0).
         fronts = sum(1 for k in grid["items"] if not k.startswith("b"))
-        self.assertEqual(grid["sweet"]["front"]["0"][2], fronts)
+        self.assertEqual(sum(t[2] for t in grid["sweet"]["front"].values()), fronts)
+        self.assertGreaterEqual(grid["sweet"]["front"]["0"][2], 3)
         self.assertGreaterEqual(grid["sweet"]["back"]["0"][0], 1)
-        self.assertEqual([grid["sweet"]["front"][d] for d in "123"], [[0, 0, 0]] * 3)
         self.assertEqual(grid["names"]["025"], "Front 025")  # no sprites.json in the test data
         status, page = bob.api("GET", "/api/web/mons/025")
         self.assertEqual(status, 200)
@@ -395,6 +395,35 @@ class ServerTest(unittest.TestCase):
         status, _, _ = client.request("POST", base + "/api/pair", body=json.dumps({"code": "AAAA-BBBB"}).encode(),
                                       ctype="application/json")
         self.assertEqual(status, 403)
+
+    def test_depth_sweet_spots(self):
+        """A version's sweet spot comes from its file, travels in the API and shows on the site."""
+        self.assertEqual(editfile.parse(make_edit("009")).depth, 0)
+        self.assertEqual(editfile.parse(make_edit("009", depth=3)).depth, 3)
+        self.assertEqual(editfile.parse(make_edit("009", depth=9)).depth, 0)  # unknown: Standard
+        self.assertEqual(editfile.sweet_name(0), "2 Standard")
+        browser, cfg = self.linked_client("hana")
+        token, base = cfg["token"], self.base
+        for seed, depth in ((1, 1), (2, 3), (3, 0)):
+            status, _, _ = client.request("POST", base + "/api/mons/009/versions", token,
+                                          make_edit("009", seed=seed, depth=depth))
+            self.assertEqual(status, 201)
+        # The same planes at another sweet spot are a version of their own.
+        status, _, _ = client.request("POST", base + "/api/mons/009/versions", token,
+                                      make_edit("009", seed=1, depth=2))
+        self.assertEqual(status, 201)
+        status, _, body = client.request("GET", base + "/api/mons/009/versions", token)
+        depths = sorted(v["depth"] for v in json.loads(body)["versions"])
+        self.assertEqual(depths, [1, 2, 2, 3])
+        # The newest is current: the Standard one, which sync says too.
+        status, _, body = client.request("GET", base + "/api/sync?since=0", token)
+        self.assertEqual([i["depth"] for i in json.loads(body)["items"] if i["key"] == "009"], [2])
+        # The web app: each version's own sweet spot (null when none was chosen), and the tally.
+        page = browser.api("GET", "/api/web/mons/009")[1]
+        self.assertEqual(sorted((v["depth"] or 0) for v in page["versions"]), [0, 1, 2, 3])
+        sweet = browser.api("GET", "/api/web/grid")[1]["sweet"]["front"]
+        self.assertGreaterEqual(sweet["3"][0], 1)
+        self.assertEqual(sweet["2"][2] >= 1, True)  # the current one is the Standard one
 
     def test_votes(self):
         _, frank = self.linked_client("frank")
@@ -533,16 +562,16 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.admin.api("POST", "/api/web/users/%d/disable" % me)[0], 400)
 
     def test_account(self):
-        b, _ = self.linked_client("hana")
+        b, _ = self.linked_client("hiro")
         self.assertEqual(b.api("POST", "/api/web/account/name", {"name": "<script>"})[0], 400)
         status, account = b.api("POST", "/api/web/account/name", {"name": "Hana  B"})
         self.assertEqual((status, account["display_name"]), (200, "Hana B"))
         self.assertEqual(b.api("POST", "/api/web/account/password", {"old": "wrong", "new": "x" * 12})[0], 400)
         self.assertEqual(b.api("POST", "/api/web/account/password", {"old": "", "new": "short"})[0], 400)
         password = self.admin.api("POST", "/api/web/users/%d/reset" % {
-            u["name"]: u["id"] for u in self.admin.api("GET", "/api/web/users")[1]["users"]}["hana"])[1]["password"]
+            u["name"]: u["id"] for u in self.admin.api("GET", "/api/web/users")[1]["users"]}["hiro"])[1]["password"]
         self.assertEqual(b.go("GET", "/api/web/account")[0], 401)  # a new password signs everybody out
-        self.assertEqual(b.login("hana", password), 200)
+        self.assertEqual(b.login("hiro", password), 200)
         old_csrf = b.token
         status, session = b.api("POST", "/api/web/account/password", {"old": password, "new": "a-new-password"})
         self.assertEqual(status, 200)

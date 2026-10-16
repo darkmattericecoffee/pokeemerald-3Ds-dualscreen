@@ -44,22 +44,16 @@
 #define GROUPS_MIN 2
 #define TEX_W (2 * DIM)
 #define TEX_H 512
-/* Total stack depth in sprite pixels, and the plane that
- * lies at the sprite's own depth (3ds_stereo_mon.c). */
+/* Total stack depth in sprite pixels (3ds_stereo_mon.c). */
 #define DEPTH_SPAN 14.4f /* Original ten-plane span, independent of plane count. */
-#define PIVOT_FRACTION 0.62f
-/* The stack's depth on screen is OPTIONS' (3ds_extras.c): "MON PLANES",
- * the screen pixels per eye at the slider's top between the farthest and
- * the nearest plane (SPREAD_KEY), and "PLANES SIT", where the stack stands
- * against the sprite's own depth (BATTLE_SPRITE_DEPTH in 3ds_video.c):
- * behind it (the nearest plane at the sprite's depth), around it, or in
- * front of it (the farthest plane there). The world's 3D DEPTH no longer
- * touches it, so the two can be set against each other. Much past three
- * pixels the planes tear apart at the scene's magnification. */
-#define SPREAD_KEY "battle_plane_spread"
-#define PIVOT_KEY "battle_plane_pivot"
-static const float sSpreads[] = {1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f};
-static const float sPivots[] = {1.0f, PIVOT_FRACTION, 0.0f};
+/* The stack's depth on screen is the picture's sweet spot (CtrStereoDepths_Spread,
+ * kept in its edit file): the GBA pixels per eye at the slider's top between
+ * the farthest and the nearest plane; and OPTIONS' "PLANES SIT" (CtrStereoDepths,
+ * the editor's and the Pokédex's too), where the stack stands against the sprite's own depth
+ * (BATTLE_SPRITE_DEPTH in 3ds_video.c): behind it (the nearest plane at
+ * the sprite's depth), around it, or in front of it (the farthest plane
+ * there). Much past three pixels the planes tear apart at the scene's
+ * magnification. */
 /* Pixels of the planes behind carried on each card (CtrStereoMon_ComposeTile):
  * the gap a card's shift opens shows those, not the scene. */
 #define SKIRT 2
@@ -79,6 +73,7 @@ typedef struct
     unsigned frames;
     bool ok, failed;        /* failed: read, nothing there; not asked again */
     volatile bool pending;
+    unsigned sweet;         /* its sweet spot (CtrStereoMon_SweetSpotOf) */
     uint8_t *planes;        /* frames * FRAME_BYTES */
 } Planes;
 
@@ -201,10 +196,13 @@ static int sReaderState;                        /* 0 not tried, 1 running, -1 no
 static void PlanesRead(Planes *p, uint16_t id, unsigned capacityFrames)
 {
     bool ok;
-    unsigned frames = 0;
+    unsigned frames = 0, sweet = CTR_SWEET_STANDARD;
 
     if (CtrStereoMon_EditPlanesFor(id, p->planes, capacityFrames * FRAME_BYTES, &frames))
+    {
         ok = true;
+        sweet = CtrStereoMon_SweetSpotOf(id);
+    }
     else if (id & 0xC000)
         ok = CtrStereoMon_BackPlanesFor(id, p->planes, capacityFrames * FRAME_BYTES, &frames);
     else
@@ -218,6 +216,7 @@ static void PlanesRead(Planes *p, uint16_t id, unsigned capacityFrames)
     /* The planes before the flags: the unlock orders the writes. */
     CtrLock_Lock(&sRequestLock);
     p->frames = ok ? frames : 0;
+    p->sweet = sweet;
     p->ok = ok;
     p->failed = !ok;
     p->pending = false;
@@ -810,15 +809,21 @@ void CtrStereoBattle_Veto(unsigned oam, uint32_t skip[4])
     skip[oam >> 5] &= ~(1u << (oam & 31));
 }
 
+/* The planes' sweet spot: the editor's choice for the picture it edits live. */
+static unsigned PlanesSweet(const Planes *p)
+{
+    return sLivePlanes && p->id == sLiveId ? CtrStereoMon_SweetSpot() : p->sweet;
+}
+
 void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eyeParallax, float shiftScale,
                           bool smooth)
 {
     static bool sSmooth;
     const Slot *s = ByOam(oam);
     const CtrStereoMonHeader *header;
+    const CtrStereoDepths depths = CtrStereoDepths_Get();
     unsigned groups;
-    float pivot, spacing, depth, spread;
-    int setting;
+    float pivot, spacing, depth;
 
     if (!s || !sTexAllocated || s->composedPlanes == NULL) return;
     header = HeaderOf(s->composedPlanes);
@@ -830,13 +835,10 @@ void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eye
         sSmooth = smooth;
     }
     groups = s->composedGroups;
-    setting = CtrSettings_GetInt(PIVOT_KEY, 1);
-    pivot = sPivots[setting >= 0 && setting < (int)(sizeof(sPivots) / sizeof(sPivots[0])) ? setting : 1] * (groups - 1);
+    pivot = depths.pivot * (groups - 1);
     spacing = DEPTH_SPAN / (float)(groups - 1);
-    setting = CtrSettings_GetInt(SPREAD_KEY, 2);
-    spread = sSpreads[setting >= 0 && setting < (int)(sizeof(sSpreads) / sizeof(sSpreads[0])) ? setting : 2];
     /* Screen pixels per eye per sprite pixel of the stack's depth. */
-    depth = eyeParallax * (spread / DEPTH_SPAN) * shiftScale;
+    depth = eyeParallax * (CtrStereoDepths_Spread(PlanesSweet(s->composedPlanes)) / DEPTH_SPAN) * shiftScale;
     if ((s->composedPlanes->id & 0xC000) == CTR_STEREO_ID_BACK || (s->composedPlanes->id & 0xC000) == CTR_STEREO_ID_PLAYER)
         depth *= BACK_DEPTH;
     {

@@ -53,17 +53,12 @@ static unsigned sTexW = TEX_MAX_W, sTexTiles = TEX_MAX_TILES;
 #define CENTRE_Y 130.0f
 /* Total stack depth in sprite pixels, independent of the exported plane count. */
 #define DEPTH_SPAN 14.4f /* Original ten-plane span, independent of plane count. */
-/* The plane that lies on the screen: most of the body behind it, the
- * nearest planes a little in front. */
+/* PLANES SIT's AROUND (CtrStereoDepths): the plane at the picture's own
+ * depth, most of the body behind it, the nearest planes a little in front. */
 #define PIVOT_FRACTION 0.62f
-/* Parallax at the slider's top and depth 100%, in screen pixels per sprite
- * pixel of depth: the whole stack of ten planes spans about ten pixels. */
-#define PARALLAX 0.7f
 /* The Pokédex picture's planes at most: with eight both frames of the
- * picture fit the texture, so its animation plays; and its depth at most,
- * the gallery's setting being for its own, larger picture. */
+ * picture fit the texture, so its animation plays. */
 #define DEX_GROUPS_MAX 8
-#define DEX_DEPTH_MAX 150
 /* The Pokédex's screen window on the top screen, and the picture in it. */
 #define DEX_SCALE 2.0f
 #define DEX_WIN_X 70
@@ -75,7 +70,6 @@ static unsigned sTexW = TEX_MAX_W, sTexTiles = TEX_MAX_TILES;
  * 256x128 RGBA5551 texture, made once, drawn behind the screen a little. */
 #define BACKDROP_W 256
 #define BACKDROP_H 128
-#define BACKDROP_DEPTH 1.5f
 /* Its magnification in the window, and where the opponent's mound is in
  * it (the battle stands the opponent there): under the Pokémon's feet. */
 #define BACKDROP_SCALE 1.6f
@@ -84,10 +78,6 @@ static unsigned sTexW = TEX_MAX_W, sTexTiles = TEX_MAX_TILES;
 /* The animation: the second frame for a moment, every so often. */
 #define ANIM_PERIOD 150
 #define ANIM_HOLD 14
-#define DEPTH_KEY "stereo_depth"
-#define EDIT_DEPTH_KEY "edit_depth"
-#define DEPTH_STEP 25
-#define DEPTH_MAX 300
 /* How many planes the file's are merged into (PLANES_KEY): fewer are
  * thicker slices, fewer tiles and less VRAM, the same depth overall. */
 #define PLANES_KEY "stereo_planes"
@@ -139,8 +129,6 @@ static bool sEditLayers, sEditBattle, sEditControls = true;
  * (CtrStereoMon_SetVersionsView). */
 static bool sChooser, sVersionsView;
 static uint16_t sTinted[CTR_STEREO_MON_MAX_FRAMES][CTR_STEREO_MON_DIM * CTR_STEREO_MON_DIM];
-/* The editor's own depth (CtrStereoMon_Depth), -1 until read. */
-static int sEditDepth = -1;
 /* The shown picture's edit file's trailer (CtrStereoMon_EditMeta). */
 static CtrStereoEditMeta sMeta;
 /* The picture's opaque pixels' extent over all its frames: its feet. */
@@ -169,9 +157,8 @@ static unsigned sFrames;
 static uint16_t sPicture[CTR_STEREO_MON_MAX_FRAMES][DIM * DIM];
 static char sName[CTR_STEREO_MON_NAME];
 
-/* The view: depth in percent and the number of planes (kept in the
- * settings), the animation. */
-static int sDepth = -1;
+/* The view: the number of planes (kept in the settings), the animation.
+ * The depth is everybody's (CtrStereoDepths_Get). */
 static int sGroups = -1;
 static bool sAnimate = true;
 static uint32_t sTick;
@@ -180,10 +167,6 @@ static uint32_t sTick;
 static bool sDrawnValid, sTicked;
 /* Moves on with every word redrawn on the help sheet (CtrStereoMon_HelpCell). */
 static unsigned sHelpVersion;
-/* Sprite pixels the gallery's and the editor's backdrop lies behind the
- * farthest plane: a backdrop at the screen's depth stood in front of the
- * far planes. */
-#define BACKDROP_BEHIND 6.0f
 /* How long the gallery shows an online job's result after it ends. */
 #define ONLINE_LINE_MS 6000
 
@@ -417,11 +400,6 @@ bool CtrStereoMon_ShowId(uint16_t id, const uint16_t *picture, unsigned frames, 
     sShown.frames = (uint8_t)entryFrames;
     sEdited = LoadEdit(id);
     snprintf(sName, sizeof(sName), "%s", name ? name : "");
-    if (sDepth < 0)
-    {
-        sDepth = CtrSettings_GetInt(DEPTH_KEY, 100);
-        if (sDepth < 0 || sDepth > DEPTH_MAX) sDepth = 100;
-    }
     if (sGroups < 0)
     {
         sGroups = CtrSettings_GetInt(PLANES_KEY, sHeader.planes);
@@ -464,9 +442,6 @@ bool CtrStereoMon_Hologram(void) { return sActive && !sGallery; }
 void CtrStereoMon_Press(unsigned keys)
 {
     if (!sActive) return;
-    if (keys & CTR_KEY_UP) sDepth = sDepth + DEPTH_STEP > DEPTH_MAX ? DEPTH_MAX : sDepth + DEPTH_STEP;
-    if (keys & CTR_KEY_DOWN) sDepth = sDepth < DEPTH_STEP ? 0 : sDepth - DEPTH_STEP;
-    if (keys & (CTR_KEY_UP | CTR_KEY_DOWN)) CtrSettings_SetInt(DEPTH_KEY, sDepth);
     if (keys & CTR_KEY_L) SetGroups(sGroups - 1);
     if (keys & CTR_KEY_R) SetGroups(sGroups + 1);
     if (keys & CTR_KEY_X) sAnimate = !sAnimate;
@@ -555,6 +530,7 @@ static bool ReadMeta(FILE *f, unsigned frames, CtrStereoEditMeta *meta)
         || fread(t, 1, sizeof(t), f) != sizeof(t) || memcmp(t, META_MAGIC, 8) != 0)
         return false;
     meta->finalized = (t[8] & META_FINAL) != 0;
+    meta->sweet = t[9] <= CTR_SWEET_SPOTS ? t[9] : 0;
     meta->revision = (uint16_t)(t[10] | (t[11] << 8));
     meta->saved = (uint32_t)t[12] | ((uint32_t)t[13] << 8) | ((uint32_t)t[14] << 16) | ((uint32_t)t[15] << 24);
     memcpy(meta->author, t + 16, CTR_STEREO_EDIT_AUTHOR);
@@ -725,22 +701,65 @@ void CtrStereoMon_SetEditing(bool editing, unsigned plane)
     sEditPlane = plane;
 }
 
-int CtrStereoMon_Depth(void)
+static int Choice(const char *key, int count, int standard)
 {
-    if (sEditDepth < 0)
-    {
-        sEditDepth = CtrSettings_GetInt(EDIT_DEPTH_KEY, CTR_STEREO_EDIT_DEPTH_MAX);
-        if (sEditDepth < 0 || sEditDepth > CTR_STEREO_EDIT_DEPTH_MAX) sEditDepth = CTR_STEREO_EDIT_DEPTH_MAX;
-    }
-    return sEditDepth;
+    int choice = CtrSettings_GetInt(key, standard);
+
+    return choice >= 0 && choice < count ? choice : standard;
 }
 
-void CtrStereoMon_SetDepth(int percent)
+CtrStereoDepths CtrStereoDepths_Get(void)
 {
-    if (percent < 0) percent = 0;
-    if (percent > CTR_STEREO_EDIT_DEPTH_MAX) percent = CTR_STEREO_EDIT_DEPTH_MAX;
-    sEditDepth = percent;
-    CtrSettings_SetInt(EDIT_DEPTH_KEY, sEditDepth);
+    /* As OPTIONS lists them (3ds_extras.c sBattleBacks ...). */
+    static const float backs[CTR_DEPTH_BACK_CHOICES] = {2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f};
+    static const float mons[CTR_DEPTH_MON_CHOICES] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f};
+    static const float pivots[CTR_DEPTH_PIVOT_CHOICES] = {1.0f, PIVOT_FRACTION, 0.0f};
+    CtrStereoDepths d;
+
+    d.back = backs[Choice(CTR_DEPTH_BACK_KEY, CTR_DEPTH_BACK_CHOICES, CTR_DEPTH_BACK_STANDARD)];
+    d.mon = mons[Choice(CTR_DEPTH_MON_KEY, CTR_DEPTH_MON_CHOICES, CTR_DEPTH_MON_STANDARD)];
+    d.pivot = pivots[Choice(CTR_DEPTH_PIVOT_KEY, CTR_DEPTH_PIVOT_CHOICES, CTR_DEPTH_PIVOT_STANDARD)];
+    return d;
+}
+
+static unsigned SweetOrStandard(unsigned sweet)
+{
+    return sweet >= 1 && sweet <= CTR_SWEET_SPOTS ? sweet : CTR_SWEET_STANDARD;
+}
+
+float CtrStereoDepths_Spread(unsigned sweet)
+{
+    static const float spreads[CTR_SWEET_SPOTS] = {2.0f, 3.0f, 4.5f};
+
+    return spreads[SweetOrStandard(sweet) - 1];
+}
+
+const char *CtrStereoDepths_SweetName(unsigned sweet)
+{
+    static const char *const names[CTR_SWEET_SPOTS] = {"SHALLOW", "STANDARD", "DEEP"};
+
+    return names[SweetOrStandard(sweet) - 1];
+}
+
+unsigned CtrStereoMon_SweetSpotOf(uint16_t id)
+{
+    uint8_t header[EDIT_HEADER_BYTES];
+    CtrStereoEditMeta meta;
+    FILE *f = OpenEdit(id, "bin", "rb");
+    unsigned sweet = 0;
+
+    if (f == NULL) return CTR_SWEET_STANDARD;
+    if (fread(header, 1, sizeof(header), f) == sizeof(header) && ReadMeta(f, header[11], &meta)) sweet = meta.sweet;
+    fclose(f);
+    return SweetOrStandard(sweet);
+}
+
+unsigned CtrStereoMon_SweetSpot(void) { return SweetOrStandard(sMeta.sweet); }
+
+void CtrStereoMon_SetSweetSpot(unsigned sweet)
+{
+    sMeta.sweet = (uint8_t)SweetOrStandard(sweet);
+    sDrawnValid = false;
 }
 
 void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view, bool controls)
@@ -778,6 +797,8 @@ static C3D_Tex sMateTex;
 static bool sMateAllocated, sMateReady;
 static unsigned sMateFrames;
 static uint16_t sMateId;
+/* Its sweet spot (CtrStereoMon_SweetSpotOf), read when it is given. */
+static unsigned sMateSweet = CTR_SWEET_STANDARD;
 static uint16_t sMatePicture[MATE_FRAMES][DIM * DIM];
 static uint8_t sMatePlanes[CTR_STEREO_MON_MAX_FRAMES * EDIT_FRAME_BYTES];
 static Tex3DS_SubTexture sMateTiles[MATE_FRAMES * MATE_GROUPS];
@@ -845,6 +866,7 @@ void CtrStereoMon_SetCompanion(uint16_t id, const uint16_t *picture, unsigned fr
     memcpy(sMatePicture, picture, frames * sizeof(sMatePicture[0]));
     sMateFrames = frames;
     sMateId = id;
+    sMateSweet = id ? CtrStereoMon_SweetSpotOf(id) : CTR_SWEET_STANDARD;
     ComposeMate();
     sDrawnValid = false;
 }
@@ -852,7 +874,7 @@ void CtrStereoMon_SetCompanion(uint16_t id, const uint16_t *picture, unsigned fr
 /* The other side's stack, its top-left corner at (left, top). */
 static void DrawMateStack(float left, float top, float scale, float shift, unsigned frame)
 {
-    const float pivot = PIVOT_FRACTION * (MATE_GROUPS - 1), spacing = DEPTH_SPAN / (float)(MATE_GROUPS - 1);
+    const float pivot = CtrStereoDepths_Get().pivot * (MATE_GROUPS - 1), spacing = DEPTH_SPAN / (float)(MATE_GROUPS - 1);
     unsigned f = frame < sMateFrames ? frame : 0;
 
     if (!sMateReady) return;
@@ -967,6 +989,7 @@ bool CtrStereoMon_SaveEdit(void)
 
         memcpy(t, META_MAGIC, 8);
         t[8] = sMeta.finalized ? META_FINAL : 0;
+        t[9] = (uint8_t)CtrStereoMon_SweetSpot();
         t[10] = (uint8_t)revision;
         t[11] = (uint8_t)(revision >> 8);
         for (unsigned b = 0; b < 4; ++b) t[12 + b] = (uint8_t)(saved >> (8 * b));
@@ -1298,9 +1321,42 @@ static void DrawText(float x, float y, const char *text, uint32_t colour)
 
 /* A back's stack is shallower: seen from behind and drawn large at the
  * bottom of the battle, it tore apart at a front's depth. */
-static float DepthOf(uint16_t id)
+static bool BackSide(uint16_t id)
 {
-    return (id & 0xC000) == CTR_STEREO_ID_BACK || (id & 0xC000) == CTR_STEREO_ID_PLAYER ? BACK_DEPTH : 1.0f;
+    return (id & 0xC000) == CTR_STEREO_ID_BACK || (id & 0xC000) == CTR_STEREO_ID_PLAYER;
+}
+
+static float DepthOf(uint16_t id) { return BackSide(id) ? BACK_DEPTH : 1.0f; }
+
+/*
+ * Every view stands a picture as the battle does (CtrStereoDepths, the
+ * battle's 3ds_video.c and 3ds_stereo_battle.c), in screen pixels, so the
+ * depth seen while editing is the depth a battle gives: the stack spans
+ * MON PLANES at the battle's magnification whatever the view's, an
+ * opponent's side stands BATTLE MONS behind the screen and a player's on
+ * it, and the scenery lies BATTLE BACK behind. `sign` is the eye's (+1 the
+ * left), `slider` the 3D slider's 0..1.
+ */
+/* The eye's shift per sprite pixel of the stack's depth (DrawStack), at
+ * the picture's sweet spot: the shown one's as chosen, its other side's
+ * from its file. */
+static float StackShift(float sign, float slider, uint16_t id)
+{
+    const unsigned sweet = id == sId ? CtrStereoMon_SweetSpot() : id == sMateId ? sMateSweet : CTR_SWEET_STANDARD;
+
+    return sign * slider * CtrStereoDepths_Spread(sweet) * CTR_BATTLE_ZOOM / DEPTH_SPAN * DepthOf(id);
+}
+
+/* The eye's shift of the picture's own depth, where PLANES SIT stands the stack. */
+static float PictureShift(float sign, float slider, uint16_t id)
+{
+    return BackSide(id) ? 0.0f : -sign * slider * CtrStereoDepths_Get().mon;
+}
+
+/* The eye's shift of the scenery behind. */
+static float BackdropShift(float sign, float slider)
+{
+    return -sign * slider * CtrStereoDepths_Get().back;
 }
 
 /* The stack of planes for one eye at `scale` screen pixels per sprite
@@ -1310,7 +1366,7 @@ static float DepthOf(uint16_t id)
 static void DrawStack(float left, float top, float scale, float shift, unsigned frame, const C2D_ImageTint *tint)
 {
     const unsigned groups = Groups();
-    const float pivot = PIVOT_FRACTION * (groups - 1);
+    const float pivot = CtrStereoDepths_Get().pivot * (groups - 1);
     /* Thicker slices stand further apart: the stack keeps its depth. */
     const float spacing = DEPTH_SPAN / (float)(groups - 1);
 
@@ -1331,23 +1387,8 @@ static void DrawStack(float left, float top, float scale, float shift, unsigned 
 
 static void DrawPlanes(float sign, float slider, unsigned frame, const C2D_ImageTint *tint, float scale)
 {
-    const int percent = sEditing ? CtrStereoMon_Depth() : !sGallery && sDepth > DEX_DEPTH_MAX ? DEX_DEPTH_MAX : sDepth;
-    const float depth = slider * percent / 100.0f * PARALLAX * DepthOf(sId);
-
-    DrawStack(CENTRE_X - DIM / 2 * scale, CENTRE_Y - DIM / 2 * scale, scale, sign * depth, frame, tint);
-}
-
-/* The screen pixels a backdrop BACKDROP_BEHIND sprite pixels behind the
- * farthest plane of DrawPlanes' stack moves for this eye. */
-static float BackdropShift(float sign, float slider, float scale)
-{
-    const unsigned groups = Groups();
-    const int percent = sEditing ? CtrStereoMon_Depth() : !sGallery && sDepth > DEX_DEPTH_MAX ? DEX_DEPTH_MAX : sDepth;
-    const float depth = slider * percent / 100.0f * PARALLAX * DepthOf(sId);
-    const float pivot = PIVOT_FRACTION * (groups - 1), spacing = groups > 1 ? DEPTH_SPAN / (float)(groups - 1) : 0.0f;
-
-    (void)scale;
-    return sign * depth * (-(pivot * spacing) - BACKDROP_BEHIND);
+    DrawStack(CENTRE_X - DIM / 2 * scale + PictureShift(sign, slider, sId), CENTRE_Y - DIM / 2 * scale, scale,
+              StackShift(sign, slider, sId), frame, tint);
 }
 
 
@@ -1458,7 +1499,7 @@ static void DrawDex(float sign, float slider, unsigned frame)
         const Tex3DS_SubTexture whole = {BACKDROP_W, BACKDROP_H, 0.0f, 1.0f, 1.0f, 0.0f};
         /* The mound under the Pokémon's feet, a little above the window's
          * name strip; the sky fills what is left above the picture. */
-        const float bx = DEX_WIN_CX - BACKDROP_MOUND_X * BACKDROP_SCALE - sign * slider * BACKDROP_DEPTH;
+        const float bx = DEX_WIN_CX - BACKDROP_MOUND_X * BACKDROP_SCALE + BackdropShift(sign, slider);
         const float by = (CENTRE_Y + DIM / 2 * DEX_SCALE - 6) - BACKDROP_MOUND_Y * BACKDROP_SCALE;
 
         C2D_DrawRectSolid(x0, y0, 0, w, h, sSky);
@@ -1679,8 +1720,6 @@ static void DrawBattleBox(float x, float y, float w, float h, const char *name, 
 static void DrawBattleEye(float sign, float slider, unsigned frame)
 {
     const bool back = (sId & 0xC000) != 0;
-    const int percent = CtrStereoMon_Depth();
-    const float depth = slider * percent / 100.0f * PARALLAX;
     const float ownX = GbaX(BATTLE_OWN_X), ownY = GbaY(BATTLE_OWN_Y), foeX = GbaX(BATTLE_FOE_X), foeY = GbaY(BATTLE_FOE_Y);
     char line[48];
 
@@ -1690,8 +1729,8 @@ static void DrawBattleEye(float sign, float slider, unsigned frame)
         const Tex3DS_SubTexture whole = {BACKDROP_W, BACKDROP_H, 0.0f, 1.0f, 1.0f, 0.0f};
 
         /* The terrain a little behind the screen. */
-        C2D_DrawImageAt((C2D_Image){&sBackdrop, &whole}, GbaX(-8) - sign * slider * 3.0f, GbaY(0), 0, NULL, BATTLE_SCALE,
-                        BATTLE_SCALE);
+        C2D_DrawImageAt((C2D_Image){&sBackdrop, &whole}, GbaX(-8) + BackdropShift(sign, slider), GbaY(0), 0, NULL,
+                        BATTLE_SCALE, BATTLE_SCALE);
     }
     /* The text box along the bottom. */
     C2D_DrawRectSolid(0, GbaY(112), 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT - GbaY(112), C2D_Color32(40, 48, 72, 255));
@@ -1700,8 +1739,10 @@ static void DrawBattleEye(float sign, float slider, unsigned frame)
     snprintf(line, sizeof(line), "WHAT WILL %s DO?", sName);
     DrawText(GbaX(10), GbaY(124), line, C2D_Color32(240, 240, 240, 255));
     /* The other side, flat, then the planes in their place. */
-    DrawMateStack(back ? foeX : ownX, back ? foeY : ownY, BATTLE_SCALE, sign * depth * (back ? 1.0f : BACK_DEPTH), frame);
-    DrawStack(back ? ownX : foeX, back ? ownY : foeY, BATTLE_SCALE, sign * depth * DepthOf(sId), frame, NULL);
+    DrawMateStack((back ? foeX : ownX) + PictureShift(sign, slider, sMateId), back ? foeY : ownY, BATTLE_SCALE,
+                  StackShift(sign, slider, sMateId), frame);
+    DrawStack((back ? ownX : foeX) + PictureShift(sign, slider, sId), back ? ownY : foeY, BATTLE_SCALE,
+              StackShift(sign, slider, sId), frame, NULL);
     if (sEditOutline && sEditPlane < Groups() && sTexReady && sComposed == sToCompose)
     {
         OutlineRuns(frame, sEditPlane);
@@ -1804,10 +1845,9 @@ static void DrawPairEye(float sign, float slider, unsigned frame, bool chooser)
     const float size = DIM * PAIR_SCALE, top = 40;
     const float leftX = pair ? CTR_GAME_WIDTH / 4 - size / 2 : CTR_GAME_WIDTH / 2 - size / 2;
     const float rightX = CTR_GAME_WIDTH * 3 / 4 - size / 2;
-    const float depth = slider * CtrStereoMon_Depth() / 100.0f * PARALLAX * 2.0f;
     const uint32_t white = C2D_Color32(240, 242, 248, 255), gold = C2D_Color32(255, 214, 72, 255);
     const uint32_t dim = C2D_Color32(185, 190, 205, 255), cyan = C2D_Color32(80, 230, 240, 255);
-    const float grid = BackdropShift(sign, slider, SCALE);
+    const float grid = BackdropShift(sign, slider);
     /* Under the front and the back: the versions screen's FRONT and BACK,
      * the Pokédex's counts of each. */
     const unsigned underFront = chooser ? CTR_HELP_VERSION_BY : CTR_HELP_C_PREV_PAGE;
@@ -1819,8 +1859,10 @@ static void DrawPairEye(float sign, float slider, unsigned frame, bool chooser)
     for (int gx = 8 - 24; gx < CTR_GAME_WIDTH + 24; gx += 24)
         C2D_DrawRectSolid(gx + grid, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(66, 70, 82, 255));
     /* The front on the left, the back on the right, whichever is on show. */
-    DrawStack(back && pair ? rightX : leftX, top, PAIR_SCALE, sign * depth * DepthOf(sId), frame, NULL);
-    if (pair) DrawMateStack(mateX, top, PAIR_SCALE, sign * depth * DepthOf(sMateId), frame);
+    DrawStack((back && pair ? rightX : leftX) + PictureShift(sign, slider, sId), top, PAIR_SCALE,
+              StackShift(sign, slider, sId), frame, NULL);
+    if (pair)
+        DrawMateStack(mateX + PictureShift(sign, slider, sMateId), top, PAIR_SCALE, StackShift(sign, slider, sMateId), frame);
     DrawHelpCell(underFront, leftX + size / 2 - HelpWidth(underFront) / 2, top + size + 2, chooser || !back ? cyan : dim);
     if (pair) DrawHelpCell(underBack, rightX + size / 2 - HelpWidth(underBack) / 2, top + size + 2, chooser || back ? cyan : dim);
     DrawHelpCell(CTR_HELP_CHOOSE_NAME, 8, 4, white);
@@ -1854,11 +1896,11 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
         DrawControls();
         return;
     }
-    /* The grid behind the farthest plane (BackdropShift), drawn wider than
+    /* The grid at the scenery's depth (BackdropShift), drawn wider than
      * the screen so its displaced edge still has picture; a shadow under
-     * the feet at the screen's depth. */
+     * the feet at the picture's. */
     {
-        const float back = BackdropShift(sign, slider, SCALE);
+        const float back = BackdropShift(sign, slider);
 
         C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT, C2D_Color32(62, 64, 70, 255));
         for (int gx = 8 - 24; gx < CTR_GAME_WIDTH + 24; gx += 24)
@@ -1866,7 +1908,8 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
         for (int gy = 10; gy < CTR_GAME_HEIGHT; gy += 24) C2D_DrawRectSolid(0, gy, 0, CTR_GAME_WIDTH, 1, C2D_Color32(80, 82, 90, 255));
     }
     {
-        int scx = (int)(CENTRE_X + ((sBoxLeft + sBoxRight + 1) / 2.0f - DIM / 2) * SCALE);
+        int scx = (int)roundf(CENTRE_X + ((sBoxLeft + sBoxRight + 1) / 2.0f - DIM / 2) * SCALE
+                              + PictureShift(sign, slider, sId));
         int scy = (int)(CENTRE_Y - DIM / 2 * SCALE + (sBoxBottom + 1) * SCALE) - 2;
         int rx = (int)((sBoxRight - sBoxLeft + 1) * SCALE * 0.45f);
 
@@ -1939,11 +1982,11 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
         C2D_Flush();
         return;
     }
-    /* A quiet backdrop behind the farthest plane (BackdropShift), drawn
-     * wider than the screen so its displaced edge still has picture, and a
-     * floor the stack stands on, at the same depth. */
+    /* A quiet backdrop at the scenery's depth (BackdropShift), drawn wider
+     * than the screen so its displaced edge still has picture, and a floor
+     * the stack stands on, at the same depth. */
     {
-        const float back = BackdropShift(sign, slider, SCALE);
+        const float back = BackdropShift(sign, slider);
 
         C2D_DrawRectangle(back - 24, 0, 0, CTR_GAME_WIDTH + 48, CTR_GAME_HEIGHT,
                           C2D_Color32(22, 26, 40, 255), C2D_Color32(22, 26, 40, 255),
@@ -1958,8 +2001,7 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
     DrawText(8, 6, line, C2D_Color32(235, 235, 240, 255));
     snprintf(line, sizeof(line), "%u/%u", (unsigned)(CtrStereoMon_GalleryIndexOf(sId) + 1), CtrStereoMon_GalleryCount());
     DrawText(CTR_GAME_WIDTH - 8 - GLYPH_ADVANCE * (int)strlen(line), 6, line, C2D_Color32(160, 165, 180, 255));
-    snprintf(line, sizeof(line), "<> MON   ^v DEPTH %u%%   L/R PLANES %u%s", (unsigned)sDepth, groups,
-             sEdited ? "   EDITED" : "");
+    snprintf(line, sizeof(line), "<> MON   L/R PLANES %u%s", groups, sEdited ? "   EDITED" : "");
     DrawText(8, CTR_GAME_HEIGHT - 10 - 10 * GLYPH_PIXEL, line, C2D_Color32(160, 165, 180, 255));
     DrawText(8, CTR_GAME_HEIGHT - 6 - 5 * GLYPH_PIXEL,
              CtrOnline_Linked() ? "X ANIM   Y EDIT   SELECT SYNC   B BACK" : "X ANIM   Y EDIT   B BACK",
@@ -2034,7 +2076,13 @@ static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
     k->mate = sMateReady;
     k->final = sMeta.finalized;
     k->undrawn = sUndrawn;
-    k->depth = sEditing ? CtrStereoMon_Depth() : sDepth;
+    {
+        const CtrStereoDepths d = CtrStereoDepths_Get();
+
+        /* OPTIONS' depths, each a few pixels: changed, the frame is drawn again. */
+        k->depth = (int)(d.back * 4) | (int)(d.mon * 4) << 8 | (int)(CtrStereoMon_SweetSpot() | sMateSweet << 4) << 16
+                 | (int)(d.pivot * 100) << 24;
+    }
     k->slider = (int)(slider * 256.0f + 0.5f);
     k->boxLeft = sBoxLeft;
     k->boxRight = sBoxRight;

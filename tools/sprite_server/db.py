@@ -132,6 +132,10 @@ def init(path: str) -> None:
     # Added later: the name a user goes by on the site (set on the console or the account page).
     if "display_name" not in [r["name"] for r in conn.execute("PRAGMA table_info(users)")]:
         conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+    # Added later: the version's depth sweet spot, its trailer's byte (editfile.SWEET_SPOTS; 0 none
+    # chosen, Standard). The versions from before carry none: their files all have 0 there.
+    if "depth" not in [r["name"] for r in conn.execute("PRAGMA table_info(versions)")]:
+        conn.execute("ALTER TABLE versions ADD COLUMN depth INTEGER NOT NULL DEFAULT 0")
     conn.close()
 
 
@@ -325,9 +329,9 @@ def add_version(conn: sqlite3.Connection, edit, user_id: int, device_id: Optiona
         if old is not None:
             return old["id"], False, True
         vid = conn.execute(
-            "INSERT INTO versions (mon_key, user_id, device_id, planes, frames, final, revision, author_tag, "
-            "saved_at, sha256, size, data, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (edit.key, user_id, device_id, edit.planes, edit.frames, int(edit.final), edit.revision,
+            "INSERT INTO versions (mon_key, user_id, device_id, planes, frames, final, depth, revision, author_tag, "
+            "saved_at, sha256, size, data, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (edit.key, user_id, device_id, edit.planes, edit.frames, int(edit.final), edit.depth, edit.revision,
              edit.author, edit.saved, edit.sha256, len(edit.data), edit.data, now())).lastrowid
         bump_rev(conn)
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
