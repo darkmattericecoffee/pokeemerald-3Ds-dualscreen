@@ -415,7 +415,8 @@ class ServerTest(unittest.TestCase):
         in the field read it); the web app no longer shows it."""
         self.assertEqual(editfile.parse(make_edit("009")).depth, 0)
         self.assertEqual(editfile.parse(make_edit("009", depth=3)).depth, 3)
-        self.assertEqual(editfile.parse(make_edit("009", depth=9)).depth, 0)  # unknown: Standard
+        self.assertEqual(editfile.parse(make_edit("009", depth=5)).depth, 5)  # kept as sent (MON PLANES px)
+        self.assertEqual(editfile.sweet_spot(5), 2)  # the console API's field stays 1..3
         self.assertEqual(editfile.sweet_name(0), "2 Standard")
         browser, cfg = self.linked_client("hana")
         token, base = cfg["token"], self.base

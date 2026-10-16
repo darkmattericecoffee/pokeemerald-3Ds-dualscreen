@@ -6,8 +6,8 @@ An edit file is what the on-device editor saves as sdmc:/3ds/emerald3ds/stereo/<
     16 bytes   "EM3DSED1", id (u16 LE), planes, frames, 64, 0, 64, 0
     2048 * frames   one nibble per pixel (low nibble first), the pixel's plane;
                     0 = farthest, planes-1 = nearest, >= planes = transparent
-    32 bytes   optional trailer "EM3DSMD1", flags (1 = final), depth (the sweet spot,
-               1..3; 0 in files from before it, Standard), revision (u16 LE),
+    32 bytes   optional trailer "EM3DSMD1", flags (1 = final), depth (a record: the
+               console's MON PLANES in px, 1..6; older files 1..3 sweet spots or 0), revision (u16 LE),
                saved (u32 LE, seconds since 2000-01-01), author (16 bytes, NUL padded)
 
 The key is the file's name: NNN for a front (national dex), bNNN a back, tNNN a
@@ -99,7 +99,7 @@ class Edit:
     data: bytes
     has_meta: bool = False
     final: bool = False
-    depth: int = 0  # the trailer's sweet spot byte, 0 if none was chosen (sweet_spot)
+    depth: int = 0  # the trailer's depth byte as sent (a record only; see parse)
     revision: int = 0
     saved: int = 0  # unix time, 0 if unknown
     author: str = ""
@@ -156,7 +156,9 @@ def parse(data: bytes, expect_key: Optional[str] = None) -> Edit:
         if t[:8] == META_MAGIC:
             edit.has_meta = True
             edit.final = bool(t[8] & META_FINAL)
-            edit.depth = t[9] if t[9] in SWEET_SPOTS else 0
+            # A record only, nothing draws by it: older editors wrote a sweet spot (1..3), since
+            # 2026-10-16 the console writes its MON PLANES setting in whole pixels (1..6).
+            edit.depth = t[9]
             edit.revision = t[10] | (t[11] << 8)
             saved = struct.unpack_from("<I", t, 12)[0]
             edit.saved = saved + META_EPOCH if saved else 0
