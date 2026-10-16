@@ -1,5 +1,5 @@
-"""End-to-end tests: a real server on a free port, an empty data folder, the web pages, the
-console API and the PC client.
+"""End-to-end tests: a real server on a free port, an empty data folder, the web app's API,
+the console API and the PC client.
 
     python3 -m unittest discover -s tools/sprite_server/tests -v
 """
@@ -50,28 +50,38 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class Browser:
-    """A cookie-keeping web client that does not follow redirects."""
+    """What the web app does: a cookie-keeping client sending JSON, with the CSRF header on POSTs."""
 
     def __init__(self, base: str):
         self.base = base
         self.jar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar), NoRedirect)
+        self.token = ""
 
-    def go(self, method: str, path: str, form=None):
-        data = urllib.parse.urlencode(form).encode() if form is not None else None
-        req = urllib.request.Request(self.base + path, data=data, method=method)
+    def go(self, method: str, path: str, obj=None, csrf=None, headers=None):
+        """(status, headers, body bytes)."""
+        h = dict(headers or {})
+        data = None
+        if method == "POST":
+            data = json.dumps(obj if obj is not None else {}).encode()
+            h["Content-Type"] = "application/json"
+            h["X-CSRF-Token"] = self.token if csrf is None else csrf
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=h)
         try:
             with self.opener.open(req, timeout=10) as r:
                 return r.status, dict(r.headers), r.read()
         except urllib.error.HTTPError as err:
             return err.code, dict(err.headers), err.read()
 
-    def csrf(self, path: str = "/account") -> str:
-        _, _, body = self.go("GET", path)
-        return re.search(rb'name="csrf" value="([^"]+)"', body).group(1).decode()
+    def api(self, method: str, path: str, obj=None, **kw):
+        """(status, the JSON answer)."""
+        status, _, body = self.go(method, path, obj, **kw)
+        return status, json.loads(body) if body else None
 
     def login(self, name: str, password: str) -> int:
-        status, _, _ = self.go("POST", "/login", {"name": name, "password": password, "next": "/"})
+        status, answer = self.api("POST", "/api/web/login", {"name": name, "password": password}, csrf="")
+        if status == 200:
+            self.token = answer["csrf"]
         return status
 
 
@@ -139,7 +149,7 @@ class ServerTest(unittest.TestCase):
         db.add_user(conn, "boss", "boss-password-1", "admin")
         conn.close()
         cls.admin = Browser(cls.base)
-        assert cls.admin.login("boss", "boss-password-1") == 303
+        assert cls.admin.login("boss", "boss-password-1") == 200
 
     @classmethod
     def tearDownClass(cls):
@@ -153,20 +163,20 @@ class ServerTest(unittest.TestCase):
 
     # helpers
     def add_artist(self, name: str) -> str:
-        status, _, body = self.admin.go("POST", "/admin/users", {"name": name, "role": "artist",
-                                                                 "csrf": self.admin.csrf("/admin")})
-        self.assertEqual(status, 200, body)
-        return re.search(rb'class="bigcode small">([^<]+)<', body).group(1).decode()
+        status, answer = self.admin.api("POST", "/api/web/users", {"name": name, "role": "artist"})
+        self.assertEqual(status, 201, answer)
+        return answer["password"]
 
     def pairing_code(self, browser: Browser) -> str:
-        status, _, body = browser.go("POST", "/account/pair", {"csrf": browser.csrf()})
+        status, answer = browser.api("POST", "/api/web/account/pair")
         self.assertEqual(status, 200)
-        return re.search(rb'class="bigcode">([A-Z0-9-]+)<', body).group(1).decode()
+        self.assertRegex(answer["code"], r"^[A-Z0-9]{4}-[A-Z0-9]{4}$")
+        return answer["code"]
 
     def linked_client(self, name: str):
         password = self.add_artist(name)
         b = Browser(self.base)
-        self.assertEqual(b.login(name, password), 303)
+        self.assertEqual(b.login(name, password), 200)
         cfg = {}
         msg = client.cmd_pair(cfg, self.base, self.pairing_code(b), "%s's 3DS" % name)
         self.assertIn("linked", msg)
@@ -198,22 +208,72 @@ class ServerTest(unittest.TestCase):
         png = editfile.png(editfile.render(e, None, "tint"))
         self.assertTrue(png.startswith(b"\x89PNG"))
 
+    def test_previews_keep_the_pictures_clear_pixels_clear(self):
+        # Planes that cover the whole 64x64 (as many backs do) must not paint the picture's clear
+        # pixels: only where the game picture has a colour (index 1-15) is anything drawn.
+        e = editfile.parse(make_edit("b006", planes=2, frames=1, meta=False))
+        full = bytearray(e.data)
+        full[16:16 + 2048] = bytes([0x11] * 2048)  # every pixel on plane 1
+        e = editfile.parse(bytes(full))
+        rows = ["0" * 64] * 32 + ["1" * 64] * 32  # top half clear, bottom half colour 1
+        sprite = editfile.Sprite(["#000000", "#ff8800"] + ["#000000"] * 14, ["".join(rows)])
+        for mode in ("tint", "planes", "layer"):
+            px = editfile.render(e, sprite, mode, 0, 1)
+            self.assertEqual(px[3], 0, mode)                       # (0, 0): clear in the picture
+            self.assertEqual(px[(40 * 64) * 4 + 3], 255, mode)     # (0, 40): the picture's colour
+        self.assertEqual(editfile.render(e, None, "planes")[3], 255)  # no picture known: planes shown
+
     def test_pages_need_sign_in(self):
         anon = Browser(self.base)
-        status, headers, _ = anon.go("GET", "/")
-        self.assertEqual(status, 303)
-        self.assertTrue(headers["Location"].startswith("/login"))
-        self.assertEqual(anon.go("GET", "/api/sync")[0], 401)
+        self.assertEqual(anon.api("GET", "/api/web/session")[1]["user"], None)
+        for path in ("/api/web/grid", "/api/web/mons/025", "/api/web/account", "/api/web/events", "/api/sync",
+                     "/img/sprite/025.png"):
+            self.assertEqual(anon.go("GET", path)[0], 401, path)
         self.assertEqual(anon.go("GET", "/api/health")[0], 200)
         self.assertEqual(anon.login("boss", "wrong"), 401)
+        # A form post (not JSON) cannot sign anybody in.
+        req = urllib.request.Request(self.base + "/api/web/login", data=b"name=boss&password=boss-password-1",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(caught.exception.code, 415)
 
     def test_forms_need_the_csrf_token(self):
-        status, _, _ = self.admin.go("POST", "/admin/users", {"name": "sneaky", "role": "admin"})
-        self.assertEqual(status, 400)
+        status, _ = self.admin.api("POST", "/api/web/users", {"name": "sneaky", "role": "admin"}, csrf="")
+        self.assertEqual(status, 403)
+        status, _ = self.admin.api("POST", "/api/web/users", {"name": "sneaky", "role": "admin"}, csrf="wrong")
+        self.assertEqual(status, 403)
 
     def test_artists_cannot_administer(self):
         b, _ = self.linked_client("plain")
-        self.assertEqual(b.go("GET", "/admin")[0], 403)
+        self.assertEqual(b.go("GET", "/api/web/users")[0], 403)
+        self.assertEqual(b.api("POST", "/api/web/users", {"name": "x", "role": "admin"})[0], 403)
+
+    def test_the_web_app_is_served(self):
+        web = tempfile.mkdtemp(dir=self.tmp)
+        os.makedirs(os.path.join(web, "assets"))
+        with open(os.path.join(web, "index.html"), "w") as f:
+            f.write("<!doctype html><title>app</title>")
+        with open(os.path.join(web, "assets", "index-abc123.js"), "w") as f:
+            f.write("console.log(1)")
+        old, server.WEB_DIR = server.WEB_DIR, web
+        try:
+            anon = Browser(self.base)
+            for path in ("/", "/login", "/mon/025", "/compare/b025", "/account", "/users"):
+                status, headers, body = anon.go("GET", path)
+                self.assertEqual((status, body[:15]), (200, b"<!doctype html>"), path)
+                self.assertIn("style-src 'self'", headers["Content-Security-Policy"])
+                self.assertEqual(headers["Cache-Control"], "no-store")
+            self.assertEqual(anon.go("GET", "/nothing/here")[0], 404)
+            status, headers, body = anon.go("GET", "/assets/index-abc123.js")
+            self.assertEqual((status, headers["Content-Type"], body), (200, "text/javascript; charset=utf-8",
+                                                                       b"console.log(1)"))
+            self.assertIn("immutable", headers["Cache-Control"])
+            self.assertEqual(anon.go("GET", "/assets/../server.py")[0], 404)
+            server.WEB_DIR = os.path.join(web, "missing")
+            self.assertEqual(anon.go("GET", "/")[0], 503)
+        finally:
+            server.WEB_DIR = old
 
     def test_full_flow(self):
         alice, acfg = self.linked_client("alice")
@@ -228,13 +288,19 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(all("already" in l for l in client.cmd_upload(acfg, [card]) if "skipped" not in l))
 
         # The grid shows them done, the picture's page and its previews render.
-        status, _, body = alice.go("GET", "/?kind=front&show=done")
+        status, grid = alice.api("GET", "/api/web/grid")
         self.assertEqual(status, 200)
-        self.assertIn(b'href="/mon/025"', body)
-        self.assertNotIn(b'href="/mon/026"', body)
-        status, _, body = bob.go("GET", "/mon/025")
+        self.assertIn("025", grid["items"])
+        self.assertNotIn("026", grid["items"])
+        self.assertEqual(sorted(grid["mine"]), ["025", "150", "b025"])
+        self.assertEqual(grid["names"]["025"], "Front 025")  # no sprites.json in the test data
+        status, page = bob.api("GET", "/api/web/mons/025")
         self.assertEqual(status, 200)
-        vid = int(re.search(rb"/img/v(\d+)/tint\.png", body).group(1))
+        vid = page["current"]
+        self.assertEqual((page["next"]["key"], page["other"]["key"], page["prev"]["key"]), ("026", "b025", "024"))
+        v = page["versions"][0]
+        self.assertEqual((v["version_id"], v["author"], v["console"], v["planes"], v["frames"], v["mine"]),
+                         (vid, "alice", "alice's 3DS", 4, 2, False))
         for path in ("/img/v%d/tint.png" % vid, "/img/v%d/planes.png" % vid, "/img/v%d/layer0.png" % vid):
             status, headers, png = bob.go("GET", path)
             self.assertEqual((status, headers["Content-Type"], png[:4]), (200, "image/png", b"\x89PNG"))
@@ -258,21 +324,24 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(len(os.listdir(os.path.join(card, client.STEREO, "backup"))), 1)
 
         # The admin pins Alice's version; a later upload does not displace it.
-        status, _, _ = self.admin.go("POST", "/mon/025/pin", {"version": str(vid), "csrf": self.admin.csrf("/mon/025")})
-        self.assertEqual(status, 303)
+        self.assertEqual(bob.api("POST", "/api/web/mons/025/pin", {"version_id": vid})[0], 403)
+        status, page = self.admin.api("POST", "/api/web/mons/025/pin", {"version_id": vid})
+        self.assertEqual((status, page["current"], page["pinned"]), (200, vid, True))
         lines = client.cmd_upload(bcfg, [self.sd({"025": make_edit("025", seed=5)})])
         self.assertNotIn("now current", lines[0])
         status, headers, data = bob.go("GET", "/api/mons/025/current")
         self.assertEqual((status, headers["X-Version-Id"]), (200, str(vid)))
-        status, _, _ = self.admin.go("POST", "/mon/025/unpin", {"csrf": self.admin.csrf("/mon/025")})
-        self.assertEqual(status, 303)
+        status, page = self.admin.api("POST", "/api/web/mons/025/unpin")
+        self.assertEqual((status, page["pinned"]), (200, False))
         status, headers, _ = bob.go("GET", "/api/mons/025/current")
         self.assertNotEqual(headers["X-Version-Id"], str(vid))
 
         # Deleting the current version falls back to the newest remaining one.
         current = int(headers["X-Version-Id"])
-        status, _, _ = self.admin.go("POST", "/versions/%d/delete" % current, {"csrf": self.admin.csrf("/mon/025")})
-        self.assertEqual(status, 303)
+        self.assertEqual(alice.api("POST", "/api/web/versions/%d/delete" % current)[0], 403)  # Bob's
+        status, page = self.admin.api("POST", "/api/web/versions/%d/delete" % current)
+        self.assertEqual(status, 200)
+        self.assertNotIn(current, [v["version_id"] for v in page["versions"]])
         status, headers, _ = bob.go("GET", "/api/mons/025/current")
         self.assertEqual(status, 200)
         self.assertNotEqual(headers["X-Version-Id"], str(current))
@@ -346,17 +415,19 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(api("POST", "/api/mons/030/votes", gina, {"version_ids": ids})[0], 200)
         self.assertEqual(api("POST", "/api/mons/030/votes", gina, {"version_ids": list(range(1, 18))})[0], 400)
         self.assertEqual(api("POST", "/api/mons/006/votes", gina, {"version_ids": [ids[0]]})[0], 400)
-        # On the website: Vote takes a vote back, and gives it again.
-        csrf = gina_web.csrf("/mon/030")
-        status, headers, _ = gina_web.go("POST", "/mon/030/vote", {"version": str(ids[1]), "csrf": csrf})
-        self.assertEqual((status, headers["Location"]), (303, "/mon/030?msg=voted"))
+        # In the web app: Vote takes a vote back, and gives it again.
+        status, page = gina_web.api("POST", "/api/web/mons/030/vote", {"version_id": ids[1], "on": False})
+        self.assertEqual((status, page["favourites"]), (200, [ids[0], ids[2]]))
         self.assertEqual(json.loads(api("GET", "/api/mons/030/versions", gina)[2])["favourites"], [ids[0], ids[2]])
-        status, headers, _ = gina_web.go("POST", "/mon/030/vote", {"version": str(ids[1]), "csrf": csrf})
-        self.assertEqual(headers["Location"], "/mon/030?msg=voted")
+        status, page = gina_web.api("POST", "/api/web/mons/030/vote", {"version_id": ids[1], "on": True})
         self.assertEqual(json.loads(api("GET", "/api/mons/030/versions", gina)[2])["favourites"],
                          [ids[0], ids[2], ids[1]])
-        status, _, page = gina_web.go("GET", "/mon/030")
-        self.assertIn(b"2 votes", page)
+        votes = {v["version_id"]: (v["votes"], v["voters"]) for v in page["versions"]}
+        self.assertEqual(votes[ids[1]], (1, ["gina"]))
+        self.assertEqual(votes[ids[0]][0], 2)
+        self.assertEqual(sorted(votes[ids[0]][1]), ["frank", "gina"])
+        self.assertEqual(gina_web.api("POST", "/api/web/mons/030/vote", {"version_id": 999999, "on": True})[0], 404)
+        self.assertEqual(gina_web.api("POST", "/api/web/mons/030/vote", {"version_id": ids[1]})[0], 400)
         # Each knows its own versions, and only its uploader takes one off the server.
         listing = json.loads(api("GET", "/api/mons/030/versions", frank)[2])
         self.assertTrue(all(v["mine"] for v in listing["versions"]))
@@ -369,7 +440,7 @@ class ServerTest(unittest.TestCase):
     def test_signed_console(self):
         password = self.add_artist("signer")
         b = Browser(self.base)
-        self.assertEqual(b.login("signer", password), 303)
+        self.assertEqual(b.login("signer", password), 200)
         console = SignedConsole(self.base)
         self.assertEqual(console.pair("WRONGCOD")[0], 403)
         code = self.pairing_code(b)
@@ -405,8 +476,7 @@ class ServerTest(unittest.TestCase):
                                       {"Content-Type": "application/json"})[0], 400)
         listing = json.loads(console.call("GET", "/api/mons/025/versions")[1])
         self.assertEqual(listing["versions"][0]["author"], "Dark Matter")
-        status, _, page = b.go("GET", "/account")
-        self.assertIn(b'value="Dark Matter"', page)
+        self.assertEqual(b.api("GET", "/api/web/account")[1]["display_name"], "Dark Matter")
         # A console linked the old way (bearer token) signs with the same token.
         _, cfg = self.linked_client("oldstyle")
         old = SignedConsole(self.base, cfg["token"])
@@ -422,21 +492,113 @@ class ServerTest(unittest.TestCase):
 
     def test_unlinking_a_console(self):
         b, cfg = self.linked_client("dave")
-        status, _, body = b.go("GET", "/account")
-        did = re.search(rb"/account/devices/(\d+)/revoke", body).group(1).decode()
-        status, _, _ = b.go("POST", "/account/devices/%s/revoke" % did, {"csrf": b.csrf()})
-        self.assertEqual(status, 303)
+        status, account = b.api("GET", "/api/web/account")
+        self.assertEqual([d["console_name"] for d in account["devices"]], ["dave's 3DS"])
+        did = account["devices"][0]["id"]
+        status, account = b.api("POST", "/api/web/account/devices/%d/revoke" % did)
+        self.assertEqual((status, account["devices"]), (200, []))
         self.assertEqual(client.request("GET", self.base + "/api/me", cfg["token"])[0], 401)
 
     def test_disabled_user(self):
         b, cfg = self.linked_client("eve")
-        status, _, body = self.admin.go("GET", "/admin")
-        rows = re.findall(rb'<tr class="[^"]*"><td><strong>([^<]+)</strong>.*?/admin/users/(\d+)/', body)
-        uid = dict((n.decode(), i.decode()) for n, i in rows)["eve"]
-        status, _, _ = self.admin.go("POST", "/admin/users/%s/disable" % uid, {"csrf": self.admin.csrf("/admin")})
-        self.assertEqual(status, 303)
+        status, users = self.admin.api("GET", "/api/web/users")
+        uid = {u["name"]: u["id"] for u in users["users"]}["eve"]
+        status, users = self.admin.api("POST", "/api/web/users/%d/disable" % uid)
+        self.assertEqual(status, 200)
+        self.assertTrue({u["name"]: u for u in users["users"]}["eve"]["disabled"])
         self.assertEqual(client.request("GET", self.base + "/api/me", cfg["token"])[0], 401)
-        self.assertEqual(b.go("GET", "/")[0], 303)
+        self.assertEqual(b.go("GET", "/api/web/grid")[0], 401)
+        me = {u["name"]: u["id"] for u in users["users"]}["boss"]
+        self.assertEqual(self.admin.api("POST", "/api/web/users/%d/disable" % me)[0], 400)
+
+    def test_account(self):
+        b, _ = self.linked_client("hana")
+        self.assertEqual(b.api("POST", "/api/web/account/name", {"name": "<script>"})[0], 400)
+        status, account = b.api("POST", "/api/web/account/name", {"name": "Hana  B"})
+        self.assertEqual((status, account["display_name"]), (200, "Hana B"))
+        self.assertEqual(b.api("POST", "/api/web/account/password", {"old": "wrong", "new": "x" * 12})[0], 400)
+        self.assertEqual(b.api("POST", "/api/web/account/password", {"old": "", "new": "short"})[0], 400)
+        password = self.admin.api("POST", "/api/web/users/%d/reset" % {
+            u["name"]: u["id"] for u in self.admin.api("GET", "/api/web/users")[1]["users"]}["hana"])[1]["password"]
+        self.assertEqual(b.go("GET", "/api/web/account")[0], 401)  # a new password signs everybody out
+        self.assertEqual(b.login("hana", password), 200)
+        old_csrf = b.token
+        status, session = b.api("POST", "/api/web/account/password", {"old": password, "new": "a-new-password"})
+        self.assertEqual(status, 200)
+        self.assertNotEqual(session["csrf"], old_csrf)  # a fresh session (and cookie) comes back
+        b.token = session["csrf"]
+        self.assertEqual(b.api("GET", "/api/web/account")[0], 200)
+        self.assertEqual(b.api("POST", "/api/web/logout")[0], 200)
+        self.assertEqual(b.go("GET", "/api/web/account")[0], 401)
+
+    def test_live_events(self):
+        """The live channel: an upload, a vote and a console linking reach an open page at once."""
+        import http.client
+        import socket
+        b, cfg = self.linked_client("ivan")
+        other, _ = self.linked_client("jo")
+        cookies = lambda br: "; ".join("%s=%s" % (c.name, c.value) for c in br.jar)  # noqa: E731
+
+        def open_stream(br):
+            conn = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
+            conn.request("GET", "/api/web/events", headers={"Cookie": cookies(br)})
+            resp = conn.getresponse()
+            self.assertEqual((resp.status, resp.getheader("Content-Type")), (200, "text/event-stream; charset=utf-8"))
+            return conn, resp
+
+        def next_event(resp):
+            data = b""
+            while True:
+                line = resp.fp.readline()
+                if line.startswith(b"data: "):
+                    data = line[6:]
+                elif line in (b"\n", b"\r\n") and data:
+                    return json.loads(data)
+
+        conn, resp = open_stream(b)
+        conn2, resp2 = open_stream(other)
+        try:
+            self.assertEqual(next_event(resp)["type"], "hello")
+            self.assertEqual(next_event(resp2)["type"], "hello")
+            status, _, _ = client.request("POST", self.base + "/api/mons/045/versions", cfg["token"], make_edit("045"))
+            self.assertEqual(status, 201)
+            ev = next_event(resp)
+            self.assertEqual((ev["type"], ev["key"], ev["who"], ev["current"]), ("upload", "045", "ivan", True))
+            self.assertEqual(next_event(resp2)["type"], "upload")
+            other.api("POST", "/api/web/mons/045/vote", {"version_id": ev["version_id"], "on": True})
+            self.assertEqual((next_event(resp)["type"]), "vote")
+            self.assertEqual((next_event(resp2)["type"]), "vote")
+            # A console linking shows on its own account's page only.
+            msg = client.cmd_pair({}, self.base, self.pairing_code(b), "Ivan's New 3DS")
+            self.assertIn("linked", msg)
+            ev = next_event(resp)
+            self.assertEqual((ev["type"], ev["action"], ev["console_name"]), ("console", "linked", "Ivan's New 3DS"))
+            other.api("POST", "/api/web/account/name", {"name": "Jo"})
+            self.assertEqual(next_event(resp2)["type"], "name")  # Jo's stream skipped Ivan's console
+        finally:
+            for c in (conn, conn2):
+                try:
+                    c.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                c.close()
+
+    def test_follow_the_web(self):
+        """The web app says what it shows; the same account's console reads it (GET /api/focus)."""
+        b, cfg = self.linked_client("kim")
+        status, _, body = client.request("GET", self.base + "/api/focus", cfg["token"])
+        self.assertEqual((status, json.loads(body)["key"]), (200, None))
+        status, f = b.api("POST", "/api/web/focus", {"key": "025", "version_ids": [3, 4]})
+        self.assertEqual(status, 200)
+        seq = f["seq"]
+        status, _, body = client.request("GET", self.base + "/api/focus", cfg["token"])
+        self.assertEqual(json.loads(body)["key"], "025")
+        self.assertEqual(json.loads(body)["version_ids"], [3, 4])
+        self.assertEqual(b.api("POST", "/api/web/focus", {"key": "025", "version_ids": [3, 4]})[1]["seq"], seq)
+        self.assertGreater(b.api("POST", "/api/web/focus", {"key": "b025"})[1]["seq"], seq)
+        self.assertEqual(b.api("POST", "/api/web/focus", {"key": "nope"})[0], 400)
+        self.assertEqual(b.api("POST", "/api/web/focus", {"key": "025", "version_ids": ["x"]})[0], 400)
+        self.assertEqual(client.request("GET", self.base + "/api/focus")[0], 401)
 
 
 if __name__ == "__main__":

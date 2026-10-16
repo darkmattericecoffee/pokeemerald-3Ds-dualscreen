@@ -2,8 +2,9 @@
 """The plane-sharing server for the 3DS port's on-device plane editor (v1).
 
 Volunteers upload the edit files their consoles save (sdmc:/3ds/emerald3ds/stereo/<key>.bin);
-everybody sees on a web page which Pokémon have been done; consoles and PCs download the
-current version of each. Runs behind a Cloudflare Tunnel; listens on localhost only.
+everybody sees in the web app (web/, a React app built into web/dist and served from here)
+which Pokémon have been done; consoles and PCs download the current version of each. Runs
+behind a Cloudflare Tunnel; listens on localhost only.
 
     python3 tools/sprite_server/server.py adduser arnoud --admin
     python3 tools/sprite_server/server.py export-sprites --upstream build/upstream
@@ -18,7 +19,6 @@ Standard library only (Python 3.9+).
 import argparse
 import collections
 import getpass
-import html
 import json
 import os
 import re
@@ -30,22 +30,22 @@ import traceback
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 import editfile  # noqa: E402
+import events  # noqa: E402
 import signing  # noqa: E402
 
 # 2: signed plain HTTP for consoles (signing.py), /api/pair2, the clock in /api/health.
 API_VERSION = 2
 DEFAULT_DATA = os.path.expanduser("~/emerald3ds-sprite-server")
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-STATIC_FILES = {"style.css": "text/css; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
-# Changes whenever a static file does, so browsers never keep an old one.
-STATIC_STAMP = "%x" % int(max(os.path.getmtime(os.path.join(STATIC_DIR, n)) for n in STATIC_FILES))
+# The built web app (cd web && npm ci && npm run build); EM3DS_WEB_DIR points elsewhere.
+WEB_DIR = os.environ.get("EM3DS_WEB_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
 MAX_BODY = 64 * 1024
 COOKIE = "e3s"
+CSRF_HEADER = "X-CSRF-Token"
 DEX_COUNT = 386
 MIN_PASSWORD = 10
 
@@ -119,24 +119,6 @@ class PngCache:
 PNGS = PngCache()
 
 
-def e(s) -> str:
-    return html.escape(str(s), quote=True)
-
-
-def ago(t: int) -> str:
-    if not t:
-        return "?"
-    d = max(0, int(time.time()) - t)
-    for unit, n in (("d", 86400), ("h", 3600), ("min", 60)):
-        if d >= n:
-            return "%d %s ago" % (d // n, unit)
-    return "just now"
-
-
-def utc(t: int) -> str:
-    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t)) if t else ""
-
-
 class Response:
     def __init__(self, body: bytes = b"", status: int = 200, ctype: str = "text/html; charset=utf-8",
                  headers: Optional[List[Tuple[str, str]]] = None):
@@ -152,10 +134,6 @@ def api_error(status: int, message: str) -> Response:
     return json_resp({"error": message}, status)
 
 
-def redirect(location: str, headers=None) -> Response:
-    return Response(b"", 303, "text/plain", [("Location", location)] + (headers or []))
-
-
 class Request:
     def __init__(self, method: str, path: str, query: Dict[str, List[str]], headers, body: bytes, ip: str,
                  https: bool, conn):
@@ -165,7 +143,6 @@ class Request:
         self.csrf = None
         self.device = None
         self.session_token = None
-        self._form = None
         self.target = path      # the path with its query, as sent (what a console signs)
         self.sign_key = None    # a signed request's device key and MAC: the answer is signed back
         self.sign = None
@@ -173,13 +150,6 @@ class Request:
 
     def q(self, name: str, default: str = "") -> str:
         return self.query.get(name, [default])[0]
-
-    @property
-    def form(self) -> Dict[str, str]:
-        if self._form is None:
-            parsed = parse_qs(self.body.decode("utf-8", "replace"), keep_blank_values=True)
-            self._form = {k: v[0] for k, v in parsed.items()}
-        return self._form
 
     def json(self) -> dict:
         try:
@@ -196,7 +166,8 @@ KEY = r"(?P<key>[btp]?\d{3,5})"
 
 
 def route(method: str, pattern: str, auth: Optional[str] = None):
-    """auth: None, 'session' (signed-in web user), 'admin', 'device' (console token) or 'any' (either)."""
+    """auth: None, 'web' (a signed-in web user; POSTs carry the X-CSRF-Token header), 'admin' (the
+    same, an admin), 'device' (a linked console) or 'any' (a console or a web user)."""
     def wrap(fn):
         ROUTES.append((method, re.compile("^" + pattern + "$"), fn, auth))
         return fn
@@ -204,318 +175,21 @@ def route(method: str, pattern: str, auth: Optional[str] = None):
 
 
 def authorise(req: Request, auth: Optional[str]) -> Optional[Response]:
-    api = req.path.startswith("/api/")
     if auth is None:
         return None
     if auth == "device" and req.device is None:
         return api_error(401, "this console is not linked (or was unlinked)")
     if auth == "any" and req.device is None and req.user is None:
-        return api_error(401, "sign in or link a console") if api else redirect("/login?next=" + quote(req.path))
-    if auth in ("session", "admin"):
+        return api_error(401, "sign in or link a console")
+    if auth in ("web", "admin"):
         if req.user is None:
-            return api_error(401, "sign in") if api else redirect("/login?next=" + quote(req.path))
+            return api_error(401, "sign in")
         if auth == "admin" and req.user["role"] != "admin":
-            return Response(page(req, "Not allowed", "<p>Only admins can do that.</p>"), 403)
-        if req.method == "POST" and not secrets.compare_digest(req.form.get("csrf", ""), req.csrf or ""):
-            return Response(page(req, "Expired form", "<p>That form had expired. Go back, reload and try again.</p>"),
-                            400)
+            return api_error(403, "only admins can do that")
+        # A custom header no other site can send (no CORS here), and the session's own token.
+        if req.method == "POST" and not secrets.compare_digest(req.headers.get(CSRF_HEADER, ""), req.csrf or ""):
+            return api_error(403, "this page had expired; reload it and try again")
     return None
-
-
-# ── Pages ───────────────────────────────────────────────────────────────────
-
-def page(req: Request, title: str, body: str, flash: str = "") -> bytes:
-    nav = ""
-    if req.user is not None:
-        admin = '<a href="/admin">Users</a>' if req.user["role"] == "admin" else ""
-        nav = ('<nav><a href="/">Progress</a><a href="/account">Account</a>%s'
-               '<form method="post" action="/logout" class="inline">%s<button class="link">Sign out %s</button>'
-               '</form></nav>') % (admin, csrf_field(req), e(req.user["name"]))
-    flash_html = '<p class="flash">%s</p>' % e(flash) if flash else ""
-    return ("""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>%s · Emerald 3DS planes</title><link rel="stylesheet" href="/static/style.css?%s">
-<script src="/static/app.js?%s" defer></script></head>
-<body><header><a class="brand" href="/">Emerald 3DS <span>plane sharing</span></a>%s</header>
-<main>%s%s</main></body></html>""" % (e(title), STATIC_STAMP, STATIC_STAMP, nav, flash_html, body)).encode()
-
-
-def csrf_field(req: Request) -> str:
-    return '<input type="hidden" name="csrf" value="%s">' % e(req.csrf or "")
-
-
-MESSAGES = {
-    "pinned": "That version is now the current one and stays so until unpinned.",
-    "unpinned": "Unpinned: the most votes win again (among equals, the newest).",
-    "voted": "Your votes for this picture are saved.",
-    "twofavourites": "That is as many votes as one picture takes.",
-    "deleted": "The version was deleted.",
-    "revoked": "The console was unlinked. Its token no longer works.",
-    "password": "Password changed. Other browsers were signed out.",
-    "named": "Your name is saved; your versions show it from now on.",
-    "disabled": "The user can no longer sign in, and their consoles stop working.",
-    "enabled": "The user can sign in again.",
-}
-
-
-@route("GET", r"/login")
-def login_form(req: Request, error: str = "") -> Response:
-    nxt = req.q("next", "/")
-    err = '<p class="error">%s</p>' % e(error) if error else ""
-    body = """<section class="narrow signin"><h1>Sign in</h1>%s
-<form method="post" action="/login" class="stack">
-<input type="hidden" name="next" value="%s">
-<label>Name <input name="name" autocomplete="username" required autofocus></label>
-<label>Password <input name="password" type="password" autocomplete="current-password" required></label>
-<button>Sign in</button></form>
-<p class="muted">Accounts are handed out by the project's admin.</p></section>""" % (err, e(nxt))
-    return Response(page(req, "Sign in", body), 401 if error else 200)
-
-
-@route("POST", r"/login")
-def login_post(req: Request) -> Response:
-    name = req.form.get("name", "").strip()
-    if not LIMITS.allow("login:" + req.ip, 10, 900) or not LIMITS.allow("login:" + name.lower(), 10, 900):
-        return login_form(req, "Too many attempts. Wait a quarter of an hour.")
-    user = db.login(req.conn, name, req.form.get("password", ""))
-    if user is None:
-        req.query["next"] = [req.form.get("next", "/")]
-        return login_form(req, "Wrong name or password.")
-    token = db.new_session(req.conn, user["id"])
-    nxt = req.form.get("next", "/")
-    if not nxt.startswith("/") or nxt.startswith("//"):
-        nxt = "/"
-    cookie = "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d%s" % (
-        COOKIE, token, db.SESSION_SECONDS, "; Secure" if req.https else "")
-    return redirect(nxt, [("Set-Cookie", cookie)])
-
-
-@route("POST", r"/logout", "session")
-def logout(req: Request) -> Response:
-    db.end_session(req.conn, req.session_token)
-    return redirect("/login", [("Set-Cookie", "%s=; Path=/; Max-Age=0" % COOKIE)])
-
-
-def tile_image(key: str, vid: Optional[int]) -> str:
-    if vid is not None:
-        return "/img/v%d/tint.png" % vid
-    if key in CFG.sprites:
-        return "/img/sprite/%s.png" % key
-    return ""
-
-
-@route("GET", r"/", "session")
-def grid(req: Request) -> Response:
-    kind = req.q("kind", "front")
-    show = req.q("show", "all")
-    rows = req.conn.execute(
-        "SELECT c.mon_key, c.version_id, c.pinned, v.final, COALESCE(u.display_name, u.name) AS author, "
-        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n "
-        "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id").fetchall()
-    cur = {r["mon_key"]: r for r in rows}
-    mine = {r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM versions WHERE user_id = ?",
-                                           (req.user["id"],))}
-    fronts = ["%03u" % n for n in range(1, DEX_COUNT + 1)]
-    backs = ["b" + k for k in fronts]
-    known = set(fronts) | set(backs)
-    others = sorted(k for k in cur if k not in known)
-    keys = {"front": fronts, "back": backs, "other": others}.get(kind, fronts)
-
-    def stat(ks):
-        done = sum(1 for k in ks if k in cur)
-        final = sum(1 for k in ks if k in cur and cur[k]["final"])
-        return done, final, len(ks)
-
-    tabs = []
-    for k, label, ks in (("front", "Fronts", fronts), ("back", "Backs", backs), ("other", "Trainers & more", others)):
-        done, final, total = stat(ks)
-        count = "%d/%d" % (done, total) if k != "other" else str(total)
-        tabs.append('<a href="/?kind=%s&show=%s" class="%s">%s <small>%s</small></a>'
-                    % (k, show, "on" if k == kind else "", label, count))
-    filters = []
-    for s, label in (("all", "All"), ("open", "Not done"), ("done", "Done"), ("mine", "Mine")):
-        filters.append('<a href="/?kind=%s&show=%s" class="%s">%s</a>' % (kind, s, "on" if s == show else "", label))
-
-    tiles = []
-    for key in keys:
-        c = cur.get(key)
-        if show == "open" and c is not None or show == "done" and c is None or show == "mine" and key not in mine:
-            continue
-        img = tile_image(key, c["version_id"] if c else None)
-        img_html = '<img src="%s" width="64" height="64" alt="" loading="lazy">' % img if img else '<i></i>'
-        cls = ["tile", "done" if c else "open"]
-        if c and c["final"]:
-            cls.append("final")
-        badge = '<b class="badge" title="versions">%d</b>' % c["n"] if c and c["n"] > 1 else ""
-        who = '<span class="who">%s</span>' % e(c["author"]) if c else ""
-        tiles.append('<a class="%s" href="/mon/%s">%s<span class="num">%s</span><span class="name">%s</span>%s%s</a>'
-                     % (" ".join(cls), key, img_html, e(key), e(CFG.name(key)), who, badge))
-    done, final, total = stat(keys)
-    summary = ('<p class="summary"><strong>%d</strong> of %d done, <strong>%d</strong> marked final.</p>'
-               % (done, total, final)) if kind != "other" else ""
-    empty = '<p class="muted">Nothing here yet.</p>' if not tiles else ""
-    body = ('<div class="bar"><div class="tabs">%s</div><div class="filters">%s</div></div>%s'
-            '<div class="grid">%s</div>%s') % ("".join(tabs), "".join(filters), summary, "".join(tiles), empty)
-    return Response(page(req, "Progress", body, MESSAGES.get(req.q("msg"), "")))
-
-
-def neighbours(key: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Previous, next and the other side's key."""
-    m = editfile.KEY_RE.match(key)
-    prefix, n = m.group(1), int(m.group(2))
-    if prefix in ("", "b") and 1 <= n <= DEX_COUNT:
-        prev = "%s%03u" % (prefix, n - 1) if n > 1 else None
-        nxt = "%s%03u" % (prefix, n + 1) if n < DEX_COUNT else None
-        other = ("b%03u" % n) if prefix == "" else ("%03u" % n)
-        return prev, nxt, other
-    return None, None, None
-
-
-def layer_stack(vid: int, edit: editfile.Edit) -> str:
-    used = edit.used_planes()
-    n = edit.planes
-    imgs = []
-    for p in used:
-        d = (p - (n - 1) / 2) / ((n - 1) / 2) if n > 1 else 0
-        imgs.append('<img src="/img/v%d/layer%d.png" data-d="%.3f" alt="">' % (vid, p, d))
-    return '<div class="sway" title="The planes, swaying: nearer planes move more">%s</div>' % "".join(imgs)
-
-
-@route("GET", r"/mon/" + KEY, "session")
-def mon_page(req: Request, key: str) -> Response:
-    if editfile.key_to_id(key) is None:
-        return Response(page(req, "Not found", "<p>No such picture.</p>"), 404)
-    versions = req.conn.execute(
-        "SELECT v.id, v.planes, v.frames, v.final, v.revision, v.author_tag, v.saved_at, v.size, v.uploaded_at, "
-        "COALESCE(u.display_name, u.name) AS uploader, d.console_name FROM versions v JOIN users u ON u.id = v.user_id "
-        "LEFT JOIN devices d ON d.id = v.device_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
-        (key,)).fetchall()
-    cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
-    admin = req.user["role"] == "admin"
-    counts = db.vote_counts(req.conn, key)
-    versions = by_votes(versions, counts)
-    mine = db.favourites(req.conn, req.user["id"], key)
-    prev, nxt, other = neighbours(key)
-    links = []
-    if prev:
-        links.append('<a href="/mon/%s">‹ %s</a>' % (prev, e(CFG.name(prev))))
-    if other:
-        links.append('<a href="/mon/%s">%s side</a>' % (other, "Back" if other.startswith("b") else "Front"))
-    if nxt:
-        links.append('<a href="/mon/%s">%s ›</a>' % (nxt, e(CFG.name(nxt))))
-    head = ('<div class="monhead"><h1><span class="num">%s</span> %s <small>%s</small></h1><div class="nav2">%s</div></div>'
-            % (e(key), e(CFG.name(key)), e(editfile.key_kind(key)), " · ".join(links)))
-    hero = ""
-    if cur is not None:
-        row = req.conn.execute("SELECT data FROM versions WHERE id = ?", (cur["version_id"],)).fetchone()
-        edit = editfile.parse(row["data"])
-        vid = cur["version_id"]
-        pin_note = ""
-        if cur["pinned"]:
-            pin_note = '<p class="pill">Pinned by an admin</p>'
-            if admin:
-                pin_note += ('<form method="post" action="/mon/%s/unpin" class="inline">%s<button class="small">'
-                             'Unpin (newest wins again)</button></form>') % (key, csrf_field(req))
-        sprite = ('<figure><img class="big" src="/img/sprite/%s.png" alt=""><figcaption>Game picture</figcaption></figure>'
-                  % key) if key in CFG.sprites else ""
-        hero = ('<div class="hero">%s<figure>%s<figcaption>Planes in motion</figcaption></figure>'
-                '<figure><img class="big" src="/img/v%d/tint.png" alt=""><figcaption>Tinted by plane</figcaption></figure>'
-                '<figure><img class="big" src="/img/v%d/planes.png" alt=""><figcaption>Planes only</figcaption></figure>'
-                '</div><div class="current-note"><p>Current version: #%d. %s</p>%s</div>') % (
-            sprite, layer_stack(vid, edit), vid, vid,
-            vid, "Consoles download this one when they sync.", pin_note)
-    elif key in CFG.sprites:
-        hero = ('<div class="hero"><figure><img class="big faded" src="/img/sprite/%s.png" alt="">'
-                '<figcaption>Nobody has uploaded planes for this picture yet.</figcaption></figure></div>') % key
-    else:
-        hero = '<p class="muted">Nobody has uploaded planes for this picture yet.</p>'
-
-    rows = []
-    for v in versions:
-        is_cur = cur is not None and cur["version_id"] == v["id"]
-        tags = []
-        if is_cur:
-            tags.append('<span class="pill on">%s</span>' % ("current, pinned" if cur["pinned"] else "current"))
-        if v["final"]:
-            tags.append('<span class="pill final">final</span>')
-        author = e(v["uploader"])
-        if v["author_tag"] and v["author_tag"].lower() != v["uploader"].lower():
-            author += ' <span class="muted">(signed %s)</span>' % e(v["author_tag"])
-        where = ' <span class="muted">from %s</span>' % e(v["console_name"]) if v["console_name"] else ""
-        starred = v["id"] in mine
-        actions = ['<form method="post" action="/mon/%s/vote" class="inline">%s<input type="hidden" name="version" '
-                   'value="%d"><button class="small%s" title="%s">%s</button></form>'
-                   % (key, csrf_field(req), v["id"], " on" if starred else "",
-                      "Take your vote back" if starred else "Vote for this version",
-                      "&#9733; Voted" if starred else "&#9734; Vote"),
-                   '<a href="/dl/v%d/%s.bin">Download</a>' % (v["id"], key)]
-        if admin and not (is_cur and cur["pinned"]):
-            actions.append('<form method="post" action="/mon/%s/pin" class="inline">%s'
-                           '<input type="hidden" name="version" value="%d"><button class="small">%s</button>'
-                           '</form>' % (key, csrf_field(req), v["id"], "Pin" if is_cur else "Make current"))
-        if admin:
-            actions.append('<form method="post" action="/versions/%d/delete" class="inline" '
-                           'data-confirm="Delete version #%d for good?">%s<button class="small danger">Delete</button>'
-                           '</form>' % (v["id"], v["id"], csrf_field(req)))
-        rev = "rev %d" % v["revision"] if v["revision"] else ""
-        rows.append(
-            '<tr class="%s"><td><img src="/img/v%d/tint.png" width="64" height="64" alt=""></td>'
-            '<td><strong>#%d</strong> %s<br>by %s%s</td><td>%d planes, %d frame%s<br>%s</td>'
-            '<td class="votes">%s</td><td title="%s">%s</td><td class="actions">%s</td></tr>'
-            % ("is-current" if is_cur else "", v["id"], v["id"], " ".join(tags), author, where, v["planes"],
-               v["frames"], "s" if v["frames"] > 1 else "", rev,
-               "%d vote%s" % (counts.get(v["id"], 0), "" if counts.get(v["id"], 0) == 1 else "s"),
-               e(utc(v["uploaded_at"])), ago(v["uploaded_at"]), " ".join(actions)))
-    table = ('<h2>Versions</h2><table class="versions"><tbody>%s</tbody></table>' % "".join(rows)) if rows else ""
-    rule = ('<p class="muted rule">Vote for as many versions as you like, here or on the console; the front and '
-            'the back are voted on apart. The most votes come first and are current (among equals, the newest), '
-            'unless an admin pins one.</p>'
-            if rows else "")
-    return Response(page(req, CFG.name(key), head + hero + table + rule, MESSAGES.get(req.q("msg"), "")))
-
-
-@route("POST", r"/mon/" + KEY + r"/vote", "session")
-def vote_post(req: Request, key: str) -> Response:
-    """A version's vote: on, or off again."""
-    try:
-        vid = int(req.form.get("version", ""))
-    except ValueError:
-        vid = -1
-    mine = db.favourites(req.conn, req.user["id"], key)
-    if vid in mine:
-        mine.remove(vid)
-    elif len(mine) >= db.MAX_FAVOURITES:
-        return redirect("/mon/%s?msg=twofavourites" % key)
-    else:
-        mine.append(vid)
-    if db.set_votes(req.conn, req.user["id"], key, mine) is not None:
-        return Response(page(req, "Not found", "<p>No such version.</p>"), 404)
-    return redirect("/mon/%s?msg=voted" % key)
-
-
-@route("POST", r"/mon/" + KEY + r"/pin", "admin")
-def pin_post(req: Request, key: str) -> Response:
-    try:
-        vid = int(req.form.get("version", ""))
-    except ValueError:
-        vid = -1
-    if not db.pin(req.conn, key, vid):
-        return Response(page(req, "Not found", "<p>No such version.</p>"), 404)
-    return redirect("/mon/%s?msg=pinned" % key)
-
-
-@route("POST", r"/mon/" + KEY + r"/unpin", "admin")
-def unpin_post(req: Request, key: str) -> Response:
-    db.unpin(req.conn, key)
-    return redirect("/mon/%s?msg=unpinned" % key)
-
-
-@route("POST", r"/versions/(?P<vid>\d+)/delete", "admin")
-def delete_post(req: Request, vid: str) -> Response:
-    key = db.delete_version(req.conn, int(vid))
-    if key is None:
-        return Response(page(req, "Not found", "<p>No such version.</p>"), 404)
-    return redirect("/mon/%s?msg=deleted" % key)
 
 
 # ── Pictures and downloads ──────────────────────────────────────────────────
@@ -567,7 +241,7 @@ def bin_response(row, req: Request, attachment: bool = False) -> Response:
     return Response(bytes(row["data"]), 200, "application/octet-stream", headers)
 
 
-@route("GET", r"/dl/v(?P<vid>\d+)/" + KEY + r"\.bin", "session")
+@route("GET", r"/dl/v(?P<vid>\d+)/" + KEY + r"\.bin", "web")
 def download(req: Request, vid: str, key: str) -> Response:
     row = req.conn.execute("SELECT * FROM versions WHERE id = ? AND mon_key = ?", (int(vid), key)).fetchone()
     if row is None:
@@ -575,89 +249,425 @@ def download(req: Request, vid: str, key: str) -> Response:
     return bin_response(row, req, attachment=True)
 
 
-@route("GET", r"/static/(?P<name>[a-z]+\.(?:css|js))")
-def static(req: Request, name: str) -> Response:
-    if name not in STATIC_FILES:
+# ── The web app's files ─────────────────────────────────────────────────────
+
+WEB_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2",
+             ".woff": "font/woff", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
+             ".webmanifest": "application/manifest+json", ".txt": "text/plain; charset=utf-8"}
+# The app's own pages (React Router); anything else gets the app with a 404, which shows its own page.
+APP_PAGES = re.compile(r"^/(?:login|account|users|mon/[btp]?\d{3,5}|compare/[btp]?\d{3,5})?/?$")
+APP_CSP = ("default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
+           "connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'")
+NOT_BUILT = b"""<!doctype html><meta charset="utf-8"><title>Emerald 3D planes</title>
+<p style="font-family:sans-serif">The web app is not built yet: <code>cd tools/sprite_server/web &amp;&amp; npm ci &amp;&amp;
+npm run build</code>, then reload. (The console API works without it.)</p>"""
+
+
+def web_file(name: str, cache: str) -> Response:
+    path = os.path.join(WEB_DIR, name)
+    ctype = WEB_TYPES.get(os.path.splitext(name)[1])
+    if ctype is None or not os.path.isfile(path):
         return Response(b"not found", 404, "text/plain")
-    with open(os.path.join(STATIC_DIR, name), "rb") as f:
-        return Response(f.read(), 200, STATIC_FILES[name], [("Cache-Control", "public, max-age=31536000, immutable")])
+    with open(path, "rb") as f:
+        return Response(f.read(), 200, ctype, [("Cache-Control", cache)])
 
 
-# ── Account and admin ───────────────────────────────────────────────────────
-
-@route("GET", r"/account", "session")
-def account(req: Request, extra: str = "", flash: str = "") -> Response:
-    devices = req.conn.execute(
-        "SELECT * FROM devices WHERE user_id = ? AND revoked = 0 ORDER BY created DESC", (req.user["id"],)).fetchall()
-    rows = "".join(
-        '<tr><td>%s</td><td>linked %s</td><td>%s</td><td><form method="post" action="/account/devices/%d/revoke" '
-        'class="inline" data-confirm="Unlink %s? It will need a new code to upload again.">%s'
-        '<button class="small danger">Unlink</button></form></td></tr>'
-        % (e(d["console_name"]), ago(d["created"]), "last seen " + ago(d["last_seen"]) if d["last_seen"] else "never used",
-           d["id"], e(d["console_name"]), csrf_field(req)) for d in devices)
-    devices_html = ('<table class="plain">%s</table>' % rows) if rows else '<p class="muted">No consoles linked yet.</p>'
-    body = """<h1>Your account</h1>%s
-<section class="narrow"><h2>Your name</h2>
-<form method="post" action="/account/name" class="stack">%s
-<label>Shown with your versions <input name="name" value="%s" maxlength="16" pattern="[A-Za-z0-9 ._-]+" required></label>
-<button>Save name</button></form>
-<p class="muted">The plane editor's ONLINE tab sets it too (YOUR NAME). You sign in as <strong>%s</strong>.</p></section>
-<section><h2>Consoles and computers</h2>%s
-<form method="post" action="/account/pair">%s<button>Link a console</button></form>
-<p class="muted">You get a code that works once, for ten minutes. Type it on the 3DS, or give it to the PC script.</p></section>
-<section class="narrow"><h2>Change password</h2>
-<form method="post" action="/account/password" class="stack">%s
-<label>Current password <input name="old" type="password" autocomplete="current-password" required></label>
-<label>New password <input name="new" type="password" autocomplete="new-password" minlength="%d" required></label>
-<label>New password again <input name="again" type="password" autocomplete="new-password" required></label>
-<button>Change password</button></form></section>""" % (extra, csrf_field(req), e(db.shown_name(req.user)),
-                                                      e(req.user["name"]), devices_html, csrf_field(req),
-                                                      csrf_field(req), MIN_PASSWORD)
-    return Response(page(req, "Account", body, flash or MESSAGES.get(req.q("msg"), "")))
+@route("GET", r"/assets/(?P<name>[A-Za-z0-9_.-]+)")
+def web_asset(req: Request, name: str) -> Response:
+    # Vite puts a hash of the content in every asset's name.
+    return web_file(os.path.join("assets", name), "public, max-age=31536000, immutable")
 
 
-@route("POST", r"/account/name", "session")
-def account_name(req: Request) -> Response:
-    if db.set_display_name(req.conn, req.user["id"], req.form.get("name", "")) is None:
-        return account(req, flash="Names are letters, digits, spaces, dots, dashes and underscores, up to 16.")
+@route("GET", r"/(?P<name>[A-Za-z0-9_-]+\.(?:svg|png|ico|webmanifest|txt))")
+def web_root_file(req: Request, name: str) -> Response:
+    return web_file(name, "public, max-age=86400")
+
+
+def app_page(req: Request) -> Response:
+    """The web app's index.html, for every page it draws itself."""
+    path = os.path.join(WEB_DIR, "index.html")
+    status = 200 if APP_PAGES.match(req.path) else 404
+    if not os.path.isfile(path):
+        return Response(NOT_BUILT, 503)
+    with open(path, "rb") as f:
+        return Response(f.read(), status, "text/html; charset=utf-8", [("Content-Security-Policy", APP_CSP)])
+
+
+# ── The web app's API ───────────────────────────────────────────────────────
+#
+# JSON under /api/web/, for the signed-in browser: the session cookie (HttpOnly, SameSite=Lax)
+# and, on every POST, the session's CSRF token in the X-CSRF-Token header. /api/web/events is
+# the live channel (Server-Sent Events, events.py) that tells open pages what changed.
+
+# The depth sweet spot, byte 9 of the edit file's EM3DSMD1 trailer: 1 shallow, 2 standard,
+# 3 deep (0: not set, older editors). Read straight from the stored file.
+DEPTH_SQL = ("CASE WHEN length(v.data) = 16 + v.frames * 2048 + 32 "
+             "AND substr(v.data, 17 + v.frames * 2048, 8) = X'454D3344534D4431' "
+             "THEN hex(substr(v.data, 26 + v.frames * 2048, 1)) END")
+DEPTHS = (1, 2, 3)
+
+
+def depth_of(hex_byte: Optional[str]) -> Optional[int]:
+    value = int(hex_byte, 16) if hex_byte else 0
+    return value if value in DEPTHS else None
+
+
+def neighbours(key: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Previous, next and the other side's key."""
+    m = editfile.KEY_RE.match(key)
+    prefix, n = m.group(1), int(m.group(2))
+    if prefix in ("", "b") and 1 <= n <= DEX_COUNT:
+        prev = "%s%03u" % (prefix, n - 1) if n > 1 else None
+        nxt = "%s%03u" % (prefix, n + 1) if n < DEX_COUNT else None
+        other = ("b%03u" % n) if prefix == "" else ("%03u" % n)
+        return prev, nxt, other
+    return None, None, None
+
+
+def session_cookie(req: Request, token: str) -> Tuple[str, str]:
+    return ("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d%s" % (
+        COOKIE, token, db.SESSION_SECONDS, "; Secure" if req.https else ""))
+
+
+def session_json(req: Request) -> dict:
+    u = req.user
+    user = None if u is None else {"id": u["id"], "name": u["name"], "display_name": db.shown_name(u),
+                                   "role": u["role"]}
+    return {"user": user, "csrf": req.csrf if u is not None else None, "api": API_VERSION}
+
+
+def publish(kind: str, **data) -> None:
+    """Tells every open page (events.py). `_to` (a user id) keeps an event to that user's pages."""
+    events.BUS.publish(kind, **data)
+
+
+def json_body(req: Request) -> Optional[dict]:
+    """The JSON object a web POST sent, or None."""
+    if not req.headers.get("Content-Type", "").startswith("application/json"):
+        return None
+    try:
+        obj = json.loads(req.body.decode("utf-8") or "{}")
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def int_field(body: dict, name: str) -> Optional[int]:
+    v = body.get(name)
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+@route("GET", r"/api/web/session")
+def web_session(req: Request) -> Response:
+    return json_resp(session_json(req))
+
+
+@route("POST", r"/api/web/login")
+def web_login(req: Request) -> Response:
+    # JSON only: a form on another site cannot send it (no CORS here), so no login CSRF.
+    body = json_body(req)
+    if body is None:
+        return api_error(415, "send JSON")
+    name = str(body.get("name", "")).strip()
+    if not LIMITS.allow("login:" + req.ip, 10, 900) or not LIMITS.allow("login:" + name.lower(), 10, 900):
+        return api_error(429, "too many attempts; wait a quarter of an hour")
+    user = db.login(req.conn, name, str(body.get("password", "")))
+    if user is None:
+        return api_error(401, "wrong name or password")
+    token = db.new_session(req.conn, user["id"])
+    req.user, req.csrf = db.session_user(req.conn, token)
+    return json_resp(session_json(req), headers=[session_cookie(req, token)])
+
+
+@route("POST", r"/api/web/logout", "web")
+def web_logout(req: Request) -> Response:
+    db.end_session(req.conn, req.session_token)
+    req.user = None
+    return json_resp(session_json(req), headers=[("Set-Cookie", "%s=; Path=/; Max-Age=0" % COOKIE)])
+
+
+@route("GET", r"/api/web/grid", "web")
+def web_grid(req: Request) -> Response:
+    """Everything the progress grid shows: each picture's current version, and the caller's own."""
+    rows = req.conn.execute(
+        "SELECT c.mon_key, c.version_id, c.pinned, v.final, v.uploaded_at, COALESCE(u.display_name, u.name) AS author, "
+        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n, " + DEPTH_SQL + " AS depth "
+        "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id").fetchall()
+    uid = req.user["id"]
+    mine = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM versions WHERE user_id = ?", (uid,))]
+    voted = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM votes WHERE user_id = ?", (uid,))]
+    fronts = ["%03u" % n for n in range(1, DEX_COUNT + 1)]
+    known = set(fronts) | {"b" + k for k in fronts}
+    others = sorted({r["mon_key"] for r in rows} - known)
+    keys = fronts + ["b" + k for k in fronts] + others
+    return json_resp({
+        "rev": db.current_rev(req.conn), "dex_count": DEX_COUNT, "others": others,
+        "names": {k: CFG.name(k) for k in keys},
+        "pictures": [k for k in keys if k in CFG.sprites],
+        "mine": sorted(mine), "voted": sorted(voted),
+        "items": {r["mon_key"]: {"version_id": r["version_id"], "pinned": bool(r["pinned"]), "final": bool(r["final"]),
+                                 "author": r["author"], "versions": r["n"], "depth": depth_of(r["depth"]),
+                                 "uploaded_at": r["uploaded_at"]} for r in rows}})
+
+
+def mon_json(req: Request, key: str) -> dict:
+    """A picture's page: every version with its uploader, console, votes (and who), depth and flags."""
+    rows = req.conn.execute(
+        "SELECT v.id, v.user_id, v.planes, v.frames, v.final, v.revision, v.author_tag, v.saved_at, v.sha256, v.size, "
+        "v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader, d.console_name, " + DEPTH_SQL + " AS depth "
+        "FROM versions v JOIN users u ON u.id = v.user_id LEFT JOIN devices d ON d.id = v.device_id "
+        "WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC", (key,)).fetchall()
+    cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
+    counts = db.vote_counts(req.conn, key)
+    voters: Dict[int, List[str]] = {}
+    for r in req.conn.execute(
+            "SELECT t.version_id, COALESCE(u.display_name, u.name) AS who FROM votes t JOIN users u ON u.id = t.user_id "
+            "WHERE t.mon_key = ? ORDER BY t.voted_at, t.user_id", (key,)):
+        voters.setdefault(r["version_id"], []).append(r["who"])
+    prev, nxt, other = neighbours(key)
+    near = lambda k: {"key": k, "name": CFG.name(k)} if k else None  # noqa: E731
+    uid = req.user["id"]
+    return {
+        "key": key, "name": CFG.name(key), "kind": editfile.key_kind(key), "picture": key in CFG.sprites,
+        "prev": near(prev), "next": near(nxt), "other": near(other),
+        "current": cur["version_id"] if cur else None, "pinned": bool(cur and cur["pinned"]),
+        "favourites": db.favourites(req.conn, uid, key), "max_favourites": db.MAX_FAVOURITES,
+        "admin": req.user["role"] == "admin",
+        "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],
+                      "console": r["console_name"], "revision": r["revision"], "final": bool(r["final"]),
+                      "votes": counts.get(r["id"], 0), "voters": voters.get(r["id"], []),
+                      "depth": depth_of(r["depth"]), "planes": r["planes"], "frames": r["frames"],
+                      "sha256": r["sha256"], "size": r["size"], "saved_at": r["saved_at"],
+                      "uploaded_at": r["uploaded_at"], "mine": r["user_id"] == uid}
+                     for r in by_votes(rows, counts)]}
+
+
+@route("GET", r"/api/web/mons/" + KEY, "web")
+def web_mon(req: Request, key: str) -> Response:
+    if editfile.key_to_id(key) is None:
+        return api_error(404, "no such picture")
+    return json_resp(mon_json(req, key))
+
+
+@route("POST", r"/api/web/mons/" + KEY + r"/vote", "web")
+def web_vote(req: Request, key: str) -> Response:
+    """{"version_id", "on"}: the caller's vote for one version, given or taken back."""
+    body = json_body(req) or {}
+    vid, on = int_field(body, "version_id"), body.get("on")
+    if editfile.key_to_id(key) is None or vid is None or not isinstance(on, bool):
+        return api_error(400, "send version_id and on")
+    mine = db.favourites(req.conn, req.user["id"], key)
+    if on and vid not in mine:
+        if len(mine) >= db.MAX_FAVOURITES:
+            return api_error(400, "that is as many votes as one picture takes (%d)" % db.MAX_FAVOURITES)
+        mine.append(vid)
+    elif not on and vid in mine:
+        mine.remove(vid)
+    err = db.set_votes(req.conn, req.user["id"], key, mine)
+    if err is not None:
+        return api_error(404, err)
+    publish("vote", key=key, version_id=vid, on=on, who=db.shown_name(req.user))
+    return json_resp(mon_json(req, key))
+
+
+@route("POST", r"/api/web/mons/" + KEY + r"/pin", "admin")
+def web_pin(req: Request, key: str) -> Response:
+    vid = int_field(json_body(req) or {}, "version_id")
+    if vid is None or not db.pin(req.conn, key, vid):
+        return api_error(404, "no such version")
+    publish("pin", key=key, version_id=vid)
+    return json_resp(mon_json(req, key))
+
+
+@route("POST", r"/api/web/mons/" + KEY + r"/unpin", "admin")
+def web_unpin(req: Request, key: str) -> Response:
+    db.unpin(req.conn, key)
+    publish("pin", key=key, version_id=None)
+    return json_resp(mon_json(req, key))
+
+
+@route("POST", r"/api/web/versions/(?P<vid>\d+)/delete", "web")
+def web_delete(req: Request, vid: str) -> Response:
+    """Takes a version off the server: its uploader, or an admin."""
+    row = req.conn.execute("SELECT mon_key, user_id FROM versions WHERE id = ?", (int(vid),)).fetchone()
+    if row is None:
+        return api_error(404, "no such version")
+    if row["user_id"] != req.user["id"] and req.user["role"] != "admin":
+        return api_error(403, "only its uploader or an admin can delete a version")
+    db.delete_version(req.conn, int(vid))
+    publish("delete", key=row["mon_key"], version_id=int(vid))
+    return json_resp(mon_json(req, row["mon_key"]))
+
+
+@route("GET", r"/api/web/pictures/" + KEY, "web")
+def web_picture(req: Request, key: str) -> Response:
+    """The game's picture as data (palette, one index per pixel per frame), for the 3D viewer."""
+    sprite = CFG.sprites.get(key)
+    if sprite is None:
+        return api_error(404, "no game picture for %s" % key)
+    return json_resp({"key": key, "palette": ["#%02x%02x%02x" % c for c in sprite.palette],
+                      "frames": [f.hex() for f in sprite.frames]}, headers=IMG_HEADERS)
+
+
+def account_json(req: Request) -> dict:
+    devices = req.conn.execute("SELECT * FROM devices WHERE user_id = ? AND revoked = 0 ORDER BY created DESC",
+                               (req.user["id"],)).fetchall()
+    uploads = req.conn.execute("SELECT COUNT(*) FROM versions WHERE user_id = ?", (req.user["id"],)).fetchone()[0]
+    return {"name": req.user["name"], "display_name": db.shown_name(req.user), "role": req.user["role"],
+            "uploads": uploads, "min_password": MIN_PASSWORD, "base": public_base(req),
+            "devices": [{"id": d["id"], "console_name": d["console_name"], "created": d["created"],
+                         "last_seen": d["last_seen"]} for d in devices]}
+
+
+@route("GET", r"/api/web/account", "web")
+def web_account(req: Request) -> Response:
+    return json_resp(account_json(req))
+
+
+@route("POST", r"/api/web/account/name", "web")
+def web_account_name(req: Request) -> Response:
+    name = db.set_display_name(req.conn, req.user["id"], str((json_body(req) or {}).get("name", "")))
+    if name is None:
+        return api_error(400, "names are letters, digits, spaces, dots, dashes and underscores, up to 16")
     db.bump_rev(req.conn)
-    return redirect("/account?msg=named")
+    req.user = req.conn.execute("SELECT * FROM users WHERE id = ?", (req.user["id"],)).fetchone()
+    publish("name", name=name)
+    return json_resp(account_json(req))
 
 
-@route("POST", r"/account/pair", "session")
-def account_pair(req: Request) -> Response:
+@route("POST", r"/api/web/account/pair", "web")
+def web_account_pair(req: Request) -> Response:
     code = db.new_pairing_code(req.conn, req.user["id"])
-    shown = code[:4] + "-" + code[4:]
-    base = public_base(req)
-    extra = """<section class="code"><h2>Your pairing code</h2><p class="bigcode">%s</p>
-<p>It works once and expires in ten minutes.</p>
-<ul><li><strong>On the 3DS:</strong> OPTIONS, the ENHANCEMENTS tab's second screen, ONLINE, then LINK CONSOLE,
-and type the code (the first time it also asks for this server's address: %s).</li>
-<li><strong>On a computer:</strong><pre>python3 tools/sprite_server/client.py pair %s %s</pre></li></ul></section>""" % (
-        e(shown), e(base), e(base), e(shown))
-    return account(req, extra)
+    return json_resp({"code": code[:4] + "-" + code[4:], "expires": db.now() + db.PAIR_SECONDS,
+                      "seconds": db.PAIR_SECONDS, "base": public_base(req)})
 
 
-@route("POST", r"/account/devices/(?P<did>\d+)/revoke", "session")
-def account_revoke(req: Request, did: str) -> Response:
+@route("POST", r"/api/web/account/devices/(?P<did>\d+)/revoke", "web")
+def web_account_revoke(req: Request, did: str) -> Response:
     req.conn.execute("UPDATE devices SET revoked = 1 WHERE id = ? AND user_id = ?", (int(did), req.user["id"]))
-    return redirect("/account?msg=revoked")
+    publish("console", _to=req.user["id"], action="unlinked", device_id=int(did))
+    return json_resp(account_json(req))
 
 
-@route("POST", r"/account/password", "session")
-def account_password(req: Request) -> Response:
-    f = req.form
-    if not db.check_password(f.get("old", ""), req.user["pass_hash"]):
-        return account(req, flash="The current password was wrong.")
-    if len(f.get("new", "")) < MIN_PASSWORD:
-        return account(req, flash="The new password needs at least %d characters." % MIN_PASSWORD)
-    if f.get("new") != f.get("again"):
-        return account(req, flash="The two new passwords differ.")
-    db.set_password(req.conn, req.user["id"], f["new"])
+@route("POST", r"/api/web/account/password", "web")
+def web_account_password(req: Request) -> Response:
+    body = json_body(req) or {}
+    old, new = str(body.get("old", "")), str(body.get("new", ""))
+    if not db.check_password(old, req.user["pass_hash"]):
+        return api_error(400, "the current password was wrong")
+    if len(new) < MIN_PASSWORD:
+        return api_error(400, "the new password needs at least %d characters" % MIN_PASSWORD)
+    db.set_password(req.conn, req.user["id"], new)  # signs out every other browser
     token = db.new_session(req.conn, req.user["id"])
-    cookie = "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d%s" % (
-        COOKIE, token, db.SESSION_SECONDS, "; Secure" if req.https else "")
-    return redirect("/account?msg=password", [("Set-Cookie", cookie)])
+    req.user, req.csrf = db.session_user(req.conn, token)
+    return json_resp(session_json(req), headers=[session_cookie(req, token)])
+
+
+def users_json(req: Request) -> dict:
+    users = req.conn.execute(
+        "SELECT u.*, (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS consoles, "
+        "(SELECT MAX(d.last_seen) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS last_seen, "
+        "(SELECT COUNT(*) FROM versions v WHERE v.user_id = u.id) AS uploads FROM users u ORDER BY u.name").fetchall()
+    return {"users": [{"id": u["id"], "name": u["name"], "display_name": db.shown_name(u), "role": u["role"],
+                       "disabled": bool(u["disabled"]), "consoles": u["consoles"], "uploads": u["uploads"],
+                       "created": u["created"], "last_seen": u["last_seen"], "me": u["id"] == req.user["id"]}
+                      for u in users]}
+
+
+@route("GET", r"/api/web/users", "admin")
+def web_users(req: Request) -> Response:
+    return json_resp(users_json(req))
+
+
+@route("POST", r"/api/web/users", "admin")
+def web_users_add(req: Request) -> Response:
+    body = json_body(req) or {}
+    name, role = str(body.get("name", "")).strip(), body.get("role", "artist")
+    if not re.fullmatch(r"[A-Za-z0-9_. -]{1,32}", name) or role not in ("artist", "admin"):
+        return api_error(400, "names are letters, digits, spaces, dots, dashes and underscores, up to 32")
+    if req.conn.execute("SELECT 1 FROM users WHERE name = ?", (name,)).fetchone():
+        return api_error(409, "there is already a user called %s" % name)
+    password = new_password()
+    db.add_user(req.conn, name, password, role)
+    publish("users")
+    return json_resp(dict(users_json(req), name=name, password=password), 201)
+
+
+@route("POST", r"/api/web/users/(?P<uid>\d+)/(?P<act>enable|disable|reset)", "admin")
+def web_users_act(req: Request, uid: str, act: str) -> Response:
+    user = req.conn.execute("SELECT * FROM users WHERE id = ?", (int(uid),)).fetchone()
+    if user is None:
+        return api_error(404, "no such user")
+    if act == "reset":
+        password = new_password()
+        db.set_password(req.conn, user["id"], password)
+        return json_resp(dict(users_json(req), name=user["name"], password=password))
+    if user["id"] == req.user["id"]:
+        return api_error(400, "you cannot disable yourself")
+    req.conn.execute("UPDATE users SET disabled = ? WHERE id = ?", (int(act == "disable"), user["id"]))
+    if act == "disable":
+        req.conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+    publish("users")
+    return json_resp(users_json(req))
+
+
+class Focus:
+    """What each account's web app is looking at, for its consoles' "follow the web" (GET /api/focus).
+    In memory: a restart forgets it, and the web app sends it again on its next page."""
+    STALE = 10 * 60
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.seq = 0
+        self.by_user: Dict[int, dict] = {}
+
+    def set(self, user_id: int, key: Optional[str], version_ids: List[int]) -> dict:
+        with self.lock:
+            old = self.by_user.get(user_id)
+            if old is not None and old["key"] == key and old["version_ids"] == version_ids:
+                old["at"] = int(time.time())  # the same page again: still looking
+                return dict(old)
+            self.seq += 1
+            self.by_user[user_id] = {"key": key, "version_ids": version_ids, "seq": self.seq, "at": int(time.time())}
+            return dict(self.by_user[user_id])
+
+    def get(self, user_id: int) -> dict:
+        with self.lock:
+            f = self.by_user.get(user_id)
+            if f is None:
+                return {"key": None, "version_ids": [], "seq": 0, "at": 0}
+            f = dict(f)
+        if time.time() - f["at"] > self.STALE:
+            f["key"], f["version_ids"] = None, []
+        return f
+
+
+FOCUS = Focus()
+
+
+@route("POST", r"/api/web/focus", "web")
+def web_focus(req: Request) -> Response:
+    """{"key", "version_ids"}: the picture (and the versions being compared) this account's web app shows."""
+    body = json_body(req) or {}
+    key = body.get("key")
+    ids = body.get("version_ids") or []
+    if key is not None and (not isinstance(key, str) or editfile.key_to_id(key) is None):
+        return api_error(400, "no such picture")
+    if not isinstance(ids, list) or len(ids) > 16 or any(int_field({"v": v}, "v") is None for v in ids):
+        return api_error(400, "version_ids must be up to 16 numbers")
+    return json_resp(FOCUS.set(req.user["id"], key, ids))
+
+
+class Stream:
+    """What /api/web/events answers with: the Handler keeps the connection open and writes events."""
+
+    def __init__(self, user_id: int, rev: int):
+        self.user_id, self.rev = user_id, rev
+
+
+@route("GET", r"/api/web/events", "web")
+def web_events(req: Request):
+    return Stream(req.user["id"], db.current_rev(req.conn))
 
 
 def public_base(req: Request) -> str:
@@ -667,76 +677,6 @@ def public_base(req: Request) -> str:
 
 def new_password() -> str:
     return "-".join(secrets.token_urlsafe(6) for _ in range(3))
-
-
-@route("GET", r"/admin", "admin")
-def admin(req: Request, flash: str = "") -> Response:
-    users = req.conn.execute(
-        "SELECT u.*, (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS consoles, "
-        "(SELECT COUNT(*) FROM versions v WHERE v.user_id = u.id) AS uploads FROM users u ORDER BY u.name").fetchall()
-    rows = []
-    for u in users:
-        actions = []
-        if u["id"] != req.user["id"]:
-            act = "enable" if u["disabled"] else "disable"
-            actions.append('<form method="post" action="/admin/users/%d/%s" class="inline">%s<button class="small%s">'
-                           '%s</button></form>' % (u["id"], act, csrf_field(req), "" if u["disabled"] else " danger",
-                                                   act.title()))
-        actions.append('<form method="post" action="/admin/users/%d/reset" class="inline" data-confirm="Make a new '
-                       'password for %s? The old one stops working.">%s<button class="small">New password</button>'
-                       '</form>' % (u["id"], e(u["name"]), csrf_field(req)))
-        shown = "" if not u["display_name"] or u["display_name"] == u["name"] else (
-            ' <span class="muted">(%s)</span>' % e(u["display_name"]))
-        rows.append('<tr class="%s"><td><strong>%s</strong>%s</td><td>%s</td><td>%d consoles</td><td>%d uploads</td>'
-                    '<td>%s</td><td class="actions">%s</td></tr>'
-                    % ("disabled" if u["disabled"] else "", e(u["name"]), shown, u["role"], u["consoles"], u["uploads"],
-                       "disabled" if u["disabled"] else "since " + ago(u["created"]), " ".join(actions)))
-    body = """<h1>Users</h1>
-<section class="narrow"><h2>Add a user</h2><form method="post" action="/admin/users" class="stack">%s
-<label>Name <input name="name" required maxlength="32" pattern="[A-Za-z0-9_. -]+" autofocus></label>
-<label>Role <select name="role"><option value="artist">Artist</option><option value="admin">Admin</option></select></label>
-<button>Add user</button></form>
-<p class="muted">The server makes the password; you see it once and pass it on.</p></section>
-<h2>Everybody</h2><table class="plain">%s</table>""" % (csrf_field(req), "".join(rows))
-    return Response(page(req, "Users", body, flash or MESSAGES.get(req.q("msg"), "")))
-
-
-def password_shown(req: Request, name: str, password: str, title: str) -> Response:
-    body = """<section class="narrow code"><h1>%s</h1><p>Pass this on to <strong>%s</strong>. It is shown only now.</p>
-<p class="bigcode small">%s</p><p class="muted">They can change it on their account page after signing in at
-<code>%s</code>.</p><p><a href="/admin">Back to users</a></p></section>""" % (
-        e(title), e(name), e(password), e(public_base(req)))
-    return Response(page(req, title, body))
-
-
-@route("POST", r"/admin/users", "admin")
-def admin_add(req: Request) -> Response:
-    name = req.form.get("name", "").strip()
-    role = req.form.get("role", "artist")
-    if not re.fullmatch(r"[A-Za-z0-9_. -]{1,32}", name) or role not in ("artist", "admin"):
-        return admin(req, "Names are letters, digits, spaces, dots, dashes and underscores, up to 32.")
-    if req.conn.execute("SELECT 1 FROM users WHERE name = ?", (name,)).fetchone():
-        return admin(req, "There is already a user called %s." % name)
-    password = new_password()
-    db.add_user(req.conn, name, password, role)
-    return password_shown(req, name, password, "User added")
-
-
-@route("POST", r"/admin/users/(?P<uid>\d+)/(?P<act>enable|disable|reset)", "admin")
-def admin_user(req: Request, uid: str, act: str) -> Response:
-    user = req.conn.execute("SELECT * FROM users WHERE id = ?", (int(uid),)).fetchone()
-    if user is None:
-        return Response(page(req, "Not found", "<p>No such user.</p>"), 404)
-    if act == "reset":
-        password = new_password()
-        db.set_password(req.conn, user["id"], password)
-        return password_shown(req, user["name"], password, "New password")
-    if user["id"] == req.user["id"]:
-        return admin(req, "You cannot disable yourself.")
-    req.conn.execute("UPDATE users SET disabled = ? WHERE id = ?", (int(act == "disable"), user["id"]))
-    if act == "disable":
-        req.conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
-    return redirect("/admin?msg=%sd" % act)
 
 
 # ── The console API ─────────────────────────────────────────────────────────
@@ -756,7 +696,15 @@ def api_pair(req: Request) -> Response:
     token, user = db.pair(req.conn, str(body.get("code", "")), name or "3DS")
     if token is None:
         return api_error(403, "that code is wrong, used or expired")
+    publish_linked(req, token)
     return json_resp({"token": token, "user": user})
+
+
+def publish_linked(req: Request, token: str) -> None:
+    """A console or PC just traded its code: the account page that made the code shows it at once."""
+    d = db.device_for_token(req.conn, token)
+    if d is not None:
+        publish("console", _to=d["user_id"], action="linked", device_id=d["id"], console_name=d["console_name"])
 
 
 @route("POST", r"/api/pair2")
@@ -770,6 +718,7 @@ def api_pair_signed(req: Request) -> Response:
     server_pub, token, user = db.pair_signed(req.conn, pub, str(body.get("proof", "")).lower(), name or "3DS")
     if token is None:
         return api_error(403, "that code is wrong, used or expired")
+    publish_linked(req, token)
     return json_resp({"pub": server_pub, "user": user, "confirm": signing.pair_confirm(token, pub, server_pub, user)})
 
 
@@ -787,6 +736,7 @@ def api_me_name(req: Request) -> Response:
     if db.set_display_name(req.conn, req.device["user_id"], str(req.json().get("name", ""))) is None:
         return api_error(400, "names are letters, digits, spaces, dots, dashes and underscores, up to 16")
     db.bump_rev(req.conn)
+    publish("name")
     return api_me(req)
 
 
@@ -801,6 +751,9 @@ def api_upload(req: Request, key: str) -> Response:
     except editfile.EditError as err:
         return api_error(400, str(err))
     vid, current, duplicate = db.add_version(req.conn, edit, req.device["user_id"], req.device["id"])
+    if not duplicate:
+        who = req.conn.execute("SELECT * FROM users WHERE id = ?", (req.device["user_id"],)).fetchone()
+        publish("upload", key=key, version_id=vid, current=current, who=db.shown_name(who), name=CFG.name(key))
     return json_resp({"key": key, "version_id": vid, "current": current, "duplicate": duplicate,
                       "sha256": edit.sha256}, 200 if duplicate else 201)
 
@@ -848,6 +801,7 @@ def api_votes(req: Request, key: str) -> Response:
     err = db.set_votes(req.conn, _voter(req), key, ids)
     if err is not None:
         return api_error(400, err)
+    publish("vote", key=key)
     return json_resp(_versions_json(req, key))
 
 
@@ -860,6 +814,7 @@ def api_delete_version(req: Request, vid: str) -> Response:
     if row["user_id"] != req.device["user_id"] and req.device["role"] != "admin":
         return api_error(403, "only its uploader can delete a version")
     db.delete_version(req.conn, int(vid))
+    publish("delete", key=row["mon_key"], version_id=int(vid))
     return json_resp(_versions_json(req, row["mon_key"]))
 
 
@@ -909,6 +864,13 @@ def api_mons(req: Request) -> Response:
                       "items": [{"key": r["mon_key"], "name": CFG.name(r["mon_key"]), "current": r["version_id"],
                                  "pinned": bool(r["pinned"]), "final": bool(r["final"]), "author": r["author"],
                                  "versions": r["n"], "mine": r["mine"]} for r in rows]})
+
+
+@route("GET", r"/api/focus", "device")
+def api_focus(req: Request) -> Response:
+    """Follow the web: {"key", "version_ids", "seq", "at"}, what the account's web app shows (key null when
+    it has shown nothing for ten minutes). `seq` moves on with every change; consoles act on a new one."""
+    return json_resp(FOCUS.get(req.device["user_id"]))
 
 
 @route("GET", r"/api/rev", "any")
@@ -1018,11 +980,13 @@ class Handler(BaseHTTPRequestHandler):
                     else Response(b"Something went wrong on the server.", 500, "text/plain"))
         finally:
             conn.close()
+        if isinstance(resp, Stream):
+            return self.stream(resp, req, started)
         self.send(resp, head, started, req)
 
     def handle_request(self, req: Request) -> Response:
         cookie = SimpleCookie(req.headers.get("Cookie", ""))
-        if COOKIE in cookie:
+        if COOKIE in cookie and not req.plain_edge:  # a session cookie seen in the clear is not taken
             req.session_token = cookie[COOKIE].value
             req.user, req.csrf = db.session_user(req.conn, req.session_token)
         auth = req.headers.get("Authorization", "")
@@ -1046,7 +1010,9 @@ class Handler(BaseHTTPRequestHandler):
             return Response(b"method not allowed", 405, "text/plain")
         if req.path.startswith("/api/"):
             return api_error(404, "no such endpoint")
-        return Response(page(req, "Not found", "<p>There is nothing here.</p>"), 404)
+        if req.method == "GET" and not req.path.startswith(("/img/", "/dl/", "/assets/")):
+            return app_page(req)
+        return Response(b"not found", 404, "text/plain")
 
     def send(self, resp: Response, head: bool, started: float, req: Optional[Request] = None) -> None:
         self.send_response(resp.status)
@@ -1056,8 +1022,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         if req is not None and req.sign_key is not None:
             self.send_header(signing.SIGN_HEADER, signing.reply_mac(req.sign_key, req.sign, resp.status, resp.body))
+        own = {k.lower() for k, _ in resp.headers}
         for k, v in SECURITY_HEADERS:
-            self.send_header(k, v)
+            if k.lower() not in own:
+                self.send_header(k, v)
         if resp.ctype.startswith("text/html"):
             self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -1069,6 +1037,49 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("%s %s %s %s %d %dB %dms %s\n" % (
             time.strftime("%H:%M:%S"), self.client_ip(), self.command, urlsplit(self.path).path, resp.status,
             len(resp.body), (time.time() - started) * 1000, who))
+
+    def stream(self, s: Stream, req: Request, started: float) -> None:
+        """The live channel: Server-Sent Events, chunked, until the browser goes or half an hour passes
+        (it then reconnects by itself). A comment every 15 s keeps Cloudflare from closing it."""
+        if not events.BUS.open_stream():
+            return self.send(api_error(503, "too many live pages open; try again later"), False, started, req)
+        self.close_connection = True
+        sys.stderr.write("%s %s GET /api/web/events stream opened %s\n" % (
+            time.strftime("%H:%M:%S"), self.client_ip(), req.user["name"]))
+
+        def write(text: str) -> None:
+            data = text.encode()
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
+            self.wfile.flush()
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Transfer-Encoding", "chunked")
+            for k, v in SECURITY_HEADERS:
+                self.send_header(k, v)
+            self.end_headers()
+            last = events.BUS.last_id
+            write("retry: 3000\ndata: %s\n\n" % json.dumps({"type": "hello", "rev": s.rev}))
+            deadline = time.time() + 30 * 60
+            while time.time() < deadline:
+                fresh = events.BUS.wait(last, 15)
+                if not fresh:
+                    write(": ping\n\n")
+                    continue
+                for i, ev in fresh:
+                    last = i
+                    if ev.get("_to", s.user_id) != s.user_id:
+                        continue
+                    shown = {k: v for k, v in ev.items() if k != "_to"}
+                    write("id: %d\ndata: %s\n\n" % (i, json.dumps(shown, separators=(",", ":"))))
+            self.wfile.write(b"0\r\n\r\n")
+        except OSError:  # the browser went away
+            pass
+        finally:
+            events.BUS.close_stream()
 
     def log_message(self, fmt, *args):  # the default log line is replaced by send()'s
         pass

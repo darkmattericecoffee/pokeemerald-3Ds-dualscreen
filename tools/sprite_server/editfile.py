@@ -207,13 +207,15 @@ def render(edit: Optional[Edit], sprite: Optional[Sprite], mode: str = "tint", f
                     out[o:o + 4] = bytes((*pic, 255))
                 continue
             p = edit.plane(frame, x, y)
-            if p == NONE:
+            # The game draws only the picture's own pixels: planes often cover the whole 64x64,
+            # so with the picture known, its clear pixels (index 0) stay clear in every mode.
+            if p == NONE or (sprite is not None and pic is None):
                 continue
             if mode == "layer":
                 if p != layer:
                     continue
                 rgb = pic if pic is not None else colours[p]
-            elif mode == "planes" or pic is None:
+            elif mode == "planes" or pic is None:  # pic is None only without the picture
                 rgb = colours[p]
             else:
                 rgb = _mix(pic, colours[p], 0.45)
