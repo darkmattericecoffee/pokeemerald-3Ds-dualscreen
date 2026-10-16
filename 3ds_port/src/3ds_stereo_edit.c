@@ -2194,13 +2194,19 @@ static void OptionAct(int row, bool rightHalf)
  */
 #define VB_BAR_H 23
 #define VB_COL_W 106
-#define VB_BTN_W 102
-#define VB_FRONT_Y 25
-#define VB_BACK_Y 115
-#define VB_BTN_H 88
-#define VB_BAR_Y 206
+/* A column's card (dark, wrapping its front's and its back's button, so
+ * the two read as one person's), and the buttons inset in it. */
+#define VB_CARD_W 102
+#define VB_CARD_Y 24
+#define VB_CARD_H 182
+#define VB_BTN_X 3
+#define VB_BTN_W 96
+#define VB_FRONT_Y 27
+#define VB_BACK_Y 116
+#define VB_BTN_H 86
+#define VB_BAR_Y 208
 #define VB_BAR_TH 8
-#define VB_ROW_Y 217
+#define VB_ROW_Y 218
 #define VB_ROW_H 21
 #define VB_BACK_W 46
 #define VB_FOLLOW_W 92
@@ -2294,6 +2300,30 @@ static void BuildColumns(void)
             sE.colV[n][1] = b->v[j].version;
             ++n;
         }
+    /* This account's own column first, everyone else's after it in the
+     * lists' order (the most votes first). */
+    for (unsigned c = 0; c < n; ++c)
+    {
+        const CtrOnlineVersion *fv = SideVersion(0, sE.colV[c][0]), *bv = SideVersion(1, sE.colV[c][1]);
+
+        if (c > 0 && ((fv && fv->mine) || (bv && bv->mine)))
+        {
+            uint32_t mine[2] = {sE.colV[c][0], sE.colV[c][1]};
+            unsigned at = 0;
+
+            /* After any own columns already moved to the front. */
+            while (at < c)
+            {
+                const CtrOnlineVersion *af = SideVersion(0, sE.colV[at][0]), *ab = SideVersion(1, sE.colV[at][1]);
+
+                if (!((af && af->mine) || (ab && ab->mine))) break;
+                ++at;
+            }
+            memmove(sE.colV[at + 1], sE.colV[at], (c - at) * sizeof(sE.colV[0]));
+            sE.colV[at][0] = mine[0];
+            sE.colV[at][1] = mine[1];
+        }
+    }
     sE.colCount = n;
     BuildView();
     /* The cursor stays on the version it was on. */
@@ -2960,7 +2990,7 @@ static bool VbCellAt(int x, int y, unsigned *column, unsigned *side)
     float at = (x - 2) / (float)VB_COL_W + sE.scroll;
     int k = (int)floorf(at), inX = (int)((at - k) * VB_COL_W);
 
-    if (k < 0 || k >= (int)sE.viewCount || inX >= VB_BTN_W) return false;
+    if (k < 0 || k >= (int)sE.viewCount || inX < VB_BTN_X || inX >= VB_BTN_X + VB_BTN_W) return false;
     if (y >= VB_FRONT_Y && y < VB_FRONT_Y + VB_BTN_H) *side = 0;
     else if (y >= VB_BACK_Y && y < VB_BACK_Y + VB_BTN_H && sE.sideId[1]) *side = 1;
     else return false;
@@ -3932,12 +3962,12 @@ static void DrawVoteCell(unsigned k, unsigned side, int x)
     snprintf(line, sizeof(line), "%u VOTE%s%s", v->votes, v->votes == 1 ? "" : "S", v->current ? " TOP" : "");
     if (voted)
     {
-        DrawStar(x + 5 + o, y + 65 + o, true);
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 18 + o, y + 64 + o, CTR_DRAW_DARK);
+        DrawStar(x + 5 + o, y + 64 + o, true);
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 18 + o, y + 63 + o, CTR_DRAW_DARK);
     }
-    else CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, x + VB_BTN_W / 2 + o, y + 64 + o, CTR_DRAW_DARK);
+    else CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, x + VB_BTN_W / 2 + o, y + 63 + o, CTR_DRAW_DARK);
     snprintf(line, sizeof(line), "%s", v->mine ? "YOU" : v->author[0] ? v->author : "?");
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, x + VB_BTN_W / 2 + o, y + 75 + o, CTR_DRAW_BLUE);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, x + VB_BTN_W / 2 + o, y + 74 + o, CTR_DRAW_BLUE);
     if (sE.sideCard[side] == version)
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "ON CARD", x + 4 + o, y + 52 + o, CTR_DRAW_RED);
 }
@@ -3979,9 +4009,15 @@ static void DrawVersions(void)
     for (int k = first < 0 ? 0 : first; k < first + CTR_STRIP_VISIBLE + 1 && k < (int)sE.viewCount; ++k)
     {
         int x = 2 + (int)roundf((k - sE.scroll) * VB_COL_W);
+        const unsigned c = sE.cols[k];
+        const CtrOnlineVersion *fv = SideVersion(0, sE.colV[c][0]), *bv = SideVersion(1, sE.colV[c][1]);
+        /* The card: dark green, dark blue for this account's own. */
+        const uint16_t card = (fv && fv->mine) || (bv && bv->mine) ? Rgb(3, 14, 16) : Rgb(5, 17, 8);
 
-        DrawVoteCell((unsigned)k, 0, x);
-        if (sE.sideId[1]) DrawVoteCell((unsigned)k, 1, x);
+        CtrBottomDraw_Fill(x + 1, VB_CARD_Y, VB_CARD_W - 2, VB_CARD_H, card);
+        CtrBottomDraw_Fill(x, VB_CARD_Y + 1, VB_CARD_W, VB_CARD_H - 2, card);
+        DrawVoteCell((unsigned)k, 0, x + VB_BTN_X);
+        if (sE.sideId[1]) DrawVoteCell((unsigned)k, 1, x + VB_BTN_X);
     }
     /* The scrollbar. */
     CtrBottomDraw_Fill(4, VB_BAR_Y, W - 8, VB_BAR_TH, Rgb(14, 28, 16));
