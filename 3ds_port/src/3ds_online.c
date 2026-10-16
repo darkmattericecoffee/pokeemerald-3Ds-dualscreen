@@ -1472,7 +1472,7 @@ static void DoFocus(const Link *link)
     Reply reply;
     CtrOnlineFocus focus;
     char key[16] = "";
-    long seq = 0, ids[CTR_ONLINE_MAX_VERSIONS];
+    long seq = 0, selected = 0, ids[CTR_ONLINE_MAX_VERSIONS];
 
     memset(&focus, 0, sizeof(focus));
     if (!Http(link, HTTPC_METHOD_GET, "/api/focus", NULL, 0, NULL, &reply) || reply.status != 200)
@@ -1497,10 +1497,12 @@ static void DoFocus(const Link *link)
         for (unsigned i = 0; i < focus.count; ++i) focus.versions[i] = (uint32_t)ids[i];
     }
     focus.seq = (uint32_t)seq;
+    if (focus.id && JsonNumber((const char *)reply.body, "selected", &selected) && selected > 0) focus.selected = (uint32_t)selected;
     focus.ok = true;
     Lock();
-    if (sFocus.seq != focus.seq || !sFocus.ok) CtrLog_Write(CTR_LOG_FS, "online: the web shows %s (seq %ld, %u picked)",
-                                                            key[0] ? key : "nothing", seq, focus.count);
+    if (sFocus.seq != focus.seq || !sFocus.ok) CtrLog_Write(CTR_LOG_FS, "online: the web shows %s (seq %ld, %u picked, version %lu chosen)",
+                                                            key[0] ? key : "nothing", seq, focus.count,
+                                                            (unsigned long)focus.selected);
     sFocus = focus;
     ++sFocusSerial;
     Unlock();

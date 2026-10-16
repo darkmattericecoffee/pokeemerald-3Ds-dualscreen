@@ -149,7 +149,8 @@ bool CtrOnline_HasFile(uint32_t version);
 /*
  * Follow the web: what this account's web app shows (GET /api/focus), the
  * picture (id 0: nothing in the last ten minutes) and the versions picked
- * there for comparing (none: all of them); `seq` moves on with each change.
+ * there for comparing (none: all of them), the one it chose to look at
+ * (selected); `seq` moves on with each change and with each "Show on 3DS".
  * FetchFocus asks quietly (no status line); Focus returns a serial that
  * moves on with every answer (ok false when the last ask failed).
  */
@@ -159,6 +160,8 @@ typedef struct
     uint16_t id;
     uint8_t count;
     uint32_t seq;
+    /* The version the web page chose (0 none): the console shows it. */
+    uint32_t selected;
     uint32_t versions[CTR_ONLINE_MAX_VERSIONS];
 } CtrOnlineFocus;
 bool CtrOnline_FetchFocus(void);

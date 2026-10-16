@@ -2405,6 +2405,38 @@ static void CloseVersions(void)
     sE.dirtyDraw = true;
 }
 
+/* CREATE: no upload of that side (none at all, or none in that column):
+ * the editor on it, to make one. */
+static void CreateSide(unsigned side)
+{
+    uint16_t id = side <= 1 ? sE.sideId[side] : 0;
+    int index;
+
+    if (id == 0) return;
+    sE.versionsFromDex = false;
+    CloseVersions();
+    if (id != sE.id && (index = CtrStereoMon_GalleryIndexOf(id)) >= 0)
+    {
+        Save(true);
+        sE.pl = NULL;
+        sE.id = 0;
+        CtrStereoMonGame_SelectIndex((unsigned)index);
+    }
+    Toast(side ? "CREATE: PAINT THE BACK'S PLANES" : "CREATE: PAINT THE FRONT'S PLANES");
+}
+
+/* The CREATE buttons when the server has nothing of the picture: one a
+ * side, side by side (just the one for a single picture). */
+#define VB_NEW_Y 52
+#define VB_NEW_H 110
+#define VB_NEW_W 120
+static int VbCreateX(unsigned side)
+{
+    return sE.sideId[1] == 0 ? (W - VB_NEW_W) / 2 : side ? W / 2 + 8 : W / 2 - 8 - VB_NEW_W;
+}
+
+static bool VbListsIn(void) { return sE.sideLoaded[0] && (sE.sideId[1] == 0 || sE.sideLoaded[1]); }
+
 /* The cursor's cell: its column's version of the side, 0 for none. */
 static uint32_t CursorVersion(void)
 {
@@ -2415,7 +2447,12 @@ static uint32_t CursorVersion(void)
 /* The strip slides (smoothly, VersionsFrame) to show the cursor's column. */
 static void CursorTo(int column, unsigned side)
 {
-    if (sE.viewCount == 0) return;
+    if (sE.viewCount == 0)
+    {
+        if (side <= 1 && (side == 0 || sE.sideId[1])) sE.curSide = (uint8_t)side;
+        sE.dirtyDraw = true;
+        return;
+    }
     if (column < 0) column = 0;
     if (column >= (int)sE.viewCount) column = (int)sE.viewCount - 1;
     sE.curCol = (unsigned)column;
@@ -2596,6 +2633,40 @@ static void ApplyFocus(const CtrOnlineFocus *focus)
         return;
     }
     BuildView();
+    /* The version the web page chose (its card, View, Show on 3DS): the
+     * cursor on it and the strip slid to it; shown even when it is not
+     * among the picks. Else the first pick. */
+    if (focus->selected)
+    {
+        int at = -1;
+        unsigned side = 0;
+
+        for (int pass = 0; pass < 2 && at < 0; ++pass)
+        {
+            for (unsigned k = 0; k < sE.viewCount && at < 0; ++k)
+                for (unsigned d = 0; d < 2; ++d)
+                    if (sE.colV[sE.cols[k]][d] == focus->selected)
+                    {
+                        at = (int)k;
+                        side = d;
+                    }
+            if (at < 0 && sE.webOnly)
+            {
+                sE.webOnly = false;
+                BuildView();
+            }
+            else break;
+        }
+        if (at >= 0)
+        {
+            CursorTo(at, side);
+            snprintf(line, sizeof(line), "THE WEB SHOWS VERSION %lu", (unsigned long)focus->selected);
+        }
+        else snprintf(line, sizeof(line), "VERSION %lu IS NOT HERE YET", (unsigned long)focus->selected);
+        Toast(line);
+        sE.labelsDirty = true;
+        return;
+    }
     for (unsigned k = 0; k < sE.viewCount; ++k)
         for (unsigned d = 0; d < 2; ++d)
             if (WebPicked(sE.colV[sE.cols[k]][d]))
@@ -2846,6 +2917,8 @@ static void VersionsKeysPad(unsigned down, unsigned pad)
     else if (pad & CTR_KEY_RIGHT) CursorTo((int)sE.curCol + 1, sE.curSide);
     else if (pad & CTR_KEY_UP) CursorTo((int)sE.curCol, 0);
     else if (pad & CTR_KEY_DOWN) CursorTo((int)sE.curCol, 1);
+    else if ((down & CTR_KEY_A) && sE.viewCount == 0 && VbListsIn()) CreateSide(sE.curSide);
+    else if ((down & CTR_KEY_A) && sE.viewCount && CursorVersion() == 0) CreateSide(sE.curSide);
     else if (down & CTR_KEY_A) VoteVersion(sE.curSide, CursorVersion());
     else if (down & CTR_KEY_X) PutOnCard();
     else if (down & CTR_KEY_Y) ToggleFollow();
@@ -2929,7 +3002,13 @@ static void TouchVersions(const CtrInput *in)
             column = (unsigned)sE.pressCol;
             side = sE.pressSide;
             CursorTo((int)column, side);
-            VoteVersion(side, sE.colV[sE.cols[column]][side]);
+            if (sE.colV[sE.cols[column]][side]) VoteVersion(side, sE.colV[sE.cols[column]][side]);
+            else
+            {
+                sE.stripTouch = false;
+                CreateSide(side);
+                return;
+            }
         }
         else
         {
@@ -2978,7 +3057,17 @@ static void TouchVersions(const CtrInput *in)
         sE.touchX0 = x;
         sE.scrollAtTouch = sE.scroll;
         sE.pressCol = -1;
-        if (VbCellAt(x, y, &column, &side) && sE.colV[sE.cols[column]][side])
+        if (sE.viewCount == 0 && VbListsIn())
+        {
+            for (unsigned d = 0; d < 2; ++d)
+                if (sE.sideId[d] && x >= VbCreateX(d) && x < VbCreateX(d) + VB_NEW_W && y >= VB_NEW_Y && y < VB_NEW_Y + VB_NEW_H)
+                {
+                    sE.stripTouch = false;
+                    CreateSide(d);
+                }
+            return;
+        }
+        if (VbCellAt(x, y, &column, &side))
         {
             sE.pressCol = (int)column;
             sE.pressSide = (uint8_t)side;
@@ -3810,9 +3899,18 @@ static void DrawVoteCell(unsigned k, unsigned side, int x)
 
     if (v == NULL)
     {
-        CtrBottomDraw_Plate(x, y, VB_BTN_W, VB_BTN_H, 2, false);
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, side ? "NO BACK" : "NO FRONT", x + VB_BTN_W / 2, y + VB_BTN_H / 2 - 6,
+        /* No upload of this side here: CREATE one (the editor on it). */
+        CtrBottomDraw_Plate(x, y, VB_BTN_W, VB_BTN_H, 2, pressing);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "CREATE", x + VB_BTN_W / 2 + o, y + VB_BTN_H / 2 - 12 + o, CTR_DRAW_DARK);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, side ? "A BACK" : "A FRONT", x + VB_BTN_W / 2 + o, y + VB_BTN_H / 2 + o,
                                   CTR_DRAW_OFF);
+        if (cursor)
+        {
+            CtrBottomDraw_Fill(x - 1, y - 1, VB_BTN_W + 2, 2, Rgb(4, 24, 28));
+            CtrBottomDraw_Fill(x - 1, y + VB_BTN_H - 1, VB_BTN_W + 2, 2, Rgb(4, 24, 28));
+            CtrBottomDraw_Fill(x - 1, y + 1, 2, VB_BTN_H - 2, Rgb(4, 24, 28));
+            CtrBottomDraw_Fill(x + VB_BTN_W - 1, y + 1, 2, VB_BTN_H - 2, Rgb(4, 24, 28));
+        }
         return;
     }
     /* Pressed in while voted for (gold), the cursor's a blue frame around. */
@@ -3862,10 +3960,22 @@ static void DrawVersions(void)
     else snprintf(line, sizeof(line), "%s  %u UPLOAD%s", name, sE.colCount, sE.colCount == 1 ? "" : "S");
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, (2 + VB_BACK_W + W - 2 - VB_FOLLOW_W) / 2, 6, CTR_DRAW_DARK);
     /* The columns in view: three, four while one slides half out. */
-    if (sE.viewCount == 0)
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL,
-                                  sE.sideLoaded[0] || sE.sideLoaded[1] ? "NONE ON THE SERVER YET" : "ASKING THE SERVER...", W / 2,
-                                  100, CTR_DRAW_DARK);
+    if (sE.viewCount == 0 && !VbListsIn())
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "ASKING THE SERVER...", W / 2, 100, CTR_DRAW_DARK);
+    else if (sE.viewCount == 0)
+        /* Nothing uploaded yet: CREATE the first, front or back. */
+        for (unsigned d = 0; d < 2; ++d)
+        {
+            int bx = VbCreateX(d);
+
+            if (sE.sideId[d] == 0) continue;
+            CtrBottomDraw_Plate(bx, VB_NEW_Y, VB_NEW_W, VB_NEW_H, d == sE.curSide ? 1 : 0, false);
+            DrawPictureAt(CtrStereoMon_SidePicture(sE.sideId[d]), bx + (VB_NEW_W - CTR_STEREO_MON_DIM) / 2, VB_NEW_Y + 6);
+            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, sE.sideId[1] == 0 ? "CREATE" : d ? "CREATE BACK" : "CREATE FRONT",
+                                      bx + VB_NEW_W / 2, VB_NEW_Y + VB_NEW_H - 34, d == sE.curSide ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "NO UPLOAD YET", bx + VB_NEW_W / 2, VB_NEW_Y + VB_NEW_H - 20,
+                                      d == sE.curSide ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
+        }
     for (int k = first < 0 ? 0 : first; k < first + CTR_STRIP_VISIBLE + 1 && k < (int)sE.viewCount; ++k)
     {
         int x = 2 + (int)roundf((k - sE.scroll) * VB_COL_W);
@@ -3924,10 +4034,11 @@ static void StripLabels(void)
     if (sE.viewCount)
         snprintf(text[CTR_STRIP_PAGE], 40, "%s%u-%u OF %u%s", sE.webOnly && sE.viewCount != sE.colCount ? "WEB " : "", first + 1,
                  last, sE.viewCount, sE.follow ? (sE.focusSeen.ok ? "  FOLLOWING" : "  WEB?") : "");
+    else if (VbListsIn()) snprintf(text[CTR_STRIP_PAGE], 40, "NO UPLOAD YET - CREATE ONE%s", sE.follow ? "  FOLLOWING" : "");
     else if (sE.follow) snprintf(text[CTR_STRIP_PAGE], 40, "FOLLOWING THE WEB");
     snprintf(text[CTR_STRIP_FINAL], 40, "FINAL");
     snprintf(text[CTR_STRIP_WEB], 40, "WEB");
-    snprintf(text[CTR_STRIP_EMPTY], 40, "NONE SENT");
+    snprintf(text[CTR_STRIP_EMPTY], 40, "NO UPLOAD");
     snprintf(text[CTR_STRIP_LOADING], 40, "LOADING...");
     for (unsigned k = first; slots && k < first + slots && k < sE.viewCount; ++k)
     {
@@ -4209,7 +4320,7 @@ static void MakeHelpSheet(void)
         snprintf(text[CTR_HELP_PAGE], 40, "LOOKING AT THE %s", sE.side ? "BACK" : "FRONT");
         text[CTR_HELP_VERSION][0] = text[CTR_HELP_VERSION_BY][0] = text[CTR_HELP_VERSION_VOTES][0] = 0;
         if (!sE.sideLoaded[sE.side]) snprintf(text[CTR_HELP_VERSION], 40, "ASKING THE SERVER...");
-        else if (list->count == 0) snprintf(text[CTR_HELP_VERSION], 40, "NONE ON THE SERVER YET");
+        else if (list->count == 0) snprintf(text[CTR_HELP_VERSION], 40, "NO UPLOAD YET");
         else if (at < 0)
         {
             snprintf(text[CTR_HELP_VERSION], 40, "%s", CtrStereoMon_HasEdit(sE.sideId[sE.side]) ? "YOUR OWN EDIT" : "THE GAME'S PLANES");
