@@ -62,14 +62,6 @@ static bool sPictureOk[2];
 static Half sHalves[CTR_STRIP_SLOTS_MAX][2];
 static Tex3DS_SubTexture sTiles[CTR_STRIP_SLOTS_MAX * TILES_PER_SLOT];
 static unsigned sVersion = 1, sFilesSerial;
-/* Each version's sweet spot once its file was read (0 none in it). */
-#define SWEETS 64
-static struct
-{
-    uint32_t version;
-    uint8_t sweet;
-} sSweets[SWEETS];
-static unsigned sSweetNext;
 static uint8_t sFile[32 * 1024];
 
 /* The label sheet: 256x128 LA4, 18 cells of 128x14, made once and kept. */
@@ -166,25 +158,6 @@ void CtrStereoStrip_SetCursor(unsigned column, unsigned side, bool shown)
     sCursorShown = shown;
 }
 
-static void LearnSweet(uint32_t version, unsigned sweet);
-static unsigned SweetInFile(const uint8_t *file, uint32_t size);
-
-/* Read from the version's file the first time it is asked for. */
-unsigned CtrStereoStrip_SweetOf(uint32_t version)
-{
-    static uint8_t file[32 * 1024];
-    uint32_t size = 0;
-    unsigned sweet;
-
-    if (version == 0) return 0;
-    for (unsigned i = 0; i < SWEETS; ++i)
-        if (sSweets[i].version == version) return sSweets[i].sweet;
-    if (!CtrOnline_FileCopy(version, file, sizeof(file), &size)) return 0;
-    sweet = SweetInFile(file, size);
-    LearnSweet(version, sweet);
-    return sweet;
-}
-
 void CtrStereoStrip_Label(unsigned cell, const uint8_t *alpha, unsigned width, unsigned column)
 {
     unsigned cx, cy;
@@ -221,32 +194,6 @@ unsigned CtrStereoStrip_Version(void) { return sOpen ? sVersion : 0; }
 
 /* ── Composing ───────────────────────────────────────────────────────── */
 
-static void LearnSweet(uint32_t version, unsigned sweet)
-{
-    for (unsigned i = 0; i < SWEETS; ++i)
-        if (sSweets[i].version == version)
-        {
-            sSweets[i].sweet = (uint8_t)sweet;
-            return;
-        }
-    sSweets[sSweetNext].version = version;
-    sSweets[sSweetNext].sweet = (uint8_t)sweet;
-    sSweetNext = (sSweetNext + 1) % SWEETS;
-}
-
-/* The sweet spot in an edit file's trailer, 0 for none. */
-static unsigned SweetInFile(const uint8_t *file, uint32_t size)
-{
-    const uint8_t *t;
-    unsigned frames;
-
-    if (size < 16 || memcmp(file, CTR_STEREO_EDIT_MAGIC, 8) != 0) return 0;
-    frames = file[11];
-    if (size < 16 + frames * (DIM * DIM / 2) + 32) return 0;
-    t = file + 16 + frames * (DIM * DIM / 2);
-    return memcmp(t, "EM3DSMD1", 8) == 0 && t[9] <= CTR_SWEET_SPOTS ? t[9] : 0;
-}
-
 /* A version's planes (its file from the online cache) into a slot's half:
  * false while the file is not there, or when it is not this picture's. */
 static bool ComposeHalf(unsigned slot, unsigned side, uint32_t version)
@@ -265,7 +212,6 @@ static bool ComposeHalf(unsigned slot, unsigned side, uint32_t version)
         return false;
     /* Deoxys's form is its second frame of planes (as the viewer has it). */
     if ((sIds[side] & 0x3FFF) == DEOXYS_NATIONAL && frames > 1) frame = 1;
-    LearnSweet(version, SweetInFile(sFile, size));
     memset(&header, 0, sizeof(header));
     header.count = 1;
     header.planes = (uint8_t)planes;
@@ -372,12 +318,12 @@ bool CtrStereoStrip_Pending(void)
 
 /*
  * The depths as the viewer's (3ds_stereo_mon.c StackShift and on): the
- * scene's (BATTLE BACK, BATTLE MONS, PLANES SIT) and each picture's own
- * sweet spot (CtrStereoDepths_Spread).
+ * scene's (BATTLE BACK, BATTLE MONS, PLANES SIT) and the planes' own, the
+ * same for every picture (CTR_DEPTH_PLANES_PX).
  */
-static float StackShift(float sign, float slider, unsigned sweet, bool back)
+static float StackShift(float sign, float slider, bool back)
 {
-    return sign * slider * CtrStereoDepths_Spread(sweet) * CTR_BATTLE_ZOOM / DEPTH_SPAN * (back ? BACK_DEPTH : 1.0f);
+    return sign * slider * CTR_DEPTH_PLANES_PX * CTR_BATTLE_ZOOM / DEPTH_SPAN * (back ? BACK_DEPTH : 1.0f);
 }
 static float PictureShift(float sign, float slider, bool back) { return back ? 0.0f : -sign * slider * CtrStereoDepths_Get().mon; }
 static float Pivot(void) { return CtrStereoDepths_Get().pivot; }
@@ -440,9 +386,7 @@ static void DrawHalf(unsigned column, unsigned side, float cx, float sign, float
     }
     if (h->ready && h->column == (int)column && h->version == cell->version)
     {
-        /* The server's word on its sweet spot, else its file's trailer. */
-        const unsigned sweet = cell->sweet ? cell->sweet : CtrStereoStrip_SweetOf(cell->version);
-        const float shift = StackShift(sign, slider, sweet, back);
+        const float shift = StackShift(sign, slider, back);
         const float pivot = Pivot() * (GROUPS - 1), spacing = DEPTH_SPAN / (float)(GROUPS - 1);
         const float left = cx - SIZE / 2 + PictureShift(sign, slider, back);
 
@@ -454,7 +398,7 @@ static void DrawHalf(unsigned column, unsigned side, float cx, float sign, float
     if (cell->voted) Frame(cx - COL_W / 2 + 4, top - 1, COL_W - 8, SIZE + 2, 1, gold);
     if (sCursorShown && column == sCursorColumn && side == sCursorSide)
         Frame(cx - COL_W / 2 + 2, top - 3, COL_W - 4, SIZE + 6, 2, C2D_Color32(80, 230, 240, 255));
-    /* Under it: its votes and depth, FINAL after them. */
+    /* Under it: its votes, FINAL after them. */
     SlotLabel(slot, 1 + side, column, cx, lineY, cell->voted ? gold : dim, &right);
     if (cell->final && sLabelColumn[CTR_STRIP_SLOT_LABEL(slot, 1 + side)] == (int)column)
         Label(CTR_STRIP_FINAL, right + 3, lineY, C2D_Color32(120, 240, 120, 255));

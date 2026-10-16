@@ -77,10 +77,9 @@ typedef struct
     char author[17];
     uint16_t revision, votes;
     bool final, current, favourite, onCard, mine;
-    /* When it was uploaded (unix seconds), and its depth sweet spot when
-     * the server says (0: not said; the file's trailer has it too). */
+    /* When it was uploaded (unix seconds). The server's "depth" is only
+     * its record of the console's; nothing here reads it. */
     uint32_t uploaded;
-    uint8_t depth;
 } CtrOnlineVersion;
 typedef struct
 {

@@ -53,7 +53,7 @@ static const char *const sVoxelDepths[] = {"25%", "50%", "75%", "100%", "125%", 
  * CtrStereoDepths, numbered as listed here): the scenery behind the screen,
  * the opponent's sprite behind it (the player's is on the screen), and where
  * a picture's planes stand against the sprite's depth. How deep the planes
- * go is each picture's own sweet spot, chosen in the editor. */
+ * go is the same for every picture (CTR_DEPTH_PLANES_PX). */
 static const char *const sBattleBacks[] = {"2PX", "3PX", "4PX", "6PX", "8PX", "12PX"};
 static const char *const sBattleMons[] = {"0PX", "1PX", "2PX", "3PX", "4PX"};
 static const char *const sPlanePivots[] = {CTR_TEXT("BEHIND", "DETRÁS", "DERRIÈRE", "DIETRO"), CTR_TEXT("AROUND", "ALREDEDOR", "AUTOUR", "INTORNO"), CTR_TEXT("IN FRONT", "DELANTE", "DEVANT", "DAVANTI")};

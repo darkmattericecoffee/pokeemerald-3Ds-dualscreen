@@ -221,7 +221,7 @@ static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
-enum { O_DEPTH, O_CONTROLS, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
+enum { O_CONTROLS, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -2042,8 +2042,7 @@ static void VersionLines(uint16_t id, char *a, char *b, char *c)
 
             /* Numbered oldest first: the newest is the highest. */
             snprintf(a, 40, "VERSION %u OF %u", count - (unsigned)at, count);
-            /* The version is the card's file (CardAt): its sweet spot is the file's. */
-            snprintf(b, 40, "BY %s  DEPTH %u", v->author[0] ? v->author : "?", CtrStereoMon_SweetSpotOf(id));
+            snprintf(b, 40, "BY %s", v->author[0] ? v->author : "?");
             snprintf(c, 40, "%u VOTE%s%s%s", v->votes, v->votes == 1 ? "" : "S", mine ? "  YOUR VOTE" : "",
                      v->current ? "  CURRENT" : "");
         }
@@ -2138,23 +2137,9 @@ static void OnlineFrame(void)
 
 static void OptionAct(int row, bool rightHalf)
 {
+    (void)rightHalf;
     switch (row)
     {
-    case O_DEPTH:
-    {
-        /* The picture's sweet spot (3ds_stereo_mon.h), one down on the left
-         * half, one up on the right, round; kept in the file with the next save. */
-        unsigned sweet = CtrStereoMon_SweetSpot() + (rightHalf ? 1 : CTR_SWEET_SPOTS - 1);
-        char line[32];
-
-        sweet = (sweet - 1) % CTR_SWEET_SPOTS + 1;
-        CtrStereoMon_SetSweetSpot(sweet);
-        sE.dirtyFile = true;
-        sE.helpDirty = true;
-        snprintf(line, sizeof(line), "DEPTH %u %s", sweet, CtrStereoDepths_SweetName(sweet));
-        Toast(line);
-        break;
-    }
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
     case O_COLLAPSE:
         sE.screen = S_EDIT;
@@ -2804,7 +2789,6 @@ static void VersionsFrame(void)
                 cell.final = v->final;
                 cell.mine = v->mine;
                 cell.web = sE.follow && WebPicked(version);
-                if (v->depth >= 1 && v->depth <= CTR_SWEET_SPOTS) cell.sweet = v->depth;
             }
             CtrStereoStrip_SetCell(k, d, &cell);
         }
@@ -3791,23 +3775,10 @@ static void DrawStar(int x, int y, bool on)
 /*
  * The voting view's touch screen: the bar (BACK, the Pokémon and how many
  * versions, FOLLOW WEB), the same three columns as the top screen as big
- * buttons (a version's picture, its votes, who made it, FINAL, its depth;
+ * buttons (a version's picture, its votes, who made it, FINAL;
  * pressed in while this account votes for it), the scrollbar, and UPLOAD
  * MINE, DELETE MINE, PUT ON CARD along the bottom.
  */
-static const char *SweetWord(unsigned sweet)
-{
-    return sweet >= 1 && sweet <= CTR_SWEET_SPOTS ? CtrStereoDepths_SweetName(sweet) : "";
-}
-
-/* A version's sweet spot: the server's word, else its file's. */
-static unsigned SweetOfVersion(const CtrOnlineVersion *v)
-{
-    if (v == NULL) return 0;
-    if (v->depth >= 1 && v->depth <= CTR_SWEET_SPOTS) return v->depth;
-    return CtrStereoStrip_SweetOf(v->version);
-}
-
 /* The game's picture flat at 1x, its clear pixels left. */
 static void DrawPictureAt(const uint16_t *picture, int x, int y)
 {
@@ -3867,7 +3838,7 @@ static void DrawVoteCell(unsigned k, unsigned side, int x)
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 18 + o, y + 64 + o, CTR_DRAW_DARK);
     }
     else CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, x + VB_BTN_W / 2 + o, y + 64 + o, CTR_DRAW_DARK);
-    snprintf(line, sizeof(line), "%s %s", v->mine ? "YOU" : v->author[0] ? v->author : "?", SweetWord(SweetOfVersion(v)));
+    snprintf(line, sizeof(line), "%s", v->mine ? "YOU" : v->author[0] ? v->author : "?");
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, x + VB_BTN_W / 2 + o, y + 75 + o, CTR_DRAW_BLUE);
     if (sE.sideCard[side] == version)
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "ON CARD", x + 4 + o, y + 52 + o, CTR_DRAW_RED);
@@ -3971,8 +3942,8 @@ static void StripLabels(void)
             const CtrOnlineVersion *v = d ? b : f;
 
             if (v)
-                snprintf(text[CTR_STRIP_SLOT_LABEL(s, 1 + d)], 40, "%u VOTE%s%s%s", v->votes, v->votes == 1 ? "" : "S",
-                         SweetOfVersion(v) ? "  " : "", SweetWord(SweetOfVersion(v)));
+                snprintf(text[CTR_STRIP_SLOT_LABEL(s, 1 + d)], 40, "%u VOTE%s%s", v->votes, v->votes == 1 ? "" : "S",
+                         v->current ? "  TOP" : "");
         }
     }
     for (unsigned i = 0; i < CTR_STRIP_LABELS; ++i)
@@ -4011,7 +3982,7 @@ static void StripLabels(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"3D DEPTH", "SHOW CONTROLS", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -4022,21 +3993,7 @@ static void DrawOptions(void)
         CtrBottomDraw_Plate(OPT_X + 8, y, OPT_W - 16, OPT_ROW - 4, 0, false);
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, names[row], OPT_X + 14, y + 5, CTR_DRAW_DARK);
         value[0] = 0;
-        if (row == O_DEPTH)
-        {
-            /* A minus at the left half's end and a plus at the right's:
-             * a tap on either half. (The game font has no plus.) */
-            int mx = OPT_X + OPT_W / 2 - 14, px = OPT_X + OPT_W - 22, cy = y + (OPT_ROW - 4) / 2;
-            unsigned sweet = CtrStereoMon_SweetSpot();
-
-            CtrBottomDraw_Fill(mx, cy - 1, 9, 3, Rgb(24, 6, 6));
-            CtrBottomDraw_Fill(px, cy - 1, 9, 3, Rgb(24, 6, 6));
-            CtrBottomDraw_Fill(px + 3, cy - 4, 3, 9, Rgb(24, 6, 6));
-            snprintf(value, sizeof(value), "%u %s", sweet, CtrStereoDepths_SweetName(sweet));
-            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, value, OPT_X + OPT_W * 3 / 4 - 10, y + 5, CTR_DRAW_RED);
-            value[0] = 0;
-        }
-        else if (row == O_CONTROLS) snprintf(value, sizeof(value), "%s", sE.controls ? "ON" : "OFF");
+        if (row == O_CONTROLS) snprintf(value, sizeof(value), "%s", sE.controls ? "ON" : "OFF");
         if (value[0])
             CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, value,
                                OPT_X + OPT_W - 14 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, value), y + 5, CTR_DRAW_RED);
@@ -4213,7 +4170,7 @@ static void MakeHelpSheet(void)
 {
     static const char *const fixed[] = {"NEXT/PICK PLANE", "OUTLINE", "PAN", "ZOOM", "UNDO/REDO", "ANIMATE", "VIEW",
                                         "FRAME", "SWITCH PKMN", "BATTLE", "BACK", "POKEDEX", "HOLD", "START", "SELECT"};
-    static const char *const views[V_COUNT] = {"", "  LAYERS"};
+    static const char *const views[V_COUNT] = {"", "LAYERS"};
     /* CTR_HELP_C_POKEMON on: the Pokédex's words, or the versions screen's. */
     static const char *const chooser[] = {"POKEMON", "", "PAGE BACK", "NEXT PAGE", "EDIT", "ONLINE", "SEARCH", "FILTER",
                                           "BACK"};
@@ -4230,9 +4187,7 @@ static void MakeHelpSheet(void)
     else if (sE.animate) snprintf(text[CTR_HELP_FRAME], 40, "ANIMATING");
     else snprintf(text[CTR_HELP_FRAME], 40, "FRAME %u OF %u", sE.frame + 1, sE.frames);
     snprintf(text[CTR_HELP_PLANE], 40, "PLANE %u%s", number, number == 1 ? " FRONT" : number == PLANES ? " BACK" : "");
-    /* The picture's sweet spot, drawn as the battle draws it (CtrStereoDepths). */
-    snprintf(text[CTR_HELP_DEPTH], 40, "DEPTH %u %s%s", CtrStereoMon_SweetSpot(),
-             CtrStereoDepths_SweetName(CtrStereoMon_SweetSpot()), views[sE.view]);
+    snprintf(text[CTR_HELP_DEPTH], 40, "%s", views[sE.view]);
     if (meta->revision) snprintf(text[CTR_HELP_REVISION], 40, "R%u %s", meta->revision, meta->author[0] ? meta->author : "?");
     else text[CTR_HELP_REVISION][0] = 0;
     snprintf(text[CTR_HELP_STATE], 40, "%s", meta->finalized ? "FINAL" : sE.dirtyFile || CtrStereoMon_HasEdit(sE.id) ? "EDITED" : "");
@@ -4559,6 +4514,7 @@ bool CtrStereoEdit_BottomFrame(void)
     in = TestInput(in);
     if (sE.pl != NULL) sE.dirtyDraw = true;
 #endif
+    in = TapInput(in);
     /* A version put on the card (the versions screen): the viewer read it
      * again, so the planes are taken up afresh. */
     if (CtrStereoMon_ReloadCount() != sE.reloads)
@@ -4587,7 +4543,7 @@ bool CtrStereoEdit_BottomFrame(void)
     if (sE.screen == S_CHOOSE) { TouchChoose(in); ChoosePad(in); PreviewChosen(); }
     else if (sE.screen == S_KEYBOARD) TouchKeyboard(in);
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
-    else if (sE.screen == S_VERSIONS) { TouchVersions(TapInput(in)); VersionsFrame(); }
+    else if (sE.screen == S_VERSIONS) { TouchVersions(in); VersionsFrame(); }
     else if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) TouchConfirm(in);
     else
     {

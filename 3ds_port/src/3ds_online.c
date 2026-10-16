@@ -1269,7 +1269,6 @@ static bool ParseVersions(uint16_t id, const char *json)
         if (JsonNumber(object, "final", &number)) v->final = number != 0;
         if (JsonNumber(object, "mine", &number)) v->mine = number != 0;
         if (JsonNumber(object, "uploaded_at", &number)) v->uploaded = (uint32_t)number;
-        if (JsonNumber(object, "depth", &number) && number >= 0 && number <= 255) v->depth = (uint8_t)number;
         v->current = v->version == (uint32_t)current;
         for (unsigned f = 0; f < favs; ++f) v->favourite |= (uint32_t)fav[f] == v->version;
         JsonString(object, "sha256", shas[list.count], sizeof(shas[0]));

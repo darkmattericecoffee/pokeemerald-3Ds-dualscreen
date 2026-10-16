@@ -33,7 +33,6 @@
 typedef struct
 {
     uint32_t version; /* 0: this half is empty */
-    uint8_t sweet;    /* its sweet spot as the server says, 0: read from its file */
     bool voted, final, mine, web;
 } CtrStripCell;
 
@@ -50,9 +49,6 @@ void CtrStereoStrip_SetCell(unsigned column, unsigned side, const CtrStripCell *
  * edge); the cursor's cell (it gets a frame). */
 void CtrStereoStrip_SetScroll(float first);
 void CtrStereoStrip_SetCursor(unsigned column, unsigned side, bool shown);
-/* A version's depth sweet spot from its file's trailer (1..3), 0 while its
- * file is not in, or for an older file without one. */
-unsigned CtrStereoStrip_SweetOf(uint32_t version);
 
 /* The label sheet: 128x14 cells, one byte a pixel (0 clear, else ink). */
 #define CTR_STRIP_LABEL_W 128

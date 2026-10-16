@@ -247,22 +247,15 @@ typedef struct { float back, mon, pivot; } CtrStereoDepths;
 #define CTR_DEPTH_PIVOT_CHOICES 3
 CtrStereoDepths CtrStereoDepths_Get(void);
 /*
- * How deep a picture's own planes go is the picture's: one of three sweet
- * spots, chosen in the editor and kept in its edit file's trailer, so it
- * travels with the planes to the server and every console. 1 SHALLOW,
- * 2 STANDARD, 3 DEEP: the stack from its farthest plane to its nearest,
- * in GBA pixels per eye at the slider's top (CTR_BATTLE_ZOOM screen pixels
- * each). A file without one, and the pack's planes, take STANDARD.
+ * How deep every picture's planes go: the stack from its farthest plane to
+ * its nearest, in GBA pixels per eye at the slider's top (CTR_BATTLE_ZOOM
+ * screen pixels each), the same for every picture everywhere (MON PLANES
+ * 3PX). Edit files still say which depth the console drew them at (their
+ * trailer's depth byte, CTR_EDIT_DEPTH_SAVED: 2, the old STANDARD of three
+ * sweet spots) for the server's record; it changes nothing when read.
  */
-#define CTR_SWEET_SPOTS 3
-#define CTR_SWEET_STANDARD 2
-float CtrStereoDepths_Spread(unsigned sweet);
-const char *CtrStereoDepths_SweetName(unsigned sweet);
-/* An id's sweet spot, from its card edit file (STANDARD without one). */
-unsigned CtrStereoMon_SweetSpotOf(uint16_t id);
-/* The shown picture's, chosen but maybe not saved yet, and choosing it. */
-unsigned CtrStereoMon_SweetSpot(void);
-void CtrStereoMon_SetSweetSpot(unsigned sweet);
+#define CTR_DEPTH_PLANES_PX 3.0f
+#define CTR_EDIT_DEPTH_SAVED 2
 /*
  * The editor's words on the top screen in the game's own small font: the
  * editor renders each line with the bottom screen's font and hands it over
@@ -303,7 +296,7 @@ void CtrStereoMon_SetVersionsView(bool on);
 /*
  * Who edited a picture, and how far: an edit file ends with a 32-byte
  * trailer (older files have none): "EM3DSMD1", u8 flags (bit 0 finalized),
- * u8 sweet spot (1..CTR_SWEET_SPOTS; 0 in files from before, STANDARD), u16 revision (one more on every save), u32 seconds since 2000-01-01
+ * u8 depth (CTR_EDIT_DEPTH_SAVED when saved here; 0 in files from before; not read), u16 revision (one more on every save), u32 seconds since 2000-01-01
  * of the last save (0 unknown), char author[16] (ASCII, NUL-padded). The
  * author is the console's user name unless CTR_STEREO_EDIT_DIR/author.txt
  * names someone else (CtrStereoMon_SetAuthor writes it).
@@ -312,7 +305,6 @@ void CtrStereoMon_SetVersionsView(bool on);
 typedef struct
 {
     bool finalized;
-    uint8_t sweet;          /* 0 none chosen */
     uint16_t revision;
     uint32_t saved;
     char author[CTR_STEREO_EDIT_AUTHOR + 1];

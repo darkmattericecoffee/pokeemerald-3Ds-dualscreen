@@ -531,7 +531,6 @@ static bool ReadMeta(FILE *f, unsigned frames, CtrStereoEditMeta *meta)
         || fread(t, 1, sizeof(t), f) != sizeof(t) || memcmp(t, META_MAGIC, 8) != 0)
         return false;
     meta->finalized = (t[8] & META_FINAL) != 0;
-    meta->sweet = t[9] <= CTR_SWEET_SPOTS ? t[9] : 0;
     meta->revision = (uint16_t)(t[10] | (t[11] << 8));
     meta->saved = (uint32_t)t[12] | ((uint32_t)t[13] << 8) | ((uint32_t)t[14] << 16) | ((uint32_t)t[15] << 24);
     memcpy(meta->author, t + 16, CTR_STEREO_EDIT_AUTHOR);
@@ -723,46 +722,6 @@ CtrStereoDepths CtrStereoDepths_Get(void)
     return d;
 }
 
-static unsigned SweetOrStandard(unsigned sweet)
-{
-    return sweet >= 1 && sweet <= CTR_SWEET_SPOTS ? sweet : CTR_SWEET_STANDARD;
-}
-
-float CtrStereoDepths_Spread(unsigned sweet)
-{
-    static const float spreads[CTR_SWEET_SPOTS] = {2.0f, 3.0f, 4.5f};
-
-    return spreads[SweetOrStandard(sweet) - 1];
-}
-
-const char *CtrStereoDepths_SweetName(unsigned sweet)
-{
-    static const char *const names[CTR_SWEET_SPOTS] = {"SHALLOW", "STANDARD", "DEEP"};
-
-    return names[SweetOrStandard(sweet) - 1];
-}
-
-unsigned CtrStereoMon_SweetSpotOf(uint16_t id)
-{
-    uint8_t header[EDIT_HEADER_BYTES];
-    CtrStereoEditMeta meta;
-    FILE *f = OpenEdit(id, "bin", "rb");
-    unsigned sweet = 0;
-
-    if (f == NULL) return CTR_SWEET_STANDARD;
-    if (fread(header, 1, sizeof(header), f) == sizeof(header) && ReadMeta(f, header[11], &meta)) sweet = meta.sweet;
-    fclose(f);
-    return SweetOrStandard(sweet);
-}
-
-unsigned CtrStereoMon_SweetSpot(void) { return SweetOrStandard(sMeta.sweet); }
-
-void CtrStereoMon_SetSweetSpot(unsigned sweet)
-{
-    sMeta.sweet = (uint8_t)SweetOrStandard(sweet);
-    sDrawnValid = false;
-}
-
 void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view, bool controls)
 {
     bool layers = view == CTR_STEREO_VIEW_LAYERS;
@@ -798,8 +757,6 @@ static C3D_Tex sMateTex;
 static bool sMateAllocated, sMateReady;
 static unsigned sMateFrames;
 static uint16_t sMateId;
-/* Its sweet spot (CtrStereoMon_SweetSpotOf), read when it is given. */
-static unsigned sMateSweet = CTR_SWEET_STANDARD;
 static uint16_t sMatePicture[MATE_FRAMES][DIM * DIM];
 static uint8_t sMatePlanes[CTR_STEREO_MON_MAX_FRAMES * EDIT_FRAME_BYTES];
 static Tex3DS_SubTexture sMateTiles[MATE_FRAMES * MATE_GROUPS];
@@ -867,7 +824,6 @@ void CtrStereoMon_SetCompanion(uint16_t id, const uint16_t *picture, unsigned fr
     memcpy(sMatePicture, picture, frames * sizeof(sMatePicture[0]));
     sMateFrames = frames;
     sMateId = id;
-    sMateSweet = id ? CtrStereoMon_SweetSpotOf(id) : CTR_SWEET_STANDARD;
     ComposeMate();
     sDrawnValid = false;
 }
@@ -990,7 +946,7 @@ bool CtrStereoMon_SaveEdit(void)
 
         memcpy(t, META_MAGIC, 8);
         t[8] = sMeta.finalized ? META_FINAL : 0;
-        t[9] = (uint8_t)CtrStereoMon_SweetSpot();
+        t[9] = CTR_EDIT_DEPTH_SAVED;
         t[10] = (uint8_t)revision;
         t[11] = (uint8_t)(revision >> 8);
         for (unsigned b = 0; b < 4; ++b) t[12 + b] = (uint8_t)(saved >> (8 * b));
@@ -1371,14 +1327,11 @@ static float DepthOf(uint16_t id) { return BackSide(id) ? BACK_DEPTH : 1.0f; }
  * it, and the scenery lies BATTLE BACK behind. `sign` is the eye's (+1 the
  * left), `slider` the 3D slider's 0..1.
  */
-/* The eye's shift per sprite pixel of the stack's depth (DrawStack), at
- * the picture's sweet spot: the shown one's as chosen, its other side's
- * from its file. */
+/* The eye's shift per sprite pixel of the stack's depth (DrawStack): every
+ * picture's planes span CTR_DEPTH_PLANES_PX. */
 static float StackShift(float sign, float slider, uint16_t id)
 {
-    const unsigned sweet = id == sId ? CtrStereoMon_SweetSpot() : id == sMateId ? sMateSweet : CTR_SWEET_STANDARD;
-
-    return sign * slider * CtrStereoDepths_Spread(sweet) * CTR_BATTLE_ZOOM / DEPTH_SPAN * DepthOf(id);
+    return sign * slider * CTR_DEPTH_PLANES_PX * CTR_BATTLE_ZOOM / DEPTH_SPAN * DepthOf(id);
 }
 
 /* The eye's shift of the picture's own depth, where PLANES SIT stands the stack. */
@@ -2117,7 +2070,7 @@ static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
         const CtrStereoDepths d = CtrStereoDepths_Get();
 
         /* OPTIONS' depths, each a few pixels: changed, the frame is drawn again. */
-        k->depth = (int)(d.back * 4) | (int)(d.mon * 4) << 8 | (int)(CtrStereoMon_SweetSpot() | sMateSweet << 4) << 16
+        k->depth = (int)(d.back * 4) | (int)(d.mon * 4) << 8
                  | (int)(d.pivot * 100) << 24;
     }
     k->slider = (int)(slider * 256.0f + 0.5f);
