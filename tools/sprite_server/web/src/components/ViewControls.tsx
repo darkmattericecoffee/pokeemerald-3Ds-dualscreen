@@ -7,7 +7,7 @@ import type { Look } from "@/lib/render";
 import type { ViewSettings } from "@/three/settings";
 import { cn } from "@/lib/utils";
 
-/** The toolbar every 3D view on a page shares: frame, colours, solid or cards, sway, depth. */
+/** The toolbar every 3D view on a page shares: frame, colours, solid or cards, sway, depth exaggeration. */
 export function ViewControls({
   settings,
   onChange,
@@ -70,7 +70,10 @@ export function ViewControls({
         <Switch checked={settings.sway} onCheckedChange={(sway) => set({ sway })} aria-label="Sway" />
         <Film className="size-4" /> Sway
       </label>
-      <label className="flex min-w-44 flex-1 items-center gap-3 text-xs font-extrabold sm:max-w-64">
+      <label
+        className="flex min-w-44 flex-1 items-center gap-3 text-xs font-extrabold sm:max-w-64"
+        title="Spread the planes further apart than the console does, to see the layering better"
+      >
         <span className="whitespace-nowrap">Depth ×{settings.exaggerate.toFixed(1)}</span>
         <Slider
           aria-label="Depth exaggeration"

@@ -309,11 +309,6 @@ class ServerTest(unittest.TestCase):
         self.assertIn("025", grid["items"])
         self.assertNotIn("026", grid["items"])
         self.assertEqual(sorted(grid["mine"]), ["025", "150", "b025"])
-        # Every current front counts once in the sweet-spot tally; make_edit's are "not set" (0).
-        fronts = sum(1 for k in grid["items"] if not k.startswith("b"))
-        self.assertEqual(sum(t[2] for t in grid["sweet"]["front"].values()), fronts)
-        self.assertGreaterEqual(grid["sweet"]["front"]["0"][2], 3)
-        self.assertGreaterEqual(grid["sweet"]["back"]["0"][0], 1)
         self.assertEqual(grid["names"]["025"], "Front 025")  # no sprites.json in the test data
         status, page = bob.api("GET", "/api/web/mons/025")
         self.assertEqual(status, 200)
@@ -397,7 +392,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 403)
 
     def test_depth_sweet_spots(self):
-        """A version's sweet spot comes from its file, travels in the API and shows on the site."""
+        """A file's depth byte is kept in the database and still travels in the console API (consoles
+        in the field read it); the web app no longer shows it."""
         self.assertEqual(editfile.parse(make_edit("009")).depth, 0)
         self.assertEqual(editfile.parse(make_edit("009", depth=3)).depth, 3)
         self.assertEqual(editfile.parse(make_edit("009", depth=9)).depth, 0)  # unknown: Standard
@@ -418,12 +414,14 @@ class ServerTest(unittest.TestCase):
         # The newest is current: the Standard one, which sync says too.
         status, _, body = client.request("GET", base + "/api/sync?since=0", token)
         self.assertEqual([i["depth"] for i in json.loads(body)["items"] if i["key"] == "009"], [2])
-        # The web app: each version's own sweet spot (null when none was chosen), and the tally.
+        # The web app shows no depth: every picture is drawn at the one standard.
         page = browser.api("GET", "/api/web/mons/009")[1]
-        self.assertEqual(sorted((v["depth"] or 0) for v in page["versions"]), [0, 1, 2, 3])
-        sweet = browser.api("GET", "/api/web/grid")[1]["sweet"]["front"]
-        self.assertGreaterEqual(sweet["3"][0], 1)
-        self.assertEqual(sweet["2"][2] >= 1, True)  # the current one is the Standard one
+        self.assertTrue(all("depth" not in v for v in page["versions"]))
+        self.assertNotIn("sweet", browser.api("GET", "/api/web/grid")[1])
+        conn = db.connect(os.path.join(self.data, "sprites.db"))  # the database still keeps each file's byte
+        self.assertEqual(sorted(r[0] for r in conn.execute("SELECT depth FROM versions WHERE mon_key = '009'")),
+                         [0, 1, 2, 3])
+        conn.close()
 
     def test_votes(self):
         _, frank = self.linked_client("frank")

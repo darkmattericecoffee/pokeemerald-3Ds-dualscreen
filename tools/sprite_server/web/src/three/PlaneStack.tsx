@@ -1,7 +1,7 @@
 import * as React from "react";
 import * as THREE from "three";
 import { DIM, type EditFile, type Picture } from "@/lib/editfile";
-import { planeZ } from "@/lib/depth";
+import { planeZ, STANDARD_PX } from "@/lib/depth";
 import { renderPixels, type Look } from "@/lib/render";
 
 const SLICE = 0.5; // sprite pixels between the solid mode's slices
@@ -56,7 +56,6 @@ export function PlaneStack({
   picture,
   frame,
   look,
-  px,
   exaggerate,
   solid,
 }: {
@@ -64,7 +63,6 @@ export function PlaneStack({
   picture: Picture | null;
   frame: number;
   look: Look;
-  px: number;
   exaggerate: number;
   solid: boolean;
 }) {
@@ -73,11 +71,11 @@ export function PlaneStack({
     [edit, picture, frame, look],
   );
   React.useEffect(() => () => layers.forEach((l) => l.tex.dispose()), [layers]);
-  const back = edit.used.length ? planeZ(edit.used[0], edit.planes, px, exaggerate) : 0;
+  const back = edit.used.length ? planeZ(edit.used[0], edit.planes, STANDARD_PX, exaggerate) : 0;
   return (
     <group>
       {layers.map(({ p, tex }) => {
-        const z = planeZ(p, edit.planes, px, exaggerate);
+        const z = planeZ(p, edit.planes, STANDARD_PX, exaggerate);
         return (
           <group key={p}>
             <mesh geometry={geometry} position={[0, 0, z]}>

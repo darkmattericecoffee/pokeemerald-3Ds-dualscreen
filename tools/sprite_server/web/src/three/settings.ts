@@ -10,7 +10,7 @@ export interface ViewSettings {
    *  flat cards at their depths, as the planes really are. */
   solid: boolean;
   sway: boolean;
-  /** Times the version's own depth (1 = as on the console). */
+  /** Times the standard depth (1 = as on the console). */
   exaggerate: number;
 }
 

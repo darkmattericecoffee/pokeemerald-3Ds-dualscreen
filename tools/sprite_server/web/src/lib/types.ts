@@ -1,7 +1,6 @@
 // What the server's /api/web/* endpoints answer (server.py, "The web app's API").
 
 export type Role = "admin" | "artist";
-export type Depth = 1 | 2 | 3;
 
 export interface SessionUser {
   id: number;
@@ -22,16 +21,11 @@ export interface GridItem {
   final: boolean;
   author: string;
   versions: number;
-  depth: Depth | null;
   uploaded_at: number;
 }
 
-/** Per sweet spot ("0" = not set): [versions, their votes, current ones]. */
-export type SweetTally = Record<"0" | "1" | "2" | "3", [number, number, number]>;
-
 export interface Grid {
   rev: number;
-  sweet: Record<"front" | "back" | "other", SweetTally>;
   dex_count: number;
   others: string[];
   names: Record<string, string>;
@@ -50,7 +44,6 @@ export interface Version {
   final: boolean;
   votes: number;
   voters: string[];
-  depth: Depth | null;
   planes: number;
   frames: number;
   sha256: string;

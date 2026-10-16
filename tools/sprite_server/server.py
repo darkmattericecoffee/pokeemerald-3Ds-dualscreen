@@ -299,13 +299,6 @@ def app_page(req: Request) -> Response:
 # and, on every POST, the session's CSRF token in the X-CSRF-Token header. /api/web/events is
 # the live channel (Server-Sent Events, events.py) that tells open pages what changed.
 
-# The depth sweet spot (versions.depth, the edit file's trailer byte, editfile.SWEET_SPOTS):
-# 1 shallow, 2 standard, 3 deep. The web app gets null for 0 (none chosen, older editors) and
-# shows it as Standard, "not set"; the console API maps it to Standard (editfile.sweet_spot).
-def depth_of(depth: Optional[int]) -> Optional[int]:
-    return depth if depth in editfile.SWEET_SPOTS else None
-
-
 def neighbours(key: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Previous, next and the other side's key."""
     m = editfile.KEY_RE.match(key)
@@ -385,43 +378,30 @@ def web_grid(req: Request) -> Response:
     """Everything the progress grid shows: each picture's current version, and the caller's own."""
     rows = req.conn.execute(
         "SELECT c.mon_key, c.version_id, c.pinned, v.final, v.uploaded_at, COALESCE(u.display_name, u.name) AS author, "
-        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n, v.depth "
+        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n "
         "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id").fetchall()
     uid = req.user["id"]
     mine = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM versions WHERE user_id = ?", (uid,))]
     voted = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM votes WHERE user_id = ?", (uid,))]
     fronts = ["%03u" % n for n in range(1, DEX_COUNT + 1)]
-    fronts_set = set(fronts)
-    known = fronts_set | {"b" + k for k in fronts}
+    known = set(fronts) | {"b" + k for k in fronts}
     others = sorted({r["mon_key"] for r in rows} - known)
     keys = fronts + ["b" + k for k in fronts] + others
-    # The depth sweet spots against each other, per tab: versions, their votes, current ones.
-    current_ids = {r["version_id"] for r in rows}
-    sweet = {kind: {str(d): [0, 0, 0] for d in [0] + sorted(editfile.SWEET_SPOTS)} for kind in ("front", "back", "other")}
-    for r in req.conn.execute(
-            "SELECT v.id, v.mon_key, v.depth, "
-            "(SELECT COUNT(*) FROM votes t WHERE t.version_id = v.id) AS n FROM versions v"):
-        kind = "front" if r["mon_key"] in fronts_set else "back" if r["mon_key"] in known else "other"
-        t = sweet[kind][str(depth_of(r["depth"]) or 0)]
-        t[0] += 1
-        t[1] += r["n"]
-        t[2] += r["id"] in current_ids
     return json_resp({
-        "sweet": sweet,
         "rev": db.current_rev(req.conn), "dex_count": DEX_COUNT, "others": others,
         "names": {k: CFG.name(k) for k in keys},
         "pictures": [k for k in keys if k in CFG.sprites],
         "mine": sorted(mine), "voted": sorted(voted),
         "items": {r["mon_key"]: {"version_id": r["version_id"], "pinned": bool(r["pinned"]), "final": bool(r["final"]),
-                                 "author": r["author"], "versions": r["n"], "depth": depth_of(r["depth"]),
+                                 "author": r["author"], "versions": r["n"],
                                  "uploaded_at": r["uploaded_at"]} for r in rows}})
 
 
 def mon_json(req: Request, key: str) -> dict:
-    """A picture's page: every version with its uploader, console, votes (and who), depth and flags."""
+    """A picture's page: every version with its uploader, console, votes (and who) and flags."""
     rows = req.conn.execute(
         "SELECT v.id, v.user_id, v.planes, v.frames, v.final, v.revision, v.author_tag, v.saved_at, v.sha256, v.size, "
-        "v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader, d.console_name, v.depth "
+        "v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader, d.console_name "
         "FROM versions v JOIN users u ON u.id = v.user_id LEFT JOIN devices d ON d.id = v.device_id "
         "WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC", (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
@@ -443,7 +423,7 @@ def mon_json(req: Request, key: str) -> dict:
         "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],
                       "console": r["console_name"], "revision": r["revision"], "final": bool(r["final"]),
                       "votes": counts.get(r["id"], 0), "voters": voters.get(r["id"], []),
-                      "depth": depth_of(r["depth"]), "planes": r["planes"], "frames": r["frames"],
+                      "planes": r["planes"], "frames": r["frames"],
                       "sha256": r["sha256"], "size": r["size"], "saved_at": r["saved_at"],
                       "uploaded_at": r["uploaded_at"], "mine": r["user_id"] == uid}
                      for r in by_votes(rows, counts)]}

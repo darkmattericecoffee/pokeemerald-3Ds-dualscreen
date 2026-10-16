@@ -1,7 +1,7 @@
 // The plane editor's edit files (tools/sprite_server/editfile.py has the full description):
 //   16 bytes   "EM3DSED1", id (u16 LE), planes, frames, 64, 0, 64, 0
 //   2048 * frames   one nibble per pixel (low nibble first): the pixel's plane, 0 = farthest
-//   32 bytes   optional trailer "EM3DSMD1", flags (1 = final), depth sweet spot, revision ...
+//   32 bytes   optional trailer "EM3DSMD1", flags (1 = final), the console's depth (not used here), revision ...
 
 export const DIM = 64;
 export const NONE = 15;
@@ -16,7 +16,6 @@ export interface EditFile {
   maps: Uint8Array[];
   final: boolean;
   revision: number;
-  depth: 1 | 2 | 3 | null;
   author: string;
   /** The planes any frame uses, far to near. */
   used: number[];
@@ -51,14 +50,12 @@ export function parseEdit(buffer: ArrayBuffer): EditFile {
     maps,
     final: false,
     revision: 0,
-    depth: null,
     author: "",
     used: [...seen].sort((a, z) => a - z),
   };
   if (b.length === body + META && ascii(b.subarray(body, body + 8)) === "EM3DSMD1") {
     const t = b.subarray(body);
     edit.final = (t[8] & 1) === 1;
-    edit.depth = t[9] >= 1 && t[9] <= 3 ? (t[9] as 1 | 2 | 3) : null;
     edit.revision = t[10] | (t[11] << 8);
     const end = t.subarray(16, 32).indexOf(0);
     edit.author = new TextDecoder().decode(t.subarray(16, end < 0 ? 32 : 16 + end)).trim();

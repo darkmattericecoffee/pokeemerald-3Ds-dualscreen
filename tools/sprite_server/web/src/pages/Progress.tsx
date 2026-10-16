@@ -1,11 +1,9 @@
 import { Search, Star, Users2, X } from "lucide-react";
 import * as React from "react";
 import { Link, useSearchParams } from "react-router";
-import { DepthDots } from "@/components/DepthDots";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Segmented } from "@/components/ui/toggle-group";
-import { DEPTHS } from "@/lib/depth";
 import { useLive } from "@/lib/live";
 import { postFocus, useGrid } from "@/lib/queries";
 import type { Grid, GridItem } from "@/lib/types";
@@ -70,11 +68,8 @@ const Tile = React.memo(function Tile({
       ) : (
         <span className="mt-0.5 text-[11px] font-semibold text-muted-foreground/70">not done</span>
       )}
-      {item && (
-        <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
-          {item.final && <Star className="size-3.5 fill-accent text-border" aria-label="final" />}
-          <DepthDots depth={item.depth} />
-        </div>
+      {item?.final && (
+        <Star className="absolute right-1.5 top-1.5 size-3.5 fill-accent text-border" aria-label="final" />
       )}
       {item && item.versions > 1 && (
         <span
@@ -135,6 +130,8 @@ export function ProgressPage() {
       total: grid.dex_count,
       final: all.filter((i) => i.final).length,
       done: all.length,
+      versions: all.reduce((n, i) => n + i.versions, 0),
+      contested: all.filter((i) => i.versions > 1).length,
     };
   }, [grid]);
 
@@ -177,36 +174,15 @@ export function ProgressPage() {
               </div>
               <span className="text-xs font-semibold text-muted-foreground">current versions marked final</span>
             </div>
-            <div className="panel flex flex-col gap-1.5 p-3 sm:p-4">
-              <span className="font-pixel text-[10px] uppercase text-muted-foreground">
-                Depth · {kind === "front" ? "fronts" : kind === "back" ? "backs" : "others"}
+            <div className="panel flex flex-col gap-2 p-3 sm:p-4">
+              <span className="font-pixel text-[10px] uppercase text-muted-foreground">To vote on</span>
+              <div className="text-2xl font-black tabular-nums sm:text-3xl">
+                {stats.contested}
+                <span className="text-base font-extrabold text-muted-foreground"> pictures</span>
+              </div>
+              <span className="text-xs font-semibold text-muted-foreground">
+                with two or more versions · {stats.versions} versions in all
               </span>
-              <table className="text-xs font-bold">
-                <thead className="text-[10px] uppercase text-muted-foreground">
-                  <tr>
-                    <th className="text-left font-extrabold" />
-                    <th className="px-1 text-right font-extrabold" title="Versions">Vers.</th>
-                    <th className="px-1 text-right font-extrabold">Votes</th>
-                    <th className="pl-1 text-right font-extrabold" title="Current versions">Cur.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(["1", "2", "3", "0"] as const).map((d) => {
-                    const [n, votes, cur] = grid!.sweet[kind][d];
-                    return (
-                      <tr key={d} className={d === "0" ? "text-muted-foreground" : ""}>
-                        <td className="flex items-center gap-1.5 py-px">
-                          <DepthDots depth={d === "0" ? null : (Number(d) as 1 | 2 | 3)} />
-                          {d === "0" ? "Not set" : DEPTHS[Number(d) as 1 | 2 | 3].label}
-                        </td>
-                        <td className="px-1 text-right tabular-nums">{n}</td>
-                        <td className="px-1 text-right tabular-nums">{votes}</td>
-                        <td className="pl-1 text-right tabular-nums">{cur}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
             </div>
           </>
         ) : (

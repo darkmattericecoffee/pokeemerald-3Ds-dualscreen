@@ -1,6 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { DepthBadge } from "@/components/DepthDots";
 import { VoteButton } from "@/components/VoteButton";
 import { ago } from "@/lib/utils";
 
@@ -17,15 +16,6 @@ describe("VoteButton", () => {
     rerender(<VoteButton voted votes={3} onToggle={onToggle} />);
     expect(screen.getByRole("button")).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button")).toHaveTextContent("Voted");
-  });
-});
-
-describe("DepthBadge", () => {
-  it("names the sweet spot, or says it is not set", () => {
-    const { rerender } = render(<DepthBadge depth={3} />);
-    expect(screen.getByText("Deep")).toBeInTheDocument();
-    rerender(<DepthBadge depth={null} />);
-    expect(screen.getByText("Std?")).toBeInTheDocument();
   });
 });
 

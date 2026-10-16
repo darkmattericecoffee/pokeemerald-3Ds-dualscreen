@@ -73,7 +73,6 @@ export function Viewer3D({
   picture,
   frame,
   settings,
-  px,
   loading,
   className,
   children,
@@ -83,7 +82,6 @@ export function Viewer3D({
   picture: Picture | null;
   frame: number;
   settings: ViewSettings;
-  px: number;
   loading?: boolean;
   className?: string;
   children?: React.ReactNode;
@@ -174,7 +172,6 @@ export function Viewer3D({
                 picture={picture}
                 frame={frame}
                 look={settings.look}
-                px={px}
                 exaggerate={settings.exaggerate}
                 solid={settings.solid}
               />

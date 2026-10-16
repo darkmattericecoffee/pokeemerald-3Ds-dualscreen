@@ -6,7 +6,6 @@ import { ViewControls } from "@/components/ViewControls";
 import { VoteButton } from "@/components/VoteButton";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { depthPx } from "@/lib/depth";
 import { frameCount } from "@/lib/editfile";
 import { postFocus, useMon, useVote } from "@/lib/queries";
 import { useVersionFiles } from "@/lib/useVersions";
@@ -105,7 +104,6 @@ export function ComparePage() {
                   picture={files.picture}
                   frame={frame}
                   settings={settings}
-                  px={depthPx(v.depth)}
                   loading={files.loading}
                   label={`Version ${vid} by ${v.author} in 3D`}
                 />

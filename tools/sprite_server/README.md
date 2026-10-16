@@ -57,11 +57,11 @@ components on Radix, TanStack Query for the data, react-three-fiber (three.js) f
 views. Pages:
 
 - **Progress**: fronts, backs, trainers; all, not done, done, mine, voted; search by name or
-  number; counts of finals and of each depth sweet spot.
+  number; counts of finals and of pictures with two or more versions to vote on.
 - **A Pokémon** (`/mon/025`): its versions, each with uploader, console, votes (and who),
-  final flag and depth sweet spot, and a 3D view of any of them. The 3D view draws every
-  plane at its depth, spread by the version's own sweet spot (Shallow 2 px, Standard 3 px,
-  Deep 4.5 px; files without one count as Standard). **Solid** extends each plane's pixels
+  and final flag, and a 3D view of any of them. The 3D view draws every plane at its depth,
+  spread as the console spreads every picture (one standard, 3 px from the farthest plane to
+  the nearest; a slider exaggerates it to see the layers better). **Solid** extends each plane's pixels
   back to the farthest plane, so turning it shows no gaps; **Cards** shows the flat planes
   as the console draws them. Drag to turn it (sideways on touch, so the page still
   scrolls), pinch or Ctrl + scroll to zoom; it sways by itself after a moment. Frame 1, 2 or
@@ -166,11 +166,11 @@ Cloudflare go to HTTPS.
 | `POST /api/pair` `{"code","console_name"}` | the PC client, over HTTPS: `{"token","user"}`, or 403 |
 | `GET /api/me` | `{"user","role","console_name","seq"}` |
 | `POST /api/mons/<key>/versions` (the `.bin`) | 201 `{"version_id","current","duplicate","sha256"}`; 200 if already there; 400 with `error` if malformed |
-| `GET /api/sync?since=<seq>` | `{"seq","items":[{"key","version_id","sha256","size","revision","final"}]}`: what changed since `seq` |
+| `GET /api/sync?since=<seq>` | `{"seq","items":[{"key","version_id","sha256","size","revision","final","depth"}]}`: what changed since `seq` |
 | `GET /api/versions/<id>` | the `.bin`, with `ETag`, `X-Version-Id`, `X-Sha256` |
 | `GET /api/mons/<key>/current` | the current `.bin`; `If-None-Match` gives 304 |
 | `GET /api/mons` | every Pokémon with a current version: `versions` (how many), `mine` (how many are the caller's favourites) |
-| `GET /api/mons/<key>/versions` | `{"current","pinned","favourites","max_favourites","versions":[{"version_id","author","signed","revision","final","votes","sha256","size","uploaded_at"}]}`, the most votes first (among equals the newest); `favourites` are the caller's votes |
+| `GET /api/mons/<key>/versions` | `{"current","pinned","favourites","max_favourites","versions":[{"version_id","author","signed","revision","final","depth","votes","sha256","size","uploaded_at"}]}`, the most votes first (among equals the newest); `favourites` are the caller's votes |
 | `POST /api/mons/<key>/votes` `{"version_ids":[…]}` | consoles only: the caller's votes (0 to 16 of its versions) for the picture, replacing the earlier ones; answers like `…/versions` |
 | `POST /api/versions/<id>/delete` | consoles only: takes the caller's own version off the server (an admin's console: any); answers like `…/versions` |
 | `GET /api/rev` | `{"rev","seq"}`: `rev` moves on with every upload, vote, pin and delete |
@@ -186,8 +186,8 @@ that came over plain HTTP through Cloudflare is ignored.
 | Call | Does |
 |---|---|
 | `GET /api/web/session`, `POST …/login` `{name,password}`, `POST …/logout` | who is signed in, and the CSRF token |
-| `GET /api/web/grid` | every picture's current version (author, versions, final, depth), names, which have a game picture, the caller's own and voted |
-| `GET /api/web/mons/<key>` | a picture's versions with uploader, console, votes and voters, depth, flags; neighbours |
+| `GET /api/web/grid` | every picture's current version (author, versions, final), names, which have a game picture, the caller's own and voted |
+| `GET /api/web/mons/<key>` | a picture's versions with uploader, console, votes and voters, flags; neighbours |
 | `POST /api/web/mons/<key>/vote` `{version_id,on}` | the caller's vote on or off; answers like `GET …/mons/<key>` |
 | `POST /api/web/mons/<key>/pin` `{version_id}`, `…/unpin` | admins |
 | `POST /api/web/versions/<id>/delete` | its uploader, or an admin |
@@ -200,7 +200,8 @@ that came over plain HTTP through Cloudflare is ignored.
 Edit files themselves come from `GET /api/versions/<id>` (any signed-in user); the app parses
 and draws them in the browser.
 
-`<key>` is the edit file's name: `006` front, `b006` back, `t012` trainer, `p001` player.
+`depth` is the edit file's depth byte as a sweet spot (1..3, 0 read as 2); the database keeps
+it, but pictures are all drawn at the one standard depth. `<key>` is the edit file's name: `006` front, `b006` back, `t012` trainer, `p001` player.
 `seq` is a server counter, so the console's clock never matters.
 
 ## A fixed address (for real)
@@ -293,5 +294,5 @@ sign-in, CSRF, admin-only calls, pairing, signed console requests, upload valida
 duplicates, votes, newest-wins, pin and unpin, delete, sync with backups, ETags, unlinking,
 disabled users, the account calls, the live channel, following the web, the picture data,
 serving the app, and that previews keep the picture's clear pixels clear. The web tests
-cover reading edit files (with the depth sweet spot), drawing them, the depth spacing, and a
+cover reading edit files, drawing them, the plane spacing, and a
 few components.

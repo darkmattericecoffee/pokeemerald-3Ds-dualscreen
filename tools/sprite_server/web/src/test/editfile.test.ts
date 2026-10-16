@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planeZ, depthPx, DEPTH_SCALE } from "@/lib/depth";
+import { DEPTH_SCALE, planeZ, STANDARD_PX } from "@/lib/depth";
 import { NONE, parseEdit, parsePicture } from "@/lib/editfile";
 import { planeColours, planeCounts, renderPixels } from "@/lib/render";
 
@@ -33,20 +33,20 @@ function makeEdit(opts: {
 }
 
 describe("parseEdit", () => {
-  it("reads planes, frames and the trailer with the depth sweet spot", () => {
+  it("reads planes, frames and the trailer", () => {
     const e = parseEdit(
       makeEdit({ frames: 2, plane: (x, _y, f) => (x < 32 ? f : 15), trailer: { final: true, depth: 3, revision: 7, author: "NUKULAR" } }),
     );
-    expect([e.planes, e.frames, e.final, e.depth, e.revision, e.author]).toEqual([4, 2, true, 3, 7, "NUKULAR"]);
+    expect([e.planes, e.frames, e.final, e.revision, e.author]).toEqual([4, 2, true, 7, "NUKULAR"]);
     expect(e.maps[0][0]).toBe(0);
     expect(e.maps[1][0]).toBe(1);
     expect(e.maps[0][40]).toBe(NONE);
     expect(e.used).toEqual([0, 1]);
   });
 
-  it("treats a missing or zero depth byte as not set", () => {
-    expect(parseEdit(makeEdit({ plane: () => 0 })).depth).toBeNull();
-    expect(parseEdit(makeEdit({ plane: () => 0, trailer: {} })).depth).toBeNull();
+  it("reads files with and without the trailer", () => {
+    expect(parseEdit(makeEdit({ plane: () => 0 })).final).toBe(false);
+    expect(parseEdit(makeEdit({ plane: () => 0, trailer: { final: true } })).final).toBe(true);
   });
 
   it("counts planes at or above the plane count as clear", () => {
@@ -87,10 +87,9 @@ describe("renderPixels", () => {
 });
 
 describe("depth", () => {
-  it("spreads the planes around the screen by the sweet spot", () => {
-    expect(depthPx(1)).toBe(2);
-    expect(depthPx(null)).toBe(3);
-    expect(depthPx(3)).toBe(4.5);
+  it("spreads every picture's planes around the screen at the one standard", () => {
+    expect(STANDARD_PX).toBe(3);
+    expect(planeZ(0, 4)).toBeCloseTo(-1.5 * DEPTH_SCALE);
     expect(planeZ(0, 4, 3)).toBeCloseTo(-1.5 * DEPTH_SCALE);
     expect(planeZ(3, 4, 3)).toBeCloseTo(1.5 * DEPTH_SCALE);
     expect(planeZ(0, 1, 3)).toBe(0);

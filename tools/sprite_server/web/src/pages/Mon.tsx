@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { DepthBadge } from "@/components/DepthDots";
 import { EditPixels, PicturePixels } from "@/components/Pixels";
 import { ViewControls } from "@/components/ViewControls";
 import { VoteButton } from "@/components/VoteButton";
@@ -27,7 +26,6 @@ import { Confirm } from "@/components/ui/dialog";
 import { DropdownContent, DropdownItem, DropdownMenu, DropdownSeparator, DropdownTrigger } from "@/components/ui/dropdown";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
-import { depthPx } from "@/lib/depth";
 import { frameCount, type EditFile, type Picture } from "@/lib/editfile";
 import { useLive } from "@/lib/live";
 import { postFocus, useMon, useMonAction, useVote } from "@/lib/queries";
@@ -158,7 +156,6 @@ export function VersionMeta({ v, mon }: { v: Version; mon: Mon }) {
           </Badge>
         )}
         {v.mine && <Badge variant="outline">Yours</Badge>}
-        <DepthBadge depth={v.depth} />
       </div>
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs font-semibold text-muted-foreground">
         {v.signed && v.signed.toLowerCase() !== v.author.toLowerCase() && <span>signed {v.signed}</span>}
@@ -402,7 +399,6 @@ export function MonPage() {
               picture={files.picture}
               frame={frame}
               settings={settings}
-              px={depthPx(shown?.depth)}
               loading={files.loading}
               label={`${mon.name}, version ${shownId} in 3D`}
             >
@@ -429,8 +425,8 @@ export function MonPage() {
             <Card className="p-3 sm:p-4">
               <ViewControls settings={settings} onChange={setSettings} frames={frames} />
               <p className="mt-3 hidden text-xs font-semibold text-muted-foreground sm:block">
-                Drag to turn it (pinch or Ctrl + scroll to zoom). It sways by itself after a moment. The depth follows
-                each version's own sweet spot.
+                Drag to turn it (pinch or Ctrl + scroll to zoom). It sways by itself after a moment. Every
+                version is drawn at the console's standard depth.
               </p>
             </Card>
           </div>
