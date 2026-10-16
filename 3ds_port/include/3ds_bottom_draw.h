@@ -24,7 +24,7 @@ void CtrBottom_ForceRedraw(void);
  * 320 columns of 240, each from the bottom up). */
 void CtrBottom_TestShot(const char *path);
 /* online_test.txt's aid: the OPTIONS screen on a tab (CTR_EXTRAS_*), even
- * from the title screen. */
+ * from the title screen; page + 10 * n is its page n + 1. */
 void CtrBottom_TestOptions(unsigned page);
 
 uint16_t CtrBottomDraw_Rgb565(uint16_t bgr555);

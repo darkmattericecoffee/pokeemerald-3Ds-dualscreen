@@ -46,7 +46,7 @@
 #define TEX_H 512
 /* Total stack depth in sprite pixels (3ds_stereo_mon.c). */
 #define DEPTH_SPAN 14.4f /* Original ten-plane span, independent of plane count. */
-/* The stack's depth on screen is every picture's (CTR_DEPTH_PLANES_PX): the
+/* The stack's depth on screen is every picture's (MON PLANES): the
  * GBA pixels per eye at the slider's top between the farthest and the
  * nearest plane; and OPTIONS' "PLANES SIT" (CtrStereoDepths,
  * the editor's and the Pokédex's too), where the stack stands against the sprite's own depth
@@ -827,7 +827,7 @@ void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eye
     pivot = depths.pivot * (groups - 1);
     spacing = DEPTH_SPAN / (float)(groups - 1);
     /* Screen pixels per eye per sprite pixel of the stack's depth. */
-    depth = eyeParallax * (CTR_DEPTH_PLANES_PX / DEPTH_SPAN) * shiftScale;
+    depth = eyeParallax * (depths.spread / DEPTH_SPAN) * shiftScale;
     if ((s->composedPlanes->id & 0xC000) == CTR_STEREO_ID_BACK || (s->composedPlanes->id & 0xC000) == CTR_STEREO_ID_PLAYER)
         depth *= BACK_DEPTH;
     {

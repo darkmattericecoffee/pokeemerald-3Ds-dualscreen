@@ -319,13 +319,18 @@ bool CtrStereoStrip_Pending(void)
 /*
  * The depths as the viewer's (3ds_stereo_mon.c StackShift and on): the
  * scene's (BATTLE BACK, BATTLE MONS, PLANES SIT) and the planes' own, the
- * same for every picture (CTR_DEPTH_PLANES_PX).
+ * same for every picture (MON PLANES).
  */
 static float StackShift(float sign, float slider, bool back)
 {
-    return sign * slider * CTR_DEPTH_PLANES_PX * CTR_BATTLE_ZOOM / DEPTH_SPAN * (back ? BACK_DEPTH : 1.0f);
+    return sign * slider * CtrStereoDepths_Get().spread * CTR_BATTLE_ZOOM / DEPTH_SPAN * (back ? BACK_DEPTH : 1.0f);
 }
-static float PictureShift(float sign, float slider, bool back) { return back ? 0.0f : -sign * slider * CtrStereoDepths_Get().mon; }
+static float PictureShift(float sign, float slider, bool back)
+{
+    const CtrStereoDepths d = CtrStereoDepths_Get();
+
+    return -sign * slider * (back ? d.own : d.mon);
+}
 static float Pivot(void) { return CtrStereoDepths_Get().pivot; }
 static float BackdropShift(float sign, float slider) { return -sign * slider * CtrStereoDepths_Get().back; }
 

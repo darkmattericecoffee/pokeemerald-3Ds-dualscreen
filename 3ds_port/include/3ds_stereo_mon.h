@@ -224,38 +224,40 @@ void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16
  * versions screen and the Pokédex show both sides in 3D; NULL for none. */
 void CtrStereoMon_SetCompanion(uint16_t id, const uint16_t *picture, unsigned frames);
 /*
- * The 3D depths. The scene's are OPTIONS' BATTLE BACK, BATTLE MONS and
+ * The 3D depths, OPTIONS' BATTLE BACK, FOE MON, YOUR MON, MON PLANES and
  * PLANES SIT (3ds_extras.c), taken alike by the battle, the editor's views,
- * the Pokédex and the versions screen, so a picture stands as deep wherever
- * it is seen. `back` and `mon` are screen pixels per eye at the slider's
- * top: the scenery behind the screen, and an opponent's picture (a
- * player's side stands on the screen). `pivot` is where a picture's stack
+ * the Pokédex and the voting view, so a picture stands as deep wherever it
+ * is seen; testers try values there. `back`, `mon` and `own` are screen
+ * pixels per eye at the slider's top behind the screen (negative: in front
+ * of it): the scenery, the opponent's side, the player's side (backs).
+ * `spread` is how deep every picture's planes go, the stack from its
+ * farthest plane to its nearest, in GBA pixels per eye at the slider's top
+ * (CTR_BATTLE_ZOOM screen pixels each). `pivot` is where a picture's stack
  * stands against its depth: the plane that far along it, 0 the farthest
  * and 1 the nearest. The settings' choices are numbered as OPTIONS lists
  * them; the standard (6PX, 2PX, AROUND) is the default, and a card set
  * otherwise before there was one is put on it once.
  */
-typedef struct { float back, mon, pivot; } CtrStereoDepths;
+typedef struct { float back, mon, own, spread, pivot; } CtrStereoDepths;
 #define CTR_DEPTH_BACK_KEY "battle_back_depth"
 #define CTR_DEPTH_MON_KEY "battle_mon_depth"
+#define CTR_DEPTH_OWN_KEY "battle_own_depth"
+#define CTR_DEPTH_SPREAD_KEY "battle_planes_px"
 #define CTR_DEPTH_PIVOT_KEY "battle_plane_pivot"
 #define CTR_DEPTH_BACK_STANDARD 3
 #define CTR_DEPTH_MON_STANDARD 2
+#define CTR_DEPTH_OWN_STANDARD 2
+#define CTR_DEPTH_SPREAD_STANDARD 2
 #define CTR_DEPTH_PIVOT_STANDARD 1
 #define CTR_DEPTH_BACK_CHOICES 6
-#define CTR_DEPTH_MON_CHOICES 5
+#define CTR_DEPTH_MON_CHOICES 6
+#define CTR_DEPTH_OWN_CHOICES 6
+#define CTR_DEPTH_SPREAD_CHOICES 6
 #define CTR_DEPTH_PIVOT_CHOICES 3
 CtrStereoDepths CtrStereoDepths_Get(void);
-/*
- * How deep every picture's planes go: the stack from its farthest plane to
- * its nearest, in GBA pixels per eye at the slider's top (CTR_BATTLE_ZOOM
- * screen pixels each), the same for every picture everywhere (MON PLANES
- * 3PX). Edit files still say which depth the console drew them at (their
- * trailer's depth byte, CTR_EDIT_DEPTH_SAVED: 2, the old STANDARD of three
- * sweet spots) for the server's record; it changes nothing when read.
- */
-#define CTR_DEPTH_PLANES_PX 3.0f
-#define CTR_EDIT_DEPTH_SAVED 2
+/* Edit files say how deep the console drew the planes when saved (their
+ * trailer's depth byte: MON PLANES in whole pixels) for the server's
+ * record; it changes nothing when read. */
 /*
  * The editor's words on the top screen in the game's own small font: the
  * editor renders each line with the bottom screen's font and hands it over
@@ -296,7 +298,7 @@ void CtrStereoMon_SetVersionsView(bool on);
 /*
  * Who edited a picture, and how far: an edit file ends with a 32-byte
  * trailer (older files have none): "EM3DSMD1", u8 flags (bit 0 finalized),
- * u8 depth (CTR_EDIT_DEPTH_SAVED when saved here; 0 in files from before; not read), u16 revision (one more on every save), u32 seconds since 2000-01-01
+ * u8 depth (MON PLANES in pixels when saved; 1..3 sweet spots in older files; not read), u16 revision (one more on every save), u32 seconds since 2000-01-01
  * of the last save (0 unknown), char author[16] (ASCII, NUL-padded). The
  * author is the console's user name unless CTR_STEREO_EDIT_DIR/author.txt
  * names someone else (CtrStereoMon_SetAuthor writes it).

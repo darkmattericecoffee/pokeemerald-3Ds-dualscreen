@@ -6508,24 +6508,28 @@ static void GpuSplit(void);
 #ifdef CTR_STEREO_ZERO
 #define BATTLE_BACK_DEPTH 0.0f
 #define BATTLE_SPRITE_DEPTH 0.0f
+#define BATTLE_OWN_DEPTH 0.0f
 static void BattleDepthsRefresh(void) {}
 #else
-/* Both are OPTIONS' (3ds_extras.c "BATTLE BACK", "BATTLE MONS"), read once
- * a frame, so the scenery's and the sprites' depths can be tried against the
- * depth the planes' stacks take (3ds_stereo_battle.c "MON PLANES"). */
-static float sBattleBackDepth = 6.0f, sBattleSpriteDepth = 2.0f;
+/* OPTIONS' (3ds_extras.c "BATTLE BACK", "FOE MON", "YOUR MON"), read once
+ * a frame, so the scenery's and the two sides' depths can be tried against
+ * the depth the planes' stacks take ("MON PLANES"). */
+static float sBattleBackDepth = 6.0f, sBattleSpriteDepth = 2.0f, sBattleOwnDepth = 0.0f;
 #define BATTLE_BACK_DEPTH sBattleBackDepth
 #define BATTLE_SPRITE_DEPTH sBattleSpriteDepth
+#define BATTLE_OWN_DEPTH sBattleOwnDepth
 static void BattleDepthsRefresh(void)
 {
     const CtrStereoDepths d = CtrStereoDepths_Get();
 
     sBattleBackDepth = d.back;
     sBattleSpriteDepth = d.mon;
+    sBattleOwnDepth = d.own;
 }
 #endif
-/* GBA lines: a sprite centred above the first is at BATTLE_SPRITE_DEPTH, one
- * centred below the second at the screen. */
+/* GBA lines: a sprite centred above the first is at BATTLE_SPRITE_DEPTH (the
+ * foe's side), one centred below the second at BATTLE_OWN_DEPTH (the
+ * player's), in between in proportion. */
 #define BATTLE_SPRITE_FAR 44
 #define BATTLE_SPRITE_NEAR 80
 /* As many GBA pixels as the scenery's displacement at the widest slider
@@ -6550,7 +6554,7 @@ static bool sSceneComposed;
 
 
 /* How near a sprite centred on GBA line `centre` stands: 0 at
- * BATTLE_SPRITE_DEPTH, 1 on the screen. */
+ * BATTLE_SPRITE_DEPTH, 1 at BATTLE_OWN_DEPTH. */
 static float BattleSpriteNear(int centre)
 {
     float near = (centre - BATTLE_SPRITE_FAR) / (float)(BATTLE_SPRITE_NEAR - BATTLE_SPRITE_FAR);
@@ -6567,7 +6571,9 @@ static float BattleSceneryShift(void)
 
 static float BattleSpriteShift(int centre)
 {
-    return -sEyeParallax * BATTLE_SPRITE_DEPTH * (1 - BattleSpriteNear(centre));
+    const float near = BattleSpriteNear(centre);
+
+    return -sEyeParallax * (BATTLE_SPRITE_DEPTH * (1 - near) + BATTLE_OWN_DEPTH * near);
 }
 
 /*
@@ -7705,7 +7711,7 @@ static bool BattleSprites(unsigned *furthest, bool *apart)
     };
     unsigned display = Reg(0), control = Reg(0x50);
     bool alpha = ((control >> 6) & 3) == 1 && (control & 16);
-    int reach = (int)ceilf(BATTLE_SPRITE_DEPTH / sShiftZoom) + 1;
+    int reach = (int)ceilf(fmaxf(fabsf(BATTLE_SPRITE_DEPTH), fabsf(BATTLE_OWN_DEPTH)) / sShiftZoom) + 1;
     int top = (int)lroundf((sScenePut.oy - sOffY) / sZoom), bottom = BATTLE_SCENE_BOTTOM;
     int left = VIEW_LEFT - reach, right = VIEW_RIGHT + reach;
 

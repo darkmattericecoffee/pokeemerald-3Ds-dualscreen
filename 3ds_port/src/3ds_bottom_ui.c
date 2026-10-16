@@ -6346,8 +6346,9 @@ void CtrBottom_TestOptions(unsigned page)
 {
     sTestMode = MODE_FIELD;
     sScreen = SCR_OPTION;
-    sOptPage = (u8)page;
-    sOptSub = 0;
+    /* page + 10 * sub: a tab's later page too. */
+    sOptPage = (u8)(page % 10);
+    sOptSub = (u8)(page / 10);
     sForceRedraw = TRUE;
 }
 

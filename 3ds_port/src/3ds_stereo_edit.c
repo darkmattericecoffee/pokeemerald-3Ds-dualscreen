@@ -4011,8 +4011,8 @@ static void DrawVersions(void)
         int x = 2 + (int)roundf((k - sE.scroll) * VB_COL_W);
         const unsigned c = sE.cols[k];
         const CtrOnlineVersion *fv = SideVersion(0, sE.colV[c][0]), *bv = SideVersion(1, sE.colV[c][1]);
-        /* The card: dark green, dark blue for this account's own. */
-        const uint16_t card = (fv && fv->mine) || (bv && bv->mine) ? Rgb(3, 14, 16) : Rgb(5, 17, 8);
+        /* The card: a mid green, a mid teal for this account's own. */
+        const uint16_t card = (fv && fv->mine) || (bv && bv->mine) ? Rgb(14, 42, 22) : Rgb(17, 44, 17);
 
         CtrBottomDraw_Fill(x + 1, VB_CARD_Y, VB_CARD_W - 2, VB_CARD_H, card);
         CtrBottomDraw_Fill(x, VB_CARD_Y + 1, VB_CARD_W, VB_CARD_H - 2, card);

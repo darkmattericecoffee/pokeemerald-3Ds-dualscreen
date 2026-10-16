@@ -712,12 +712,16 @@ CtrStereoDepths CtrStereoDepths_Get(void)
 {
     /* As OPTIONS lists them (3ds_extras.c sBattleBacks ...). */
     static const float backs[CTR_DEPTH_BACK_CHOICES] = {2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f};
-    static const float mons[CTR_DEPTH_MON_CHOICES] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f};
+    static const float mons[CTR_DEPTH_MON_CHOICES] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f};
+    static const float owns[CTR_DEPTH_OWN_CHOICES] = {-2.0f, -1.0f, 0.0f, 1.0f, 2.0f, 3.0f};
+    static const float spreads[CTR_DEPTH_SPREAD_CHOICES] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
     static const float pivots[CTR_DEPTH_PIVOT_CHOICES] = {1.0f, PIVOT_FRACTION, 0.0f};
     CtrStereoDepths d;
 
     d.back = backs[Choice(CTR_DEPTH_BACK_KEY, CTR_DEPTH_BACK_CHOICES, CTR_DEPTH_BACK_STANDARD)];
     d.mon = mons[Choice(CTR_DEPTH_MON_KEY, CTR_DEPTH_MON_CHOICES, CTR_DEPTH_MON_STANDARD)];
+    d.own = owns[Choice(CTR_DEPTH_OWN_KEY, CTR_DEPTH_OWN_CHOICES, CTR_DEPTH_OWN_STANDARD)];
+    d.spread = spreads[Choice(CTR_DEPTH_SPREAD_KEY, CTR_DEPTH_SPREAD_CHOICES, CTR_DEPTH_SPREAD_STANDARD)];
     d.pivot = pivots[Choice(CTR_DEPTH_PIVOT_KEY, CTR_DEPTH_PIVOT_CHOICES, CTR_DEPTH_PIVOT_STANDARD)];
     return d;
 }
@@ -946,7 +950,7 @@ bool CtrStereoMon_SaveEdit(void)
 
         memcpy(t, META_MAGIC, 8);
         t[8] = sMeta.finalized ? META_FINAL : 0;
-        t[9] = CTR_EDIT_DEPTH_SAVED;
+        t[9] = (uint8_t)CtrStereoDepths_Get().spread;
         t[10] = (uint8_t)revision;
         t[11] = (uint8_t)(revision >> 8);
         for (unsigned b = 0; b < 4; ++b) t[12 + b] = (uint8_t)(saved >> (8 * b));
@@ -1328,16 +1332,18 @@ static float DepthOf(uint16_t id) { return BackSide(id) ? BACK_DEPTH : 1.0f; }
  * left), `slider` the 3D slider's 0..1.
  */
 /* The eye's shift per sprite pixel of the stack's depth (DrawStack): every
- * picture's planes span CTR_DEPTH_PLANES_PX. */
+ * picture's planes span MON PLANES. */
 static float StackShift(float sign, float slider, uint16_t id)
 {
-    return sign * slider * CTR_DEPTH_PLANES_PX * CTR_BATTLE_ZOOM / DEPTH_SPAN * DepthOf(id);
+    return sign * slider * CtrStereoDepths_Get().spread * CTR_BATTLE_ZOOM / DEPTH_SPAN * DepthOf(id);
 }
 
 /* The eye's shift of the picture's own depth, where PLANES SIT stands the stack. */
 static float PictureShift(float sign, float slider, uint16_t id)
 {
-    return BackSide(id) ? 0.0f : -sign * slider * CtrStereoDepths_Get().mon;
+    const CtrStereoDepths d = CtrStereoDepths_Get();
+
+    return -sign * slider * (BackSide(id) ? d.own : d.mon);
 }
 
 /* The eye's shift of the scenery behind. */
@@ -2070,7 +2076,7 @@ static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
         const CtrStereoDepths d = CtrStereoDepths_Get();
 
         /* OPTIONS' depths, each a few pixels: changed, the frame is drawn again. */
-        k->depth = (int)(d.back * 4) | (int)(d.mon * 4) << 8
+        k->depth = (int)(d.back * 4) | (int)(d.mon * 4) << 8 | (int)((d.own + 2) * 4) << 16 | (int)(d.spread * 4) << 20
                  | (int)(d.pivot * 100) << 24;
     }
     k->slider = (int)(slider * 256.0f + 0.5f);

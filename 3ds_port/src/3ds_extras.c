@@ -52,10 +52,13 @@ static const char *const sVoxelDepths[] = {"25%", "50%", "75%", "100%", "125%", 
  * battle, the editor and the Pokédex all take (3ds_stereo_mon.h
  * CtrStereoDepths, numbered as listed here): the scenery behind the screen,
  * the opponent's sprite behind it (the player's is on the screen), and where
- * a picture's planes stand against the sprite's depth. How deep the planes
- * go is the same for every picture (CTR_DEPTH_PLANES_PX). */
+ * the player's (backs), how deep every picture's planes go, and where a
+ * picture's planes stand against the sprite's depth. */
 static const char *const sBattleBacks[] = {"2PX", "3PX", "4PX", "6PX", "8PX", "12PX"};
-static const char *const sBattleMons[] = {"0PX", "1PX", "2PX", "3PX", "4PX"};
+static const char *const sBattleMons[] = {"0PX", "1PX", "2PX", "3PX", "4PX", "6PX"};
+/* The player's side: minus is in front of the screen. */
+static const char *const sBattleOwns[] = {"-2PX", "-1PX", "0PX", "1PX", "2PX", "3PX"};
+static const char *const sPlaneSpreads[] = {"1PX", "2PX", "3PX", "4PX", "5PX", "6PX"};
 static const char *const sPlanePivots[] = {CTR_TEXT("BEHIND", "DETRÁS", "DERRIÈRE", "DIETRO"), CTR_TEXT("AROUND", "ALREDEDOR", "AUTOUR", "INTORNO"), CTR_TEXT("IN FRONT", "DELANTE", "DEVANT", "DAVANTI")};
 /* The stereoscopic battle's lines are shown only when the build carries
  * planes (romfs/stereo/mons.bin or backs.bin, 3ds_stereo_mon.c): without
@@ -418,7 +421,9 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D BATTLE MONS", "POKÉMON 3D", "POKÉMON 3D", "POKÉMON 3D"), "battle_mon_3d", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL, PlanesShown},
     /* The 3D depths, read natively each frame (CtrStereoDepths). */
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE BACK", "FONDO COMBATE", "FOND COMBAT", "SFONDO LOTTA"), CTR_DEPTH_BACK_KEY, CTR_DEPTH_BACK_CHOICES, CTR_DEPTH_BACK_STANDARD, sBattleBacks, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE MONS", "POKÉMON COMBATE", "POKÉMON COMBAT", "POKÉMON LOTTA"), CTR_DEPTH_MON_KEY, CTR_DEPTH_MON_CHOICES, CTR_DEPTH_MON_STANDARD, sBattleMons, NULL, NULL, NULL, PlanesShown},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("FOE MON", "POKÉMON RIVAL", "POKÉMON ADV.", "POKÉMON AVV."), CTR_DEPTH_MON_KEY, CTR_DEPTH_MON_CHOICES, CTR_DEPTH_MON_STANDARD, sBattleMons, NULL, NULL, NULL, PlanesShown},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("YOUR MON", "TU POKÉMON", "TON POKÉMON", "TUO POKÉMON"), CTR_DEPTH_OWN_KEY, CTR_DEPTH_OWN_CHOICES, CTR_DEPTH_OWN_STANDARD, sBattleOwns, NULL, NULL, NULL, PlanesShown},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("MON PLANES", "PLANOS POKÉMON", "PLANS POKÉMON", "PIANI POKÉMON"), CTR_DEPTH_SPREAD_KEY, CTR_DEPTH_SPREAD_CHOICES, CTR_DEPTH_SPREAD_STANDARD, sPlaneSpreads, NULL, NULL, NULL, PlanesShown},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("PLANES SIT", "POSICIÓN PLANOS", "POSITION PLANS", "POSIZ. PIANI"), CTR_DEPTH_PIVOT_KEY, CTR_DEPTH_PIVOT_CHOICES, CTR_DEPTH_PIVOT_STANDARD, sPlanePivots, NULL, NULL, NULL, PlanesShown},
     /* The plane editor's and sharing's switches (read by 3ds_stereo_edit.c
      * and 3ds_stereo_mon_game.c): a sync that brings pictures opens the
