@@ -397,10 +397,23 @@ def web_grid(req: Request) -> Response:
     mine = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM versions WHERE user_id = ?", (uid,))]
     voted = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM votes WHERE user_id = ?", (uid,))]
     fronts = ["%03u" % n for n in range(1, DEX_COUNT + 1)]
-    known = set(fronts) | {"b" + k for k in fronts}
+    fronts_set = set(fronts)
+    known = fronts_set | {"b" + k for k in fronts}
     others = sorted({r["mon_key"] for r in rows} - known)
     keys = fronts + ["b" + k for k in fronts] + others
+    # The depth sweet spots against each other, per tab: versions, their votes, current ones.
+    current_ids = {r["version_id"] for r in rows}
+    sweet = {kind: {str(d): [0, 0, 0] for d in (0,) + DEPTHS} for kind in ("front", "back", "other")}
+    for r in req.conn.execute(
+            "SELECT v.id, v.mon_key, " + DEPTH_SQL + " AS depth, "
+            "(SELECT COUNT(*) FROM votes t WHERE t.version_id = v.id) AS n FROM versions v"):
+        kind = "front" if r["mon_key"] in fronts_set else "back" if r["mon_key"] in known else "other"
+        t = sweet[kind][str(depth_of(r["depth"]) or 0)]
+        t[0] += 1
+        t[1] += r["n"]
+        t[2] += r["id"] in current_ids
     return json_resp({
+        "sweet": sweet,
         "rev": db.current_rev(req.conn), "dex_count": DEX_COUNT, "others": others,
         "names": {k: CFG.name(k) for k in keys},
         "pictures": [k for k in keys if k in CFG.sprites],
@@ -501,12 +514,13 @@ def web_delete(req: Request, vid: str) -> Response:
 
 @route("GET", r"/api/web/pictures/" + KEY, "web")
 def web_picture(req: Request, key: str) -> Response:
-    """The game's picture as data (palette, one index per pixel per frame), for the 3D viewer."""
+    """The game's picture as data, for the 3D viewer: as in sprites.json, the palette and per frame
+    one hex digit (the colour index) per pixel."""
     sprite = CFG.sprites.get(key)
     if sprite is None:
         return api_error(404, "no game picture for %s" % key)
     return json_resp({"key": key, "palette": ["#%02x%02x%02x" % c for c in sprite.palette],
-                      "frames": [f.hex() for f in sprite.frames]}, headers=IMG_HEADERS)
+                      "frames": ["".join("%x" % i for i in f) for f in sprite.frames]}, headers=IMG_HEADERS)
 
 
 def account_json(req: Request) -> dict:

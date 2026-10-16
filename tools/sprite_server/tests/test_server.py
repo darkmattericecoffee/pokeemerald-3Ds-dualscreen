@@ -249,6 +249,22 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(b.go("GET", "/api/web/users")[0], 403)
         self.assertEqual(b.api("POST", "/api/web/users", {"name": "x", "role": "admin"})[0], 403)
 
+    def test_picture_data_for_the_3d_viewer(self):
+        """The game picture as the web app's viewer reads it: sprites.json's own format."""
+        frame = "0" * 2048 + "1f" * 1024
+        server.CFG.sprites["007"] = editfile.Sprite(["#000000", "#ff8800"] + ["#102030"] * 14, [frame, frame])
+        try:
+            b, _ = self.linked_client("lena")
+            status, data = b.api("GET", "/api/web/pictures/007")
+            self.assertEqual(status, 200)
+            self.assertEqual(data["frames"], [frame, frame])  # one hex digit per pixel
+            self.assertEqual(data["palette"][:2], ["#000000", "#ff8800"])
+            self.assertEqual(b.go("GET", "/api/web/pictures/008")[0], 404)
+            self.assertEqual(b.api("GET", "/api/web/mons/007")[1]["picture"], True)
+            self.assertIn("007", b.api("GET", "/api/web/grid")[1]["pictures"])
+        finally:
+            del server.CFG.sprites["007"]
+
     def test_the_web_app_is_served(self):
         web = tempfile.mkdtemp(dir=self.tmp)
         os.makedirs(os.path.join(web, "assets"))
@@ -293,6 +309,11 @@ class ServerTest(unittest.TestCase):
         self.assertIn("025", grid["items"])
         self.assertNotIn("026", grid["items"])
         self.assertEqual(sorted(grid["mine"]), ["025", "150", "b025"])
+        # make_edit leaves the depth byte 0: every version counts as "not set" (other tests add more).
+        fronts = sum(1 for k in grid["items"] if not k.startswith("b"))
+        self.assertEqual(grid["sweet"]["front"]["0"][2], fronts)
+        self.assertGreaterEqual(grid["sweet"]["back"]["0"][0], 1)
+        self.assertEqual([grid["sweet"]["front"][d] for d in "123"], [[0, 0, 0]] * 3)
         self.assertEqual(grid["names"]["025"], "Front 025")  # no sprites.json in the test data
         status, page = bob.api("GET", "/api/web/mons/025")
         self.assertEqual(status, 200)

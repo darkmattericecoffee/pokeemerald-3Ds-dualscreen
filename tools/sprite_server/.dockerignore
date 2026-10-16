@@ -1,4 +1,7 @@
-tests
-__pycache__
-*.pyc
+web/node_modules
+web/dist
 data
+deploy/.env
+tests
+**/__pycache__
+*.pyc

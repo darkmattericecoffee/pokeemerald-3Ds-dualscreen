@@ -1,0 +1,171 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource/press-start-2p/400.css";
+@import "@fontsource-variable/nunito";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* A handheld-dex look: a red shell, cream pages, chunky outlines and buttons that press in. */
+:root {
+  --radius: 1rem;
+  --background: #fbf4e4;
+  --background-dots: #eadfc5;
+  --foreground: #1c1917;
+  --card: #fffdf7;
+  --card-foreground: #1c1917;
+  --popover: #fffdf7;
+  --popover-foreground: #1c1917;
+  --primary: #dc2626;
+  --primary-foreground: #ffffff;
+  --primary-deep: #991b1b;
+  --secondary: #fde68a;
+  --secondary-foreground: #422006;
+  --muted: #f1e8d4;
+  --muted-foreground: #6b5e4b;
+  --accent: #facc15;
+  --accent-foreground: #422006;
+  --success: #10b981;
+  --success-foreground: #ffffff;
+  --destructive: #dc2626;
+  --border: #2b2420;
+  --hairline: #e3d6bb;
+  --input: #2b2420;
+  --ring: #2563eb;
+  --screen: #0f1d2e;
+  --screen-glow: #1d3b5c;
+  --lens: #38bdf8;
+}
+
+.dark {
+  --background: #16130f;
+  --background-dots: #231e18;
+  --foreground: #f5efe2;
+  --card: #211c16;
+  --card-foreground: #f5efe2;
+  --popover: #211c16;
+  --popover-foreground: #f5efe2;
+  --primary: #ef4444;
+  --primary-deep: #7f1d1d;
+  --secondary: #4a3b12;
+  --secondary-foreground: #fde68a;
+  --muted: #2c251d;
+  --muted-foreground: #b6a78d;
+  --accent: #facc15;
+  --border: #0b0907;
+  --hairline: #3a3127;
+  --input: #5b4f40;
+  --screen: #070d16;
+  --screen-glow: #13283f;
+}
+
+@theme inline {
+  --font-sans: "Nunito Variable", ui-rounded, system-ui, sans-serif;
+  --font-pixel: "Press Start 2P", ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-deep: var(--primary-deep);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-hairline: var(--hairline);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-screen: var(--screen);
+  --color-screen-glow: var(--screen-glow);
+  --color-lens: var(--lens);
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 6px);
+  --shadow-chunky: 0 4px 0 0 var(--border);
+  --shadow-chunky-sm: 0 2px 0 0 var(--border);
+  --animate-blink: blink 1.2s ease-in-out;
+  --animate-fresh: fresh 2.4s ease-out;
+  --animate-pop: pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  30% { opacity: 0.25; }
+}
+@keyframes fresh {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 90%, transparent), var(--shadow-chunky-sm); }
+  100% { box-shadow: 0 0 0 14px transparent, var(--shadow-chunky-sm); }
+}
+@keyframes pop {
+  0% { transform: scale(0.6); }
+  100% { transform: scale(1); }
+}
+
+@layer base {
+  * {
+    border-color: var(--hairline);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background-color: var(--background);
+    background-image: radial-gradient(var(--background-dots) 1.2px, transparent 1.2px);
+    background-size: 18px 18px;
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    min-height: 100dvh;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, [role="button"] {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 3px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@utility pixelated {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+@utility font-pixel {
+  font-family: var(--font-pixel);
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
+/* A panel with a thick outline and a hard drop shadow, like a handheld's screen bezel. */
+@utility panel {
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-chunky);
+}
+
+@utility screen {
+  background:
+    radial-gradient(120% 90% at 50% 20%, var(--screen-glow), var(--screen) 70%),
+    var(--screen);
+  border: 3px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 0 0 3px color-mix(in srgb, white 8%, transparent), inset 0 10px 30px rgb(0 0 0 / 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

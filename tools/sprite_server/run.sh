@@ -14,6 +14,16 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 command -v cloudflared >/dev/null || { echo "cloudflared is missing: brew install cloudflared" >&2; exit 1; }
 
+# The web app: built once (and again after a change: cd web && npm run build).
+if [ ! -f "$HERE/web/dist/index.html" ]; then
+    if command -v npm >/dev/null; then
+        echo "Building the web app (once)..." >&2
+        (cd "$HERE/web" && npm ci --no-audit --no-fund && npm run build) >&2
+    else
+        echo "The web app is not built and npm is missing; the console API works without it." >&2
+    fi
+fi
+
 python3 "$HERE/server.py" --data "$DATA" serve --port "$PORT" &
 SERVER=$!
 trap 'kill "$SERVER" 2>/dev/null || true' EXIT INT TERM
