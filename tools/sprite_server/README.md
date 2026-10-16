@@ -142,6 +142,63 @@ Minimum TLS Version at 1.0** (the default). Then run `tools/tlsprobe` against th
 address before handing it out. The probe passed through a quick tunnel, whose certificate
 chains to GlobalSign Root CA. A custom domain may get a different certificate authority.
 
+## Deploying on the Mac mini
+
+The live server runs on the Mac mini (`arnoudwarschauer@mac-mini-m1.local`) in Docker, at
+**https://poke.cloudnoud.nl**, through the named tunnel `poke`. Everything is in
+`deploy/docker-compose.yml`: the server (on the Mac mini's 127.0.0.1:8788, since 8787 is
+taken there) and a cloudflared container that runs the tunnel. Both have
+`restart: unless-stopped`. Docker Desktop starts at login and the Mac mini logs in by
+itself, so the server comes back after a reboot.
+
+| On the Mac mini | |
+|---|---|
+| `~/emerald3ds-server/` | a copy of this folder (`deploy/.env` holds the tunnel id and paths) |
+| `~/emerald3ds-sprite-server/` | the data: `sprites.db` (back it up) and `sprites.json` |
+| `~/emerald3ds-cloudflared/.cloudflared/` | the tunnel's login (`cert.pem`) and credentials, apart from the Mac mini's other tunnel |
+
+Update and restart it after a change here (run from the repo root on the MacBook):
+
+```bash
+rsync -a --exclude __pycache__ --exclude .env --exclude data tools/sprite_server/ arnoudwarschauer@mac-mini-m1.local:emerald3ds-server/
+ssh arnoudwarschauer@mac-mini-m1.local 'cd ~/emerald3ds-server/deploy && /usr/local/bin/docker compose up -d --build'
+```
+
+Logs, a restart, a new account, a backup:
+
+```bash
+ssh arnoudwarschauer@mac-mini-m1.local 'cd ~/emerald3ds-server/deploy && /usr/local/bin/docker compose logs --tail 50'
+ssh arnoudwarschauer@mac-mini-m1.local 'cd ~/emerald3ds-server/deploy && /usr/local/bin/docker compose restart'
+ssh arnoudwarschauer@mac-mini-m1.local '/usr/local/bin/docker exec emerald3ds-server-1 python server.py --data /data adduser NAME'
+ssh arnoudwarschauer@mac-mini-m1.local '/usr/local/bin/docker exec emerald3ds-server-1 python -c "import sqlite3; sqlite3.connect(\"/data/sprites.db\").backup(sqlite3.connect(\"/data/sprites-backup.db\"))"'
+```
+
+Make backups inside the container as above: the database is in WAL mode, and its lock
+does not reach across Docker Desktop's file sharing, so leave `sprites.db` alone on the
+Mac mini's side while the server runs.
+
+The tunnel was made once, on the Mac mini, with its own login folder as HOME. Without
+that, cloudflared reads the Mac mini's `~/.cloudflared/config.yml`, which names its other
+tunnel, and `route dns` points the hostname at that tunnel instead:
+
+```bash
+export HOME=~/emerald3ds-cloudflared                # in a fresh shell on the Mac mini
+cloudflared tunnel login                            # browser: pick cloudnoud.nl
+cloudflared tunnel create --credentials-file ~/.cloudflared/poke.json poke
+cloudflared tunnel route dns --overwrite-dns poke poke.cloudnoud.nl
+cloudflared tunnel list                             # the id goes into deploy/.env
+```
+
+**The 3DS and this address.** cloudnoud.nl is on Cloudflare's Free plan, whose edge
+certificate is ECDSA only (RSA needs a paid plan). TLS 1.0 works, and the chain ends at
+GlobalSign Root CA (WE1 › GTS Root R4 cross-signed by GlobalSign), but the console was only
+seen working with RSA (ECDHE-RSA-AES128-SHA, through a quick tunnel). Run `tools/tlsprobe`
+on the 3DS against `https://poke.cloudnoud.nl/api/health` before handing the address out.
+
+Keep the zone's **SSL/TLS › Edge Certificates › Minimum TLS Version at 1.0** for the 3DS,
+and check it with `tools/tlsprobe` (put `https://poke.cloudnoud.nl/api/health` in
+`sdmc:/3ds/tlsprobe/urls.txt`).
+
 ## Tests
 
 ```bash
