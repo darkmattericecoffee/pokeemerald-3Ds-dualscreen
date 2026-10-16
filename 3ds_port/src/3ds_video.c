@@ -10665,12 +10665,22 @@ static void DumpAll(void)
     CtrLog_Write(CTR_LOG_VIDEO, "DUMP done");
 }
 
+/* A dump asked for by a test script (online_test.txt "topshot"). */
+static bool sDumpWanted;
+void CtrVideo_RequestDump(void) { sDumpWanted = true; }
+
 static void DumpOnKey(void)
 {
     static bool sLatched;
     const CtrInput *input = CtrInput_Get();
     const unsigned chord = CTR_KEY_L | CTR_KEY_R | CTR_KEY_SELECT;
 
+    if (sDumpWanted)
+    {
+        sDumpWanted = false;
+        DumpAll();
+        return;
+    }
     /* The chord held, once until it is let go: the key's down edge is
      * scanned by the game's frame, which this does not see every time. */
     if ((input->physicalHeld & chord) != chord) { sLatched = false; return; }

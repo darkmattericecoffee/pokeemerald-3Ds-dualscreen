@@ -52,6 +52,7 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "3ds_bottom.h"
@@ -64,6 +65,7 @@
 #include "3ds_online.h"
 #include "3ds_platform.h"
 #include "3ds_stereo_mon.h"
+#include "3ds_stereo_strip.h"
 
 /* 3ds_stereo_mon_game.c: the name of what an id shows, in ASCII capitals. */
 void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
@@ -328,6 +330,33 @@ static struct
     uint8_t side;
     bool confirmDelete, versionsAfterBind;
     bool versionsFromDex;             /* the versions screen was opened from the Pokédex: closing goes back there */
+    /* The voting view's filmstrip: the columns (each a front's and a
+     * back's version, 0 for none), the ones shown (all, or those holding
+     * the web's picks), the cursor, the slide (in columns: the first one
+     * in view, and where it goes), a touch on the strip or the scrollbar. */
+    uint32_t colV[CTR_STRIP_MAX_COLUMNS][2];
+    unsigned colCount, viewCount, curCol;
+    uint8_t cols[CTR_STRIP_MAX_COLUMNS], curSide, pressSide;
+    float scroll, scrollTarget, scrollAtTouch;
+    bool padSliding, stripTouch, barTouch, dragged;
+    int touchX0, pressCol;
+    /* Following the web: on, when it last asked, what it last heard; the
+     * versions the web picked (shown alone while webOnly); a jump to
+     * another Pokémon waiting for its lists. */
+    bool follow, webOnly, webJump;
+    uint32_t focusAskedAt;
+    unsigned focusSerial;
+    CtrOnlineFocus focusSeen;
+    uint32_t webV[CTR_ONLINE_MAX_VERSIONS];
+    unsigned webCount;
+    /* The pictures asked for (to ask again only after a while), the
+     * files' serial, the top screen's words (made again when they change). */
+    uint32_t filesHash, filesAskedAt;
+    unsigned filesSerial;
+    bool labelsDirty;
+    char labelText[CTR_STRIP_LABELS][40];
+    int labelColumn[CTR_STRIP_LABELS];
+    bool labelMade[CTR_STRIP_LABELS];
     uint32_t deleteVersion;
     /* The picture the server's words are about (the one edited, or under
      * the Pokédex's cursor), since when, whether its list came; which
@@ -1167,6 +1196,7 @@ static void Close(bool leaveGallery)
     CtrStereoMon_SetEditing(false, 0);
     CtrStereoMon_SetChooser(false);
     CtrStereoMon_SetVersionsView(false);
+    CtrStereoStrip_Close();
     CtrStereoMonGame_WantCompanion(false);
     CtrStereoBattle_SetLive(0, NULL, 0);
     sE.active = false;
@@ -2150,34 +2180,36 @@ static void OptionAct(int row, bool rightHalf)
 /* The UPLOAD row under the FINAL question when the console is linked. */
 #define CF_UPLOAD_H 32
 
-/* ── The versions screen: what the server has of this Pokémon ─────────── */
+/* ── The voting view: what the server has of this Pokémon ────────────── */
 
 /*
  * The globe (in the editor's bar, or on a Pokémon in the Pokédex) opens it:
- * the server's versions of the picture's front and of its back, two lists
- * side by side with who made each and its votes, the most votes first. The
- * top screen shows the front and the back next to each other, both in 3D.
- * UP/DOWN shows a version (it goes on the card; the card's own edit is kept
- * in stereo/backup unless the server has it), LEFT/RIGHT is the front or the
- * back, A (or the row's VOTE button) votes for it or takes the vote back -
- * as many versions as one likes, front and back apart - Y animates; UPLOAD MINE sends this
- * console's own edits of both sides, DELETE MINE takes this account's
- * version off the server.
+ * the server's versions of the picture's front and of its back as a
+ * filmstrip, a column an upload (a front over the same author's back sent
+ * with it; either half may be empty). The top screen shows three columns
+ * in 3D at the battle's size (3ds_stereo_strip.c), the touch screen the
+ * same three as big buttons: a tap votes for that half or takes the vote
+ * back (pressed in while voted), a drag or the scrollbar slides the strip.
+ * D-pad LEFT/RIGHT moves the cursor (the strip follows), UP/DOWN front or
+ * back, the Circle Pad slides, L/R a page, A votes, X puts the version on
+ * the card, Y follows the web (the strip goes where this account's web app
+ * is: GET /api/focus every two seconds), B goes back.
  */
-#define VER_TITLE_H 24
-#define VER_HEAD_Y 26
-#define VER_HEAD_H 18
-#define VER_Y0 48
-#define VER_ROW 32
-#define VER_ROWS 4
-#define VER_COL_W 154
-/* Each row's VOTE button, see-through, at its right end. */
-#define VER_VOTE_W 50
-#define VER_CLOSE_W 56
-#define VER_BTN_Y 182
-#define VER_BTN_H 22
-
-static int ColumnX(unsigned side) { return side ? W - 4 - VER_COL_W : 4; }
+#define VB_BAR_H 23
+#define VB_COL_W 106
+#define VB_BTN_W 102
+#define VB_FRONT_Y 25
+#define VB_BACK_Y 115
+#define VB_BTN_H 88
+#define VB_BAR_Y 206
+#define VB_BAR_TH 8
+#define VB_ROW_Y 217
+#define VB_ROW_H 21
+#define VB_BACK_W 46
+#define VB_FOLLOW_W 92
+/* A touch that moves this far is a slide, not a vote. */
+#define VB_DRAG 6
+#define VB_FOCUS_FRAMES 120
 
 /* The version on the card of a side: its place in the side's list, or -1. */
 static int SideCardAt(unsigned side)
@@ -2187,11 +2219,141 @@ static int SideCardAt(unsigned side)
     return -1;
 }
 
-static void OpenVersions(void)
+/* A side's version by its number, NULL when the list has none such. */
+static const CtrOnlineVersion *SideVersion(unsigned side, uint32_t version)
+{
+    const CtrOnlineVersions *list = &sE.sideList[side];
+
+    for (unsigned i = 0; version && i < list->count; ++i)
+        if (list->v[i].version == version) return &list->v[i];
+    return NULL;
+}
+
+static float VbMaxScroll(void) { return sE.viewCount > CTR_STRIP_VISIBLE ? (float)(sE.viewCount - CTR_STRIP_VISIBLE) : 0.0f; }
+
+static bool WebPicked(uint32_t version)
+{
+    for (unsigned k = 0; version && k < sE.webCount; ++k)
+        if (sE.webV[k] == version) return true;
+    return false;
+}
+
+/* The columns shown: all, or (web picks on) those holding a picked one. */
+static void BuildView(void)
+{
+    unsigned n = 0;
+    bool any = false;
+
+    for (unsigned c = 0; c < sE.colCount; ++c) any |= WebPicked(sE.colV[c][0]) || WebPicked(sE.colV[c][1]);
+    for (unsigned c = 0; c < sE.colCount; ++c)
+        if (!sE.webOnly || !any || WebPicked(sE.colV[c][0]) || WebPicked(sE.colV[c][1])) sE.cols[n++] = (uint8_t)c;
+    sE.viewCount = n;
+    if (sE.curCol >= n) sE.curCol = n ? n - 1 : 0;
+    if (sE.scrollTarget > VbMaxScroll()) sE.scrollTarget = VbMaxScroll();
+    if (sE.scroll > VbMaxScroll()) sE.scroll = VbMaxScroll();
+    sE.dirtyDraw = true;
+}
+
+/*
+ * The columns from the two lists: each front with the same author's back
+ * uploaded closest to it (an upload sends both), in the front list's order
+ * (the most votes first); backs nobody's front took after them. Built
+ * again only when the versions themselves change, so a vote never moves a
+ * column away from under the stylus.
+ */
+static void BuildColumns(void)
+{
+    const CtrOnlineVersions *f = &sE.sideList[0], *b = &sE.sideList[1];
+    bool taken[CTR_ONLINE_MAX_VERSIONS] = {false};
+    uint32_t keepV = sE.viewCount ? sE.colV[sE.cols[sE.curCol]][sE.curSide] : 0;
+    unsigned n = 0;
+
+    for (unsigned i = 0; i < f->count && n < CTR_STRIP_MAX_COLUMNS; ++i)
+    {
+        int best = -1;
+        uint32_t gap = 0;
+
+        for (unsigned j = 0; sE.sideId[1] && j < b->count; ++j)
+        {
+            uint32_t d;
+
+            if (taken[j] || b->v[j].mine != f->v[i].mine || strcmp(b->v[j].author, f->v[i].author) != 0) continue;
+            d = b->v[j].uploaded > f->v[i].uploaded ? b->v[j].uploaded - f->v[i].uploaded : f->v[i].uploaded - b->v[j].uploaded;
+            if (best < 0 || d < gap)
+            {
+                best = (int)j;
+                gap = d;
+            }
+        }
+        sE.colV[n][0] = f->v[i].version;
+        sE.colV[n][1] = best >= 0 ? b->v[best].version : 0;
+        if (best >= 0) taken[best] = true;
+        ++n;
+    }
+    for (unsigned j = 0; sE.sideId[1] && j < b->count && n < CTR_STRIP_MAX_COLUMNS; ++j)
+        if (!taken[j])
+        {
+            sE.colV[n][0] = 0;
+            sE.colV[n][1] = b->v[j].version;
+            ++n;
+        }
+    sE.colCount = n;
+    BuildView();
+    /* The cursor stays on the version it was on. */
+    for (unsigned k = 0; keepV && k < sE.viewCount; ++k)
+        for (unsigned d = 0; d < 2; ++d)
+            if (sE.colV[sE.cols[k]][d] == keepV)
+            {
+                sE.curCol = k;
+                sE.curSide = (uint8_t)d;
+            }
+    sE.filesHash = 0;
+    sE.labelsDirty = true;
+}
+
+/* Whether the lists name other versions than the columns hold. */
+static bool ColumnsStale(void)
+{
+    unsigned held = 0, listed = sE.sideList[0].count + (sE.sideId[1] ? sE.sideList[1].count : 0);
+
+    for (unsigned c = 0; c < sE.colCount; ++c)
+        for (unsigned d = 0; d < 2; ++d)
+            if (sE.colV[c][d])
+            {
+                if (SideVersion(d, sE.colV[c][d]) == NULL) return true;
+                ++held;
+            }
+    return held != listed;
+}
+
+/* The sides of the picture the editor has: a Pokémon's front and back, a
+ * trainer's or a player's one picture. */
+static void InitSides(void)
 {
     uint16_t other = CtrStereoMon_Counterpart(sE.id);
     bool back = (sE.id & 0xC000) == CTR_STEREO_ID_BACK;
 
+    memset(sE.sideList, 0, sizeof(sE.sideList));
+    memset(sE.sideLoaded, 0, sizeof(sE.sideLoaded));
+    sE.sideId[0] = back && other ? other : sE.id;
+    sE.sideId[1] = back ? sE.id : (sE.id & 0xC000) == 0 ? other : 0;
+    sE.side = back ? 1 : 0;
+    sE.sideCard[0] = CtrOnline_CardVersion(sE.sideId[0]);
+    sE.sideCard[1] = sE.sideId[1] ? CtrOnline_CardVersion(sE.sideId[1]) : 0;
+    sE.sideSerial = CtrOnline_Serial();
+    sE.colCount = sE.viewCount = 0;
+    sE.curCol = 0;
+    sE.curSide = back ? 1 : 0;
+    sE.scroll = sE.scrollTarget = 0;
+    sE.filesHash = 0;
+    sE.labelsDirty = true;
+    memset(sE.labelText, 0, sizeof(sE.labelText));
+    sE.askedFor = 0;
+    CtrStereoStrip_Open(sE.sideId[0], sE.sideId[1]);
+}
+
+static void OpenVersions(void)
+{
     sE.versionsFromDex = false;
     if (!CtrOnline_Linked())
     {
@@ -2200,21 +2362,15 @@ static void OpenVersions(void)
         return;
     }
     if (sE.dirtyFile) Save(true);
-    memset(sE.sideList, 0, sizeof(sE.sideList));
-    memset(sE.sideLoaded, 0, sizeof(sE.sideLoaded));
-    memset(sE.sideCursor, 0, sizeof(sE.sideCursor));
-    memset(sE.sidePlaced, 0, sizeof(sE.sidePlaced));
-    /* A Pokémon's front and back; a trainer's or a player's one picture. */
-    sE.sideId[0] = back && other ? other : sE.id;
-    sE.sideId[1] = back ? sE.id : (sE.id & 0xC000) == 0 ? other : 0;
-    sE.side = back ? 1 : 0;
-    sE.sideCard[0] = CtrOnline_CardVersion(sE.sideId[0]);
-    sE.sideCard[1] = sE.sideId[1] ? CtrOnline_CardVersion(sE.sideId[1]) : 0;
-    sE.sideSerial = CtrOnline_Serial();
     sE.confirmDelete = false;
+    sE.stripTouch = sE.barTouch = false;
+    sE.webCount = 0;
+    sE.webOnly = false;
+    sE.follow = CtrSettings_GetInt("online_follow", 0) != 0;
+    sE.focusAskedAt = sE.tick - VB_FOCUS_FRAMES;
+    sE.focusSerial = CtrOnline_Focus(&sE.focusSeen);
     sE.versionsSerial = CtrOnline_GetVersions(&sE.sideList[0]);
-    memset(&sE.sideList[0], 0, sizeof(sE.sideList[0]));
-    sE.askedFor = 0;
+    InitSides();
     sE.screen = S_VERSIONS;
     sE.helpDirty = true;
     sE.dirtyDraw = true;
@@ -2235,12 +2391,13 @@ void CtrStereoEdit_TestShot(const char *path)
     fclose(f);
 }
 
-/* Back where the versions screen was opened from: the editor, or the
- * Pokédex with its cursor on this Pokémon. */
+/* Back where the voting view was opened from: the editor, or the Pokédex
+ * with its cursor on this Pokémon. */
 static void CloseVersions(void)
 {
     sE.screen = S_EDIT;
     sE.confirmDelete = false;
+    CtrStereoStrip_Close();
     CtrStereoMonGame_WantCompanion(false);
     if (sE.versionsFromDex)
     {
@@ -2251,55 +2408,37 @@ static void CloseVersions(void)
     sE.dirtyDraw = true;
 }
 
-/* The other side to the screens (and to the editor, which follows it). */
-static void ShowSide(unsigned side)
+/* The cursor's cell: its column's version of the side, 0 for none. */
+static uint32_t CursorVersion(void)
 {
-    int index;
-
-    if (side > 1 || sE.sideId[side] == 0 || side == sE.side) return;
-    index = CtrStereoMon_GalleryIndexOf(sE.sideId[side]);
-    if (index < 0) return;
-    Save(true);
-    sE.side = (uint8_t)side;
-    sE.pl = NULL;
-    sE.id = 0;
-    CtrStereoMonGame_SelectIndex((unsigned)index);
-    sE.helpDirty = true;
-    sE.dirtyDraw = true;
+    if (sE.curCol >= sE.viewCount) return 0;
+    return sE.colV[sE.cols[sE.curCol]][sE.curSide];
 }
 
-/* A version of the side looked at to the card and the screens. */
-static void ShowVersion(unsigned i)
+/* The strip slides (smoothly, VersionsFrame) to show the cursor's column. */
+static void CursorTo(int column, unsigned side)
 {
-    const CtrOnlineVersions *list = &sE.sideList[sE.side];
-
-    if (i >= list->count) return;
-    sE.sideCursor[sE.side] = i;
-    sE.helpDirty = true;
+    if (sE.viewCount == 0) return;
+    if (column < 0) column = 0;
+    if (column >= (int)sE.viewCount) column = (int)sE.viewCount - 1;
+    sE.curCol = (unsigned)column;
+    if (side <= 1 && (side == 0 || sE.sideId[1])) sE.curSide = (uint8_t)side;
+    if (sE.curCol < sE.scrollTarget) sE.scrollTarget = (float)sE.curCol;
+    if (sE.curCol + 1 > sE.scrollTarget + CTR_STRIP_VISIBLE) sE.scrollTarget = (float)(sE.curCol + 1 - CTR_STRIP_VISIBLE);
+    if (sE.scrollTarget > VbMaxScroll()) sE.scrollTarget = VbMaxScroll();
+    if (sE.scrollTarget < 0) sE.scrollTarget = 0;
     sE.dirtyDraw = true;
-    if (list->v[i].version == sE.sideCard[sE.side]) return;
-    if (sE.dirtyFile) Save(true);
-    if (CtrOnline_UseVersion(sE.sideId[sE.side], list->v[i].version))
-    {
-        char line[40];
-
-        snprintf(line, sizeof(line), "SHOWING VERSION %lu...", (unsigned long)list->v[i].version);
-        Toast(line);
-    }
-    else Toast("BUSY - A MOMENT");
 }
 
 /* A vote for a version of a side, or the vote taken back: any number of a
  * picture's versions (the front's and the back's apart), kept on the card
  * and sent now or as soon as the server answers. */
-static void VoteFor(unsigned side, unsigned i)
+static void VoteVersion(unsigned side, uint32_t version)
 {
-    const CtrOnlineVersions *list = &sE.sideList[side];
-    uint32_t fav[CTR_ONLINE_MAX_VOTES], keep[CTR_ONLINE_MAX_VOTES], version;
+    uint32_t fav[CTR_ONLINE_MAX_VOTES], keep[CTR_ONLINE_MAX_VOTES];
     unsigned n, m = 0;
 
-    if (i >= list->count) return;
-    version = list->v[i].version;
+    if (version == 0 || SideVersion(side, version) == NULL) return;
     n = CtrOnline_Favourites(sE.sideId[side], fav, NULL);
     for (unsigned k = 0; k < n; ++k)
         if (fav[k] != version) keep[m++] = fav[k];
@@ -2313,12 +2452,36 @@ static void VoteFor(unsigned side, unsigned i)
         keep[m++] = version;
     }
     CtrOnline_Vote(sE.sideId[side], keep, m);
-    sE.sideCursor[side] = i;
-    Toast(m > n ? "SENDING VOTE..." : "TAKING THE VOTE BACK...");
+    Toast(m > n ? "VOTED" : "VOTE TAKEN BACK");
     sE.onlineWatch = true;
     sE.onlineSerial = CtrOnline_Serial();
-    sE.helpDirty = true;
+    sE.labelsDirty = true;
     sE.dirtyDraw = true;
+}
+
+/* PUT ON CARD: the cursor's version onto the card (the card's own edit is
+ * kept in stereo/backup unless the server has it): the editor, the
+ * Pokédex and battles show it from then on. */
+static void PutOnCard(void)
+{
+    uint32_t version = CursorVersion();
+    char line[40];
+
+    if (version == 0) return;
+    if (version == sE.sideCard[sE.curSide])
+    {
+        Toast("ALREADY ON THE CARD");
+        return;
+    }
+    if (sE.dirtyFile) Save(true);
+    if (CtrOnline_UseVersion(sE.sideId[sE.curSide], version))
+    {
+        snprintf(line, sizeof(line), "PUTTING %lu ON THE CARD...", (unsigned long)version);
+        Toast(line);
+        sE.onlineWatch = true;
+        sE.onlineSerial = CtrOnline_Serial();
+    }
+    else Toast("BUSY - A MOMENT");
 }
 
 /* UPLOAD MINE: this console's own edits of both sides that the server has
@@ -2348,28 +2511,34 @@ static void UploadMine(void)
     else Toast("BUSY - A MOMENT");
 }
 
-/* DELETE MINE: this account's version of the side looked at (the one on
- * the card, else the one under the cursor, else its only one), asked first. */
+/* DELETE MINE: this account's version under the cursor, else its only one
+ * in the cursor's column, asked first. */
 static void AskDeleteMine(void)
 {
-    const CtrOnlineVersions *list = &sE.sideList[sE.side];
-    int pick = -1, mine = 0, last = -1, card = SideCardAt(sE.side), cur = (int)sE.sideCursor[sE.side];
+    uint32_t pick = 0;
+    unsigned side = sE.curSide;
 
-    for (unsigned i = 0; i < list->count; ++i)
-        if (list->v[i].mine)
-        {
-            ++mine;
-            last = (int)i;
-        }
-    if (card >= 0 && list->v[card].mine) pick = card;
-    else if (cur < (int)list->count && list->v[cur].mine) pick = cur;
-    else if (mine == 1) pick = last;
-    if (pick < 0)
+    if (sE.curCol < sE.viewCount)
     {
-        Toast(mine ? "PICK WHICH OF YOURS FIRST" : "NONE OF THESE IS YOURS");
+        const unsigned c = sE.cols[sE.curCol];
+        const CtrOnlineVersion *v = SideVersion(side, sE.colV[c][side]);
+
+        if (v && v->mine) pick = v->version;
+        else
+            for (unsigned d = 0; d < 2 && pick == 0; ++d)
+                if ((v = SideVersion(d, sE.colV[c][d])) != NULL && v->mine)
+                {
+                    pick = v->version;
+                    side = d;
+                }
+    }
+    if (pick == 0)
+    {
+        Toast("THE CURSOR IS ON NONE OF YOURS");
         return;
     }
-    sE.deleteVersion = list->v[pick].version;
+    sE.side = (uint8_t)side;
+    sE.deleteVersion = pick;
     sE.confirmDelete = true;
     sE.dirtyDraw = true;
 }
@@ -2387,21 +2556,109 @@ static void DeleteMine(void)
     sE.dirtyDraw = true;
 }
 
-static void ToggleAnimate(void)
+static void ToggleFollow(void)
 {
-    sE.animate = !sE.animate;
-    sE.helpDirty = true;
+    sE.follow = !sE.follow;
+    CtrSettings_SetInt("online_follow", sE.follow);
+    sE.focusAskedAt = sE.tick - VB_FOCUS_FRAMES;
+    if (!sE.follow)
+    {
+        sE.webOnly = false;
+        BuildView();
+    }
+    Toast(sE.follow ? "FOLLOWING THE WEB" : "NOT FOLLOWING THE WEB");
+    sE.labelsDirty = true;
     sE.dirtyDraw = true;
 }
 
-/* Each frame on the screen: the two lists (asked for one at a time), which
- * version each side's card holds, the cursor on it when a list arrives. */
+/* The web shows another picture, or other versions of this one. */
+static void ApplyFocus(const CtrOnlineFocus *focus)
+{
+    char line[40];
+    int index;
+
+    if (focus->id == 0) return;
+    sE.webCount = focus->count;
+    memcpy(sE.webV, focus->versions, sizeof(sE.webV));
+    sE.webOnly = focus->count != 0;
+    if (focus->id != sE.sideId[0] && focus->id != sE.sideId[1])
+    {
+        /* Another Pokémon: the editor takes it up (Bind), the view follows. */
+        if ((index = CtrStereoMon_GalleryIndexOf(focus->id)) < 0)
+        {
+            Toast("THE WEB SHOWS ONE THIS GAME HAS NOT");
+            return;
+        }
+        Save(true);
+        sE.pl = NULL;
+        sE.id = 0;
+        sE.webJump = true;
+        CtrStereoMonGame_SelectIndex((unsigned)index);
+        CtrStereoMonGame_Name(focus->id, line, sizeof(line));
+        Toast(line);
+        return;
+    }
+    BuildView();
+    for (unsigned k = 0; k < sE.viewCount; ++k)
+        for (unsigned d = 0; d < 2; ++d)
+            if (WebPicked(sE.colV[sE.cols[k]][d]))
+            {
+                CursorTo((int)k, d);
+                k = sE.viewCount;
+                break;
+            }
+    if (focus->count)
+    {
+        snprintf(line, sizeof(line), "THE WEB PICKED %u", focus->count);
+        Toast(line);
+    }
+    sE.labelsDirty = true;
+}
+
+/* The versions' files the strip needs, the columns in view first. */
+static void AskFiles(void)
+{
+    uint32_t versions[CTR_ONLINE_MAX_FILES], hash = 2166136261u;
+    uint16_t ids[CTR_ONLINE_MAX_FILES];
+    unsigned n = 0, first = (unsigned)sE.scroll;
+
+    for (unsigned k = 0; k < sE.viewCount && n < CTR_ONLINE_MAX_FILES; ++k)
+    {
+        unsigned col = sE.cols[(first + k) % sE.viewCount];
+
+        for (unsigned d = 0; d < 2 && n < CTR_ONLINE_MAX_FILES; ++d)
+            if (sE.colV[col][d] && !CtrOnline_HasFile(sE.colV[col][d]))
+            {
+                versions[n] = sE.colV[col][d];
+                ids[n++] = sE.sideId[d];
+                hash = (hash ^ sE.colV[col][d]) * 16777619u;
+            }
+    }
+    if (n == 0) return;
+    /* The same ones again only after a while (a file the server lost). */
+    if (hash == sE.filesHash && sE.tick - sE.filesAskedAt < 900) return;
+    sE.filesHash = hash;
+    sE.filesAskedAt = sE.tick;
+    CtrOnline_FetchFiles(versions, ids, n);
+}
+
+/* Each frame on the view: the lists and files (one job at a time), the
+ * web's focus, the cards' versions, the strip's slide and its feed. */
 static void VersionsFrame(void)
 {
+    const CtrInput *in = CtrInput_Get();
     CtrOnlineVersions list;
+    CtrOnlineFocus focus;
     unsigned serial = CtrOnline_GetVersions(&list);
-    bool busy = CtrOnline_Busy();
+    bool busy = CtrOnline_Busy(), changed = false;
+    float before = sE.scroll;
 
+    /* The web took the editor to another Pokémon: the view starts over on it. */
+    if (sE.id && sE.id != sE.sideId[0] && sE.id != sE.sideId[1])
+    {
+        InitSides();
+        CtrStereoMonGame_WantCompanion(true);
+    }
     if (serial != sE.versionsSerial)
     {
         sE.versionsSerial = serial;
@@ -2410,27 +2667,29 @@ static void VersionsFrame(void)
             {
                 sE.sideList[s] = list;
                 sE.sideLoaded[s] = true;
-                sE.helpDirty = true;
-                sE.dirtyDraw = true;
+                changed = true;
             }
+    }
+    if (changed)
+    {
+        if (ColumnsStale()) BuildColumns();
+        if (sE.webJump && sE.sideLoaded[0] && (sE.sideId[1] == 0 || sE.sideLoaded[1]))
+        {
+            sE.webJump = false;
+            ApplyFocus(&sE.focusSeen);
+        }
+        sE.labelsDirty = true;
+        sE.dirtyDraw = true;
     }
     if (CtrOnline_Serial() != sE.sideSerial && !busy)
     {
         sE.sideSerial = CtrOnline_Serial();
         for (unsigned s = 0; s < 2; ++s)
             if (sE.sideId[s]) sE.sideCard[s] = CtrOnline_CardVersion(sE.sideId[s]);
-        sE.helpDirty = true;
+        sE.labelsDirty = true;
         sE.dirtyDraw = true;
     }
-    /* The cursor starts on the version the card holds. */
-    for (unsigned s = 0; s < 2; ++s)
-        if (sE.sideLoaded[s] && !sE.sidePlaced[s])
-        {
-            int at = SideCardAt(s);
-
-            sE.sidePlaced[s] = true;
-            sE.sideCursor[s] = at >= 0 ? (unsigned)at : 0;
-        }
+    /* One job at a time: the lists, the pictures, the web's focus. */
     if (!busy)
         for (unsigned k = 0; k < 2; ++k)
         {
@@ -2441,21 +2700,142 @@ static void VersionsFrame(void)
                 sE.askedFor = sE.sideId[s];
                 sE.askedAt = sE.tick;
                 CtrOnline_FetchVersions(sE.sideId[s]);
+                busy = true;
                 break;
             }
         }
+    if (!busy && sE.viewCount)
+    {
+        AskFiles();
+        busy = CtrOnline_Busy();
+    }
+    if (!busy && sE.follow && sE.tick - sE.focusAskedAt >= VB_FOCUS_FRAMES)
+    {
+        sE.focusAskedAt = sE.tick;
+        CtrOnline_FetchFocus();
+    }
+    if (CtrOnline_Focus(&focus) != sE.focusSerial)
+    {
+        sE.focusSerial = CtrOnline_Focus(&focus);
+        if (sE.follow && focus.ok && focus.seq != sE.focusSeen.seq)
+        {
+            sE.focusSeen = focus;
+            ApplyFocus(&focus);
+        }
+        if (sE.follow && focus.ok != sE.focusSeen.ok) sE.labelsDirty = true;
+        sE.focusSeen.ok = focus.ok;
+    }
+    /* The slide: the Circle Pad, else towards where the cursor wants it. */
+    if (!sE.stripTouch && !sE.barTouch)
+    {
+        int cx = in->circleX;
+
+        if (cx > 24 || cx < -24)
+        {
+            sE.scroll += (cx > 0 ? cx - 24 : cx + 24) / 130.0f * 0.09f;
+            if (sE.scroll < 0) sE.scroll = 0;
+            if (sE.scroll > VbMaxScroll()) sE.scroll = VbMaxScroll();
+            sE.scrollTarget = sE.scroll;
+            sE.padSliding = true;
+            /* The cursor stays in view. */
+            if (sE.curCol < (unsigned)ceilf(sE.scroll - 0.01f)) sE.curCol = (unsigned)ceilf(sE.scroll - 0.01f);
+            if ((float)sE.curCol + 1 > sE.scroll + CTR_STRIP_VISIBLE + 0.01f) sE.curCol = (unsigned)floorf(sE.scroll + CTR_STRIP_VISIBLE - 1);
+        }
+        else
+        {
+            if (sE.padSliding) sE.scrollTarget = roundf(sE.scroll);
+            sE.padSliding = false;
+            if (sE.scroll != sE.scrollTarget)
+            {
+                sE.scroll += (sE.scrollTarget - sE.scroll) * 0.3f;
+                if (fabsf(sE.scrollTarget - sE.scroll) < 0.01f) sE.scroll = sE.scrollTarget;
+            }
+        }
+    }
+    /* The D-pad held runs on (the Circle Pad's cardinal keys are not it). */
+    if (in->physicalHeld & (CTR_KEY_LEFT | CTR_KEY_RIGHT))
+    {
+        if (++sE.padFrames >= 20 && sE.padFrames % 6 == 0)
+            CursorTo((int)sE.curCol + ((in->physicalHeld & CTR_KEY_RIGHT) ? 1 : -1), sE.curSide);
+    }
+    else sE.padFrames = 0;
+    if (sE.scroll != before)
+    {
+        sE.dirtyDraw = true;
+        if ((unsigned)before != (unsigned)sE.scroll) sE.labelsDirty = true;
+    }
     if (CtrOnline_Serial() != sE.statusSerial)
     {
         sE.statusSerial = CtrOnline_Serial();
         sE.dirtyDraw = true;
     }
+    if (CtrOnline_FilesSerial() != sE.filesSerial)
+    {
+        sE.filesSerial = CtrOnline_FilesSerial();
+        sE.labelsDirty = true;
+        sE.dirtyDraw = true;
+    }
+    /* The strip's feed. */
+    CtrStereoStrip_SetCount(sE.viewCount);
+    for (unsigned k = 0; k < sE.viewCount; ++k)
+        for (unsigned d = 0; d < 2; ++d)
+        {
+            uint32_t version = sE.colV[sE.cols[k]][d];
+            const CtrOnlineVersion *v = SideVersion(d, version);
+            CtrStripCell cell;
+
+            memset(&cell, 0, sizeof(cell));
+            cell.version = version;
+            if (v)
+            {
+                cell.voted = Voted(sE.sideId[d], version);
+                cell.final = v->final;
+                cell.mine = v->mine;
+                cell.web = sE.follow && WebPicked(version);
+            }
+            CtrStereoStrip_SetCell(k, d, &cell);
+        }
+    CtrStereoStrip_SetScroll(sE.scroll);
+    CtrStereoStrip_SetCursor(sE.curCol, sE.curSide, sE.viewCount != 0);
 }
 
-/* UP/DOWN show a version, LEFT/RIGHT the front or the back, A votes, Y
- * animates, L/R a page of the list, B goes back. */
-static void VersionsKeys(unsigned down)
+/* LEFT/RIGHT the cursor (the strip follows), UP/DOWN front or back, A
+ * votes, X puts it on the card, Y follows the web, L/R a page, B goes back. */
+static void VersionsKeysPad(unsigned down, unsigned pad);
+static void VersionsKeys(unsigned down) { VersionsKeysPad(down, CtrInput_Get()->physicalDown); }
+
+void CtrStereoEdit_TestPress(unsigned keys)
 {
-    unsigned count = sE.sideList[sE.side].count, cur = sE.sideCursor[sE.side];
+    if (sE.active && sE.screen == S_VERSIONS) VersionsKeysPad(keys, keys);
+}
+
+/* A test tap: down on one frame, up on the next (CtrStereoEdit_TestTap). */
+static int sTapX = -1, sTapY, sTapPhase;
+
+void CtrStereoEdit_TestTap(int x, int y)
+{
+    sTapX = x;
+    sTapY = y;
+    sTapPhase = 0;
+}
+
+static const CtrInput *TapInput(const CtrInput *in)
+{
+    static CtrInput synth;
+
+    if (sTapX < 0) return in;
+    synth = *in;
+    synth.touchX = (uint16_t)sTapX;
+    synth.touchY = (uint16_t)sTapY;
+    synth.touchActive = sTapPhase == 0;
+    synth.touchDown = sTapPhase == 0;
+    synth.touchUp = sTapPhase == 1;
+    if (++sTapPhase > 1) sTapX = -1;
+    return &synth;
+}
+
+static void VersionsKeysPad(unsigned down, unsigned pad)
+{
 
     if (sE.confirmDelete)
     {
@@ -2465,21 +2845,109 @@ static void VersionsKeys(unsigned down)
         return;
     }
     if (down & (CTR_KEY_B | CTR_KEY_START)) CloseVersions();
-    else if ((down & CTR_KEY_UP) && cur > 0) ShowVersion(cur - 1);
-    else if ((down & CTR_KEY_DOWN) && cur + 1 < count) ShowVersion(cur + 1);
-    else if (down & CTR_KEY_LEFT) ShowSide(0);
-    else if (down & CTR_KEY_RIGHT) ShowSide(1);
-    else if (down & CTR_KEY_A) VoteFor(sE.side, cur);
-    else if (down & CTR_KEY_Y) ToggleAnimate();
-    else if ((down & CTR_KEY_L) && cur >= VER_ROWS) ShowVersion(cur - VER_ROWS);
-    else if ((down & CTR_KEY_R) && cur + VER_ROWS < count) ShowVersion(cur + VER_ROWS);
+    else if (pad & CTR_KEY_LEFT) CursorTo((int)sE.curCol - 1, sE.curSide);
+    else if (pad & CTR_KEY_RIGHT) CursorTo((int)sE.curCol + 1, sE.curSide);
+    else if (pad & CTR_KEY_UP) CursorTo((int)sE.curCol, 0);
+    else if (pad & CTR_KEY_DOWN) CursorTo((int)sE.curCol, 1);
+    else if (down & CTR_KEY_A) VoteVersion(sE.curSide, CursorVersion());
+    else if (down & CTR_KEY_X) PutOnCard();
+    else if (down & CTR_KEY_Y) ToggleFollow();
+    else if (down & CTR_KEY_L) CursorTo((int)sE.curCol - CTR_STRIP_VISIBLE, sE.curSide);
+    else if (down & CTR_KEY_R) CursorTo((int)sE.curCol + CTR_STRIP_VISIBLE, sE.curSide);
     sE.dirtyDraw = true;
+}
+
+/* The scrollbar's thumb: where it starts and how wide it is. */
+static void VbThumb(int *x, int *w)
+{
+    const int track = W - 8;
+    int tw = sE.viewCount > CTR_STRIP_VISIBLE ? track * CTR_STRIP_VISIBLE / (int)sE.viewCount : track;
+    float max = VbMaxScroll();
+
+    if (tw < 16) tw = 16;
+    *w = tw;
+    *x = 4 + (max > 0 ? (int)((track - tw) * sE.scroll / max + 0.5f) : 0);
+}
+
+static void BarTo(int x)
+{
+    int tx, tw;
+    float max = VbMaxScroll();
+
+    VbThumb(&tx, &tw);
+    if (max <= 0) return;
+    sE.scroll = (x - 4 - tw / 2) * max / (float)(W - 8 - tw);
+    if (sE.scroll < 0) sE.scroll = 0;
+    if (sE.scroll > max) sE.scroll = max;
+    sE.scrollTarget = sE.scroll;
+    sE.labelsDirty = true;
+    sE.dirtyDraw = true;
+}
+
+/* A button of the strip under (x, y): its column in the view and side. */
+static bool VbCellAt(int x, int y, unsigned *column, unsigned *side)
+{
+    float at = (x - 2) / (float)VB_COL_W + sE.scroll;
+    int k = (int)floorf(at), inX = (int)((at - k) * VB_COL_W);
+
+    if (k < 0 || k >= (int)sE.viewCount || inX >= VB_BTN_W) return false;
+    if (y >= VB_FRONT_Y && y < VB_FRONT_Y + VB_BTN_H) *side = 0;
+    else if (y >= VB_BACK_Y && y < VB_BACK_Y + VB_BTN_H && sE.sideId[1]) *side = 1;
+    else return false;
+    *column = (unsigned)k;
+    return true;
 }
 
 static void TouchVersions(const CtrInput *in)
 {
     int x = in->touchX, y = in->touchY;
 
+    if (sE.stripTouch && in->touchActive)
+    {
+        if (abs(x - sE.touchX0) > VB_DRAG) sE.dragged = true;
+        if (sE.dragged)
+        {
+            float max = VbMaxScroll();
+
+            sE.scroll = sE.scrollAtTouch - (x - sE.touchX0) / (float)VB_COL_W;
+            if (sE.scroll < 0) sE.scroll = 0;
+            if (sE.scroll > max) sE.scroll = max;
+            sE.scrollTarget = sE.scroll;
+            sE.dirtyDraw = true;
+        }
+        return;
+    }
+    if (sE.barTouch && in->touchActive)
+    {
+        BarTo(x);
+        return;
+    }
+    if (sE.stripTouch || sE.barTouch)
+    {
+        /* Let go: a tap votes, a slide comes to rest on a column. */
+        unsigned column, side;
+
+        if (sE.stripTouch && !sE.dragged && sE.pressCol >= 0)
+        {
+            column = (unsigned)sE.pressCol;
+            side = sE.pressSide;
+            CursorTo((int)column, side);
+            VoteVersion(side, sE.colV[sE.cols[column]][side]);
+        }
+        else
+        {
+            sE.scrollTarget = roundf(sE.scroll);
+            if (sE.scrollTarget > VbMaxScroll()) sE.scrollTarget = VbMaxScroll();
+            if (sE.curCol < sE.scrollTarget) sE.curCol = (unsigned)sE.scrollTarget;
+            if (sE.curCol + 1 > sE.scrollTarget + CTR_STRIP_VISIBLE) sE.curCol = (unsigned)sE.scrollTarget + CTR_STRIP_VISIBLE - 1;
+        }
+        sE.stripTouch = sE.barTouch = false;
+        sE.pressCol = -1;
+        sE.labelsDirty = true;
+        sE.dirtyDraw = true;
+        (void)column;
+        return;
+    }
     if (!in->touchDown) return;
     sE.dirtyDraw = true;
     if (sE.confirmDelete)
@@ -2491,39 +2959,46 @@ static void TouchVersions(const CtrInput *in)
         }
         return;
     }
-    if (y < VER_TITLE_H)
+    if (y < VB_BAR_H)
     {
-        if (x >= W - 4 - VER_CLOSE_W) CloseVersions();
-        return;
-    }
-    if (y >= VER_HEAD_Y && y < VER_HEAD_Y + VER_HEAD_H)
-    {
-        ShowSide(x >= W / 2 ? 1 : 0);
-        return;
-    }
-    if (y >= VER_Y0 && y < VER_Y0 + VER_ROWS * VER_ROW)
-    {
-        unsigned side = x >= W / 2 ? 1 : 0;
-        unsigned first = sE.sideCursor[side] / VER_ROWS * VER_ROWS;
-        unsigned i = first + (unsigned)((y - VER_Y0) / VER_ROW);
-        int cx = x - ColumnX(side);
-
-        if (sE.sideId[side] == 0 || i >= sE.sideList[side].count) return;
-        if (cx >= VER_COL_W - 2 - VER_VOTE_W) VoteFor(side, i);
-        else if (side != sE.side)
+        if (x < 2 + VB_BACK_W) CloseVersions();
+        else if (x >= W - 2 - VB_FOLLOW_W) ToggleFollow();
+        else if (sE.webCount)
         {
-            /* The other side: looked at first, the version shown next. */
-            sE.sideCursor[side] = i;
-            ShowSide(side);
+            /* The title: the web's picks only, or every version. */
+            sE.webOnly = !sE.webOnly;
+            BuildView();
+            sE.labelsDirty = true;
         }
-        else ShowVersion(i);
         return;
     }
-    if (y >= VER_BTN_Y && y < VER_BTN_Y + VER_BTN_H)
+    if (y >= VB_FRONT_Y && y < VB_BACK_Y + VB_BTN_H)
     {
-        if (x < 108) UploadMine();
-        else if (x < 212) AskDeleteMine();
-        else ToggleAnimate();
+        unsigned column, side;
+
+        sE.stripTouch = true;
+        sE.dragged = false;
+        sE.touchX0 = x;
+        sE.scrollAtTouch = sE.scroll;
+        sE.pressCol = -1;
+        if (VbCellAt(x, y, &column, &side) && sE.colV[sE.cols[column]][side])
+        {
+            sE.pressCol = (int)column;
+            sE.pressSide = (uint8_t)side;
+        }
+        return;
+    }
+    if (y >= VB_BAR_Y - 2 && y < VB_BAR_Y + VB_BAR_TH + 2)
+    {
+        sE.barTouch = true;
+        BarTo(x);
+        return;
+    }
+    if (y >= VB_ROW_Y && y < VB_ROW_Y + VB_ROW_H)
+    {
+        if (x < W / 3) UploadMine();
+        else if (x < 2 * W / 3) AskDeleteMine();
+        else PutOnCard();
     }
 }
 
@@ -3299,110 +3774,134 @@ static void DrawStar(int x, int y, bool on)
         }
 }
 
-/* A row's VOTE button: see-through glass over the row with a thin rim,
- * gold with a star and VOTED once this account voted for the version. */
-static void DrawVoteButton(int x, int y, int w, int h, bool voted)
-{
-    uint16_t glass = voted ? Rgb(31, 50, 6) : Rgb(31, 63, 31), rim = voted ? Rgb(20, 30, 2) : Rgb(10, 20, 12);
-
-    FillMix(x + 1, y + 1, w - 2, h - 2, glass, voted ? 3 : 2, 5);
-    FillMix(x + 1, y, w - 2, 1, rim, 3, 5);
-    FillMix(x + 1, y + h - 1, w - 2, 1, rim, 3, 5);
-    FillMix(x, y + 1, 1, h - 2, rim, 3, 5);
-    FillMix(x + w - 1, y + 1, 1, h - 2, rim, 3, 5);
-    if (voted)
-    {
-        DrawStar(x + 4, y + (h - 11) / 2, true);
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "VOTED", x + 18, y + (h - 10) / 2, CTR_DRAW_DARK);
-    }
-    else
-        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "VOTE", x + w / 2, y + (h - 10) / 2, CTR_DRAW_DARK);
-}
 
 /*
- * The versions screen (VersionsFrame and its friends): the front's list on
- * the left, the back's on the right, the side looked at chosen; each
- * version with its number, votes, who made it (YOU for this account's),
- * whether the card shows it, and its VOTE button; UPLOAD MINE, DELETE MINE and
- * ANIMATE along the bottom, the server's status under them.
+ * The voting view's touch screen: the bar (BACK, the Pokémon and how many
+ * versions, FOLLOW WEB), the same three columns as the top screen as big
+ * buttons (a version's picture, its votes, who made it, FINAL, its depth;
+ * pressed in while this account votes for it), the scrollbar, and UPLOAD
+ * MINE, DELETE MINE, PUT ON CARD along the bottom.
  */
+static const char *SweetWord(unsigned sweet)
+{
+    static const char *const names[] = {"", "SHALLOW", "STANDARD", "DEEP"};
+
+    return sweet <= 3 ? names[sweet] : "";
+}
+
+/* A version's sweet spot: the server's word, else its file's. */
+static unsigned SweetOfVersion(const CtrOnlineVersion *v)
+{
+    if (v == NULL) return 0;
+    if (v->depth >= 1 && v->depth <= 3) return v->depth;
+    return CtrStereoStrip_SweetOf(v->version);
+}
+
+/* The game's picture flat at 1x, its clear pixels left. */
+static void DrawPictureAt(const uint16_t *picture, int x, int y)
+{
+    if (picture == NULL) return;
+    for (int py = 0; py < CTR_STEREO_MON_DIM; ++py)
+        for (int px = 0; px < CTR_STEREO_MON_DIM; ++px)
+        {
+            uint16_t p = picture[py * CTR_STEREO_MON_DIM + px];
+            unsigned r, g, b;
+
+            if (!(p & 1)) continue;
+            r = (p >> 11) & 31;
+            g = (p >> 6) & 31;
+            b = (p >> 1) & 31;
+            CtrBottomDraw_Pixel(x + px, y + py, Rgb(r, (g << 1) | (g >> 4), b));
+        }
+}
+
+static void DrawVoteCell(unsigned k, unsigned side, int x)
+{
+    const unsigned c = sE.cols[k];
+    const uint32_t version = sE.colV[c][side];
+    const CtrOnlineVersion *v = SideVersion(side, version);
+    const int y = side ? VB_BACK_Y : VB_FRONT_Y;
+    const bool voted = v && Voted(sE.sideId[side], version), cursor = k == sE.curCol && side == sE.curSide;
+    const bool pressing = sE.stripTouch && !sE.dragged && sE.pressCol == (int)k && sE.pressSide == side;
+    const int o = voted || pressing ? 1 : 0;
+    char line[40];
+
+    if (v == NULL)
+    {
+        CtrBottomDraw_Plate(x, y, VB_BTN_W, VB_BTN_H, 2, false);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, side ? "NO BACK" : "NO FRONT", x + VB_BTN_W / 2, y + VB_BTN_H / 2 - 6,
+                                  CTR_DRAW_OFF);
+        return;
+    }
+    /* Pressed in while voted for (gold), the cursor's a blue frame around. */
+    CtrBottomDraw_Plate(x, y, VB_BTN_W, VB_BTN_H, 0, voted || pressing);
+    if (voted) FillMix(x + 3, y + 3, VB_BTN_W - 6, VB_BTN_H - 6, Rgb(31, 50, 6), 2, 5);
+    if (cursor)
+    {
+        CtrBottomDraw_Fill(x - 1, y - 1, VB_BTN_W + 2, 2, Rgb(4, 24, 28));
+        CtrBottomDraw_Fill(x - 1, y + VB_BTN_H - 1, VB_BTN_W + 2, 2, Rgb(4, 24, 28));
+        CtrBottomDraw_Fill(x - 1, y + 1, 2, VB_BTN_H - 2, Rgb(4, 24, 28));
+        CtrBottomDraw_Fill(x + VB_BTN_W - 1, y + 1, 2, VB_BTN_H - 2, Rgb(4, 24, 28));
+    }
+    DrawPictureAt(CtrStereoMon_SidePicture(sE.sideId[side]), x + (VB_BTN_W - CTR_STEREO_MON_DIM) / 2 + o, y + 1 + o);
+    if (sE.follow && WebPicked(version)) CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "WEB", x + 4 + o, y + 3 + o, CTR_DRAW_RED);
+    if (v->final)
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "FINAL", x + VB_BTN_W - 4 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "FINAL") + o,
+                           y + 3 + o, CTR_DRAW_BLUE);
+    /* Its votes (a star when one is this account's), then who and how deep. */
+    snprintf(line, sizeof(line), "%u VOTE%s%s", v->votes, v->votes == 1 ? "" : "S", v->current ? " TOP" : "");
+    if (voted)
+    {
+        DrawStar(x + 5 + o, y + 65 + o, true);
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 18 + o, y + 64 + o, CTR_DRAW_DARK);
+    }
+    else CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, x + VB_BTN_W / 2 + o, y + 64 + o, CTR_DRAW_DARK);
+    snprintf(line, sizeof(line), "%s %s", v->mine ? "YOU" : v->author[0] ? v->author : "?", SweetWord(SweetOfVersion(v)));
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, x + VB_BTN_W / 2 + o, y + 75 + o, CTR_DRAW_BLUE);
+    if (sE.sideCard[side] == version)
+        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "ON CARD", x + 4 + o, y + 52 + o, CTR_DRAW_RED);
+}
+
 static void DrawVersions(void)
 {
-    char line[64], status[CTR_ONLINE_TEXT], name[CTR_STEREO_MON_NAME];
-    CtrOnlineStatus st = CtrOnline_Status(status, sizeof(status));
+    char line[64], name[CTR_STEREO_MON_NAME];
+    int first = (int)floorf(sE.scroll), tx, tw;
 
     CtrBottomDraw_Panel(0, 0, W, H);
+    /* The bar. */
+    CtrBottomDraw_Plate(2, 1, VB_BACK_W, 21, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "BACK", 2 + VB_BACK_W / 2, 6, CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(W - 2 - VB_FOLLOW_W, 1, VB_FOLLOW_W, 21, sE.follow ? 1 : 0, sE.follow);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "FOLLOW WEB", W - 2 - VB_FOLLOW_W / 2 + (sE.follow ? 1 : 0), 6 + (sE.follow ? 1 : 0),
+                              sE.follow ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
     CtrStereoMonGame_Name(sE.sideId[0], name, sizeof(name));
-    snprintf(line, sizeof(line), "%s ON THE SERVER", name);
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, 7, CTR_DRAW_DARK);
-    CtrBottomDraw_Plate(W - 4 - VER_CLOSE_W, 2, VER_CLOSE_W, 20, 0, false);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "CLOSE", W - 4 - VER_CLOSE_W / 2, 7, CTR_DRAW_DARK);
-    for (unsigned side = 0; side < 2; ++side)
+    if (!sE.sideLoaded[0] && !sE.sideLoaded[1]) snprintf(line, sizeof(line), "%s  ASKING...", name);
+    else if (sE.webOnly && sE.viewCount != sE.colCount) snprintf(line, sizeof(line), "%s  WEB %u OF %u", name, sE.viewCount, sE.colCount);
+    else snprintf(line, sizeof(line), "%s  %u UPLOAD%s", name, sE.colCount, sE.colCount == 1 ? "" : "S");
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, (2 + VB_BACK_W + W - 2 - VB_FOLLOW_W) / 2, 6, CTR_DRAW_DARK);
+    /* The columns in view: three, four while one slides half out. */
+    if (sE.viewCount == 0)
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL,
+                                  sE.sideLoaded[0] || sE.sideLoaded[1] ? "NONE ON THE SERVER YET" : "ASKING THE SERVER...", W / 2,
+                                  100, CTR_DRAW_DARK);
+    for (int k = first < 0 ? 0 : first; k < first + CTR_STRIP_VISIBLE + 1 && k < (int)sE.viewCount; ++k)
     {
-        const CtrOnlineVersions *list = &sE.sideList[side];
-        int x = ColumnX(side);
-        bool looked = side == sE.side;
-        unsigned first = sE.sideCursor[side] / VER_ROWS * VER_ROWS;
+        int x = 2 + (int)roundf((k - sE.scroll) * VB_COL_W);
 
-        if (sE.sideId[side] == 0)
-        {
-            CtrBottomDraw_Plate(x, VER_HEAD_Y, VER_COL_W, VER_HEAD_H, 2, false);
-            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, side ? "NO BACK" : "NO FRONT", x + VER_COL_W / 2, VER_HEAD_Y + 3,
-                                      CTR_DRAW_OFF);
-            continue;
-        }
-        CtrBottomDraw_Plate(x, VER_HEAD_Y, VER_COL_W, VER_HEAD_H, looked ? 1 : 0, false);
-        if (sE.sideLoaded[side]) snprintf(line, sizeof(line), "%s  %u", side ? "BACK" : "FRONT", list->count);
-        else snprintf(line, sizeof(line), "%s", side ? "BACK" : "FRONT");
-        CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 6, VER_HEAD_Y + 3, looked ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
-        if (sE.sideLoaded[side] && list->count > VER_ROWS)
-        {
-            snprintf(line, sizeof(line), "%u/%u", first / VER_ROWS + 1, (list->count + VER_ROWS - 1) / VER_ROWS);
-            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + VER_COL_W - 6 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, line),
-                               VER_HEAD_Y + 3, looked ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
-        }
-        if (!sE.sideLoaded[side])
-        {
-            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "ASKING THE SERVER...", x + VER_COL_W / 2, VER_Y0 + 12, CTR_DRAW_DARK);
-            continue;
-        }
-        if (list->count == 0)
-            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "NONE ON THE SERVER YET", x + VER_COL_W / 2, VER_Y0 + 12,
-                                      CTR_DRAW_DARK);
-        for (unsigned r = 0; r < VER_ROWS; ++r)
-        {
-            unsigned i = first + r;
-            const CtrOnlineVersion *v = &list->v[i];
-            int y = VER_Y0 + (int)r * VER_ROW, ink;
-            bool chosen = looked && i == sE.sideCursor[side], shown = sE.sideCard[side] && v->version == sE.sideCard[side];
-
-            if (i >= list->count) break;
-            CtrBottomDraw_Plate(x, y, VER_COL_W, VER_ROW - 3, chosen ? 1 : 0, false);
-            ink = chosen ? CTR_DRAW_WHITE : CTR_DRAW_DARK;
-            snprintf(line, sizeof(line), "%lu  %u VOTE%s", (unsigned long)v->version, v->votes, v->votes == 1 ? "" : "S");
-            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 6, y + 3, ink);
-            if (v->mine) snprintf(line, sizeof(line), "BY YOU");
-            else snprintf(line, sizeof(line), "BY %s", v->author[0] ? v->author : "?");
-            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 6, y + 15, chosen ? CTR_DRAW_WHITE : CTR_DRAW_BLUE);
-            if (shown)
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "SHOWN",
-                                   x + VER_COL_W - VER_VOTE_W - 6 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "SHOWN"),
-                                   y + 3, chosen ? CTR_DRAW_WHITE : CTR_DRAW_RED);
-            DrawVoteButton(x + VER_COL_W - 2 - VER_VOTE_W, y + 3, VER_VOTE_W - 2, VER_ROW - 9,
-                           Voted(sE.sideId[side], v->version));
-        }
+        DrawVoteCell((unsigned)k, 0, x);
+        if (sE.sideId[1]) DrawVoteCell((unsigned)k, 1, x);
     }
-    /* The buttons: send this console's own edit, take this account's off, animate. */
-    CtrBottomDraw_Plate(4, VER_BTN_Y, 100, VER_BTN_H, 0, false);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "UPLOAD MINE", 54, VER_BTN_Y + 5, CTR_DRAW_DARK);
-    CtrBottomDraw_Plate(108, VER_BTN_Y, 100, VER_BTN_H, 0, false);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "DELETE MINE", 158, VER_BTN_Y + 5, CTR_DRAW_RED);
-    CtrBottomDraw_Plate(212, VER_BTN_Y, W - 216, VER_BTN_H, sE.animate ? 1 : 0, sE.animate);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "ANIMATE  Y", 212 + (W - 216) / 2, VER_BTN_Y + 5,
-                              sE.animate ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, status, 6, VER_BTN_Y + 27,
-                       st == CTR_ONLINE_ERROR ? CTR_DRAW_RED : st == CTR_ONLINE_BUSY ? CTR_DRAW_BLUE : CTR_DRAW_DARK);
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "UP/DOWN SHOW  LEFT/RIGHT SIDE  A VOTE", 6, H - 13, CTR_DRAW_DARK);
+    /* The scrollbar. */
+    CtrBottomDraw_Fill(4, VB_BAR_Y, W - 8, VB_BAR_TH, Rgb(14, 28, 16));
+    VbThumb(&tx, &tw);
+    CtrBottomDraw_Plate(tx, VB_BAR_Y - 1, tw, VB_BAR_TH + 2, sE.barTouch ? 1 : 0, sE.barTouch);
+    /* The row along the bottom. */
+    CtrBottomDraw_Plate(2, VB_ROW_Y, W / 3 - 4, VB_ROW_H, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "UPLOAD MINE", W / 6, VB_ROW_Y + 5, CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(W / 3 + 2, VB_ROW_Y, W / 3 - 4, VB_ROW_H, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "DELETE MINE", W / 2, VB_ROW_Y + 5, CTR_DRAW_RED);
+    CtrBottomDraw_Plate(2 * W / 3 + 2, VB_ROW_Y, W / 3 - 4, VB_ROW_H, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "PUT ON CARD  X", 5 * W / 6, VB_ROW_Y + 5, CTR_DRAW_DARK);
     if (sE.confirmDelete)
     {
         CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, CF_H / 8, false);
@@ -3416,6 +3915,87 @@ static void DrawVersions(void)
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "KEEP  B", CF_X + 144, CF_Y + 57, CTR_DRAW_WHITE);
     }
     DrawToast();
+}
+
+/*
+ * The top screen's words for the strip, in the game's small font: the
+ * fixed ones and, per column slot, the author and each half's line (votes,
+ * depth), drawn into the canvas and handed over as the strip's label cells
+ * (CtrStereoStrip_Label). Only the cells whose words changed are made
+ * again; the canvas is drawn afresh after.
+ */
+static void StripLabels(void)
+{
+    static uint8_t alpha[CTR_STRIP_LABEL_W * CTR_STRIP_LABEL_H];
+    char text[CTR_STRIP_LABELS][40], name[CTR_STEREO_MON_NAME];
+    int column[CTR_STRIP_LABELS];
+    unsigned slots = CtrStereoStrip_Slots(), first = (unsigned)floorf(sE.scroll), last, todo = 0;
+    bool redo[CTR_STRIP_LABELS];
+
+    sE.labelsDirty = false;
+    memset(text, 0, sizeof(text));
+    for (unsigned i = 0; i < CTR_STRIP_LABELS; ++i) column[i] = 0;
+    CtrStereoMonGame_Name(sE.sideId[0], name, sizeof(name));
+    if ((sE.sideId[0] & 0xC000) == 0) snprintf(text[CTR_STRIP_TITLE], 40, "No.%03u %s", sE.sideId[0], name);
+    else snprintf(text[CTR_STRIP_TITLE], 40, "%s", name);
+    last = first + CTR_STRIP_VISIBLE < sE.viewCount ? first + CTR_STRIP_VISIBLE : sE.viewCount;
+    if (sE.viewCount)
+        snprintf(text[CTR_STRIP_PAGE], 40, "%s%u-%u OF %u%s", sE.webOnly && sE.viewCount != sE.colCount ? "WEB " : "", first + 1,
+                 last, sE.viewCount, sE.follow ? (sE.focusSeen.ok ? "  FOLLOWING" : "  WEB?") : "");
+    else if (sE.follow) snprintf(text[CTR_STRIP_PAGE], 40, "FOLLOWING THE WEB");
+    snprintf(text[CTR_STRIP_FINAL], 40, "FINAL");
+    snprintf(text[CTR_STRIP_WEB], 40, "WEB");
+    snprintf(text[CTR_STRIP_EMPTY], 40, "NONE SENT");
+    snprintf(text[CTR_STRIP_LOADING], 40, "LOADING...");
+    for (unsigned k = first; slots && k < first + slots && k < sE.viewCount; ++k)
+    {
+        const unsigned s = k % slots, c = sE.cols[k];
+        const CtrOnlineVersion *f = SideVersion(0, sE.colV[c][0]), *b = SideVersion(1, sE.colV[c][1]);
+        const CtrOnlineVersion *who = f ? f : b;
+
+        for (unsigned j = 0; j < 3; ++j) column[CTR_STRIP_SLOT_LABEL(s, j)] = (int)k;
+        if (who) snprintf(text[CTR_STRIP_SLOT_LABEL(s, 0)], 40, "%s", who->mine ? "BY YOU" : who->author[0] ? who->author : "?");
+        for (unsigned d = 0; d < 2; ++d)
+        {
+            const CtrOnlineVersion *v = d ? b : f;
+
+            if (v)
+                snprintf(text[CTR_STRIP_SLOT_LABEL(s, 1 + d)], 40, "%u VOTE%s%s%s", v->votes, v->votes == 1 ? "" : "S",
+                         SweetOfVersion(v) ? "  " : "", SweetWord(SweetOfVersion(v)));
+        }
+    }
+    for (unsigned i = 0; i < CTR_STRIP_LABELS; ++i)
+    {
+        redo[i] = strcmp(text[i], sE.labelText[i]) != 0 || column[i] != sE.labelColumn[i] || !sE.labelMade[i];
+        todo += redo[i];
+    }
+    if (todo == 0) return;
+    CtrBottomDraw_Begin(sCanvas);
+    CtrBottomDraw_Fill(0, 0, W, H, 0);
+    for (unsigned i = 0; i < CTR_STRIP_LABELS; ++i)
+        if (redo[i] && text[i][0])
+            CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, text[i], (int)(i % 2) * CTR_STRIP_LABEL_W + 1, (int)(i / 2) * CTR_STRIP_LABEL_H,
+                               CTR_DRAW_WHITE);
+    CtrBottomDraw_End();
+    for (unsigned i = 0; i < CTR_STRIP_LABELS; ++i)
+    {
+        int x0 = (int)(i % 2) * CTR_STRIP_LABEL_W, y0 = (int)(i / 2) * CTR_STRIP_LABEL_H;
+        int width = text[i][0] ? CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, text[i]) + 2 : 0;
+
+        if (!redo[i]) continue;
+        for (int y = 0; y < CTR_STRIP_LABEL_H; ++y)
+            for (int x = 0; x < CTR_STRIP_LABEL_W; ++x)
+            {
+                uint16_t px = sCanvas[(x0 + x) * H + (H - 1 - (y0 + y))];
+
+                alpha[y * CTR_STRIP_LABEL_W + x] = text[i][0] && ((px >> 11) & 31) > 20 ? 255 : 0;
+            }
+        CtrStereoStrip_Label(i, alpha, (unsigned)(width < 0 ? 0 : width), (unsigned)column[i]);
+        memcpy(sE.labelText[i], text[i], sizeof(sE.labelText[i]));
+        sE.labelColumn[i] = column[i];
+        sE.labelMade[i] = true;
+    }
+    sE.dirtyDraw = true;
 }
 
 static void DrawOptions(void)
@@ -3994,7 +4574,7 @@ bool CtrStereoEdit_BottomFrame(void)
     if (sE.screen == S_CHOOSE) { TouchChoose(in); ChoosePad(in); PreviewChosen(); }
     else if (sE.screen == S_KEYBOARD) TouchKeyboard(in);
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
-    else if (sE.screen == S_VERSIONS) { TouchVersions(in); VersionsFrame(); }
+    else if (sE.screen == S_VERSIONS) { TouchVersions(TapInput(in)); VersionsFrame(); }
     else if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) TouchConfirm(in);
     else
     {
@@ -4028,6 +4608,7 @@ bool CtrStereoEdit_BottomFrame(void)
         sE.helpDirty = false;
         MakeHelpSheet();
     }
+    if (sE.screen == S_VERSIONS && sE.labelsDirty) StripLabels();
     WatchOnline();
     if (sE.toastFrames && --sE.toastFrames == 0) sE.dirtyDraw = true;
     /* The lasso's dashes run while it is drawn. */

@@ -444,6 +444,10 @@ void CtrStereoEdit_PreferDex(bool newOnes);
  * columns of 240, each from the bottom up). */
 void CtrStereoEdit_TestVersions(void);
 void CtrStereoEdit_TestShot(const char *path);
+/* And the voting view's keys (CTR_KEY_* bits, the D-pad's as the D-pad)
+ * and a tap at a touch screen pixel (down one frame, up the next). */
+void CtrStereoEdit_TestPress(unsigned keys);
+void CtrStereoEdit_TestTap(int x, int y);
 void CtrStereoEdit_GoTo(uint16_t id, bool newOnes);
 
 #endif

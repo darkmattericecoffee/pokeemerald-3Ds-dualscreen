@@ -77,6 +77,10 @@ typedef struct
     char author[17];
     uint16_t revision, votes;
     bool final, current, favourite, onCard, mine;
+    /* When it was uploaded (unix seconds), and its depth sweet spot when
+     * the server says (0: not said; the file's trailer has it too). */
+    uint32_t uploaded;
+    uint8_t depth;
 } CtrOnlineVersion;
 typedef struct
 {
@@ -131,6 +135,35 @@ unsigned CtrOnline_NewSerial(void);
 bool CtrOnline_IsNew(uint16_t id);
 /* Whether the last job that ended was a sync. */
 bool CtrOnline_LastWasSync(void);
+/*
+ * The voting view's pictures: versions' files fetched into memory (not
+ * onto the card), the ones asked for first kept longest. FetchFiles starts
+ * one job for those not there yet (ids[k] the picture versions[k] is of;
+ * true at once when all are); FilesSerial moves on with each that comes;
+ * FileCopy gives one (false while it is not there or bigger than `max`).
+ */
+#define CTR_ONLINE_MAX_FILES (2 * CTR_ONLINE_MAX_VERSIONS)
+bool CtrOnline_FetchFiles(const uint32_t *versions, const uint16_t *ids, unsigned count);
+unsigned CtrOnline_FilesSerial(void);
+bool CtrOnline_FileCopy(uint32_t version, uint8_t *out, uint32_t max, uint32_t *size);
+bool CtrOnline_HasFile(uint32_t version);
+/*
+ * Follow the web: what this account's web app shows (GET /api/focus), the
+ * picture (id 0: nothing in the last ten minutes) and the versions picked
+ * there for comparing (none: all of them); `seq` moves on with each change.
+ * FetchFocus asks quietly (no status line); Focus returns a serial that
+ * moves on with every answer (ok false when the last ask failed).
+ */
+typedef struct
+{
+    bool ok;
+    uint16_t id;
+    uint8_t count;
+    uint32_t seq;
+    uint32_t versions[CTR_ONLINE_MAX_VERSIONS];
+} CtrOnlineFocus;
+bool CtrOnline_FetchFocus(void);
+unsigned CtrOnline_Focus(CtrOnlineFocus *out);
 /* Forgets the token (the website's Account page revokes it for good). */
 void CtrOnline_Unlink(void);
 CtrOnlineStatus CtrOnline_Status(char *text, unsigned size);

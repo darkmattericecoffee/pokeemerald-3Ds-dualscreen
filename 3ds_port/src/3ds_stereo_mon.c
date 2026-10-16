@@ -25,6 +25,7 @@
 #include "3ds_stereo_mon.h"
 #include "3ds_online.h"
 #include "3ds_button_sprites.h"
+#include "3ds_stereo_strip.h"
 
 /*
  * One texture in linear memory with a 64x64 tile per frame and plane, two
@@ -1234,6 +1235,39 @@ void CtrStereoMon_Idle(void)
     sDrawnValid = false;
 }
 
+/* The voting view's filmstrip (3ds_stereo_strip.c) borrows the texture:
+ * nothing is composed into it meanwhile, and the picture on show is
+ * composed again once it is back. */
+static bool sLent;
+
+void *CtrStereoMon_LendTexture(bool lend, unsigned *width, unsigned *height)
+{
+    if (!lend)
+    {
+        sLent = false;
+        sTexReady = false;
+        sDrawnValid = false;
+        return NULL;
+    }
+    if (!sTexAllocated && !TextureReady()) return NULL;
+    sLent = true;
+    sTexReady = false;
+    sDrawnValid = false;
+    if (width) *width = sTexW;
+    if (height) *height = TEX_MAX_H;
+    return &sTex;
+}
+
+void CtrStereoMon_Invalidate(void) { sDrawnValid = false; }
+
+const uint16_t *CtrStereoMon_SidePicture(uint16_t id)
+{
+    if (!sActive || id == 0) return NULL;
+    if (id == sId && sFrames) return sPicture[0];
+    if (id == sMateId && sMateFrames) return sMatePicture[0];
+    return NULL;
+}
+
 /* ── Text: a 3x5 font, drawn as rectangles ──────────────────────────── */
 
 #define GLYPH_PIXEL 2
@@ -1927,7 +1961,8 @@ static void DrawEye(C3D_RenderTarget *target, float sign, float slider, unsigned
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ZERO);
     if (!sGallery || sEditing)
     {
-        if (sEditing && sVersionsView) DrawPairEye(sign, slider, frame, false);
+        if (sEditing && sVersionsView && sLent) CtrStereoStrip_DrawEye(sign, slider);
+        else if (sEditing && sVersionsView) DrawPairEye(sign, slider, frame, false);
         else if (sEditing) DrawEditEye(sign, slider, frame);
         else DrawDex(sign, slider, frame);
         C2D_Flush();
@@ -2010,6 +2045,8 @@ typedef struct
     /* The gallery's online line (3ds_online.c): shown, and its text. */
     unsigned onlineSerial;
     bool online;
+    /* The voting view's filmstrip (CtrStereoStrip_Version). */
+    unsigned strip;
 } DrawKey;
 
 static DrawKey sDrawn;
@@ -2051,6 +2088,7 @@ static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
     }
     k->frames = sFrames;
     k->texReady = sTexReady;
+    k->strip = sLent ? CtrStereoStrip_Version() : 0;
     memcpy(k->name, sName, sizeof(k->name));
 }
 
@@ -2064,7 +2102,7 @@ bool CtrStereoMon_NeedsFrame(float slider, bool stereo)
      * their time whether or not frames are drawn. */
     ++sTick;
     sTicked = true;
-    if (!sDrawnValid || !sTexReady || sComposed < sToCompose) return true;
+    if (!sDrawnValid || (!sLent && (!sTexReady || sComposed < sToCompose))) return true;
     if (slider < 0.0f) slider = 0.0f;
     if (slider > 1.0f) slider = 1.0f;
     MakeKey(&next, sTick, slider, stereo);
@@ -2076,7 +2114,8 @@ void CtrStereoMon_Draw(void *leftTarget, void *rightTarget, float slider)
     unsigned frame;
 
     if (!sActive) return;
-    if ((!sTexReady || sComposed < sToCompose) && TextureReady()) ComposeSome();
+    if (sLent) CtrStereoStrip_Compose();
+    else if ((!sTexReady || sComposed < sToCompose) && TextureReady()) ComposeSome();
     if (!sTicked) ++sTick;
     sTicked = false;
     frame = FrameAt(sTick);

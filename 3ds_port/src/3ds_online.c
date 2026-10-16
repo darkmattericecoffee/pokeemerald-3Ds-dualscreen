@@ -39,6 +39,8 @@
 #include "3ds_bottom_draw.h"
 #include "3ds_log.h"
 #include "3ds_online.h"
+#include "3ds_video.h"
+#include "3ds_stereo_strip.h"
 #include "3ds_online_crypto.h"
 #include "3ds_platform.h"
 #include "3ds_stereo_mon.h"
@@ -90,7 +92,7 @@ typedef struct
 } Link;
 
 enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX, JOB_DELETE, JOB_TEST,
-       JOB_NAME };
+       JOB_NAME, JOB_FILES, JOB_FOCUS };
 
 typedef struct
 {
@@ -99,6 +101,11 @@ typedef struct
     char code[16];
     char consoleName[40];
     uint32_t version;
+    /* JOB_FILES: the versions to fetch (`id` the front's picture, `id2` the
+     * back's; files[k] belongs to fileIds[k]). */
+    uint8_t fileCount;
+    uint32_t files[CTR_ONLINE_MAX_FILES];
+    uint16_t fileIds[CTR_ONLINE_MAX_FILES];
 } Job;
 
 static CtrLock sLock;
@@ -157,6 +164,22 @@ typedef struct
 static IndexEntry sIndex[MAX_INDEX];
 static unsigned sIndexCount, sIndexSerial;
 static uint64_t sIndexAt;
+/* Versions' files fetched for the voting view (CtrOnline_FetchFiles), in
+ * memory only: the oldest asked for goes first when the cache is full. */
+typedef struct
+{
+    uint32_t version, used;
+    uint16_t id;
+    uint8_t *data;
+    uint32_t size;
+} CachedFile;
+#define FILE_CACHE 40
+static CachedFile sFiles[FILE_CACHE];
+static unsigned sFilesSerial, sFilesUse;
+/* What the account's web app shows (GET /api/focus). */
+static CtrOnlineFocus sFocus;
+static unsigned sFocusSerial;
+static bool sFocusFailed;
 /* Main thread only. */
 static bool sSleepHeld;
 static char sUserCopy[USER_MAX];
@@ -1229,7 +1252,7 @@ static bool ParseVersions(uint16_t id, const char *json)
     for (const char *item = strchr(p, '{'); item != NULL && list.count < CTR_ONLINE_MAX_VERSIONS;
          item = strchr(item + 1, '{'))
     {
-        char object[400];
+        char object[512];
         const char *end = strchr(item, '}');
         CtrOnlineVersion *v = &list.v[list.count];
         long number = 0;
@@ -1245,6 +1268,8 @@ static bool ParseVersions(uint16_t id, const char *json)
         if (JsonNumber(object, "votes", &number)) v->votes = (uint16_t)number;
         if (JsonNumber(object, "final", &number)) v->final = number != 0;
         if (JsonNumber(object, "mine", &number)) v->mine = number != 0;
+        if (JsonNumber(object, "uploaded_at", &number)) v->uploaded = (uint32_t)number;
+        if (JsonNumber(object, "depth", &number) && number >= 0 && number <= 255) v->depth = (uint8_t)number;
         v->current = v->version == (uint32_t)current;
         for (unsigned f = 0; f < favs; ++f) v->favourite |= (uint32_t)fav[f] == v->version;
         JsonString(object, "sha256", shas[list.count], sizeof(shas[0]));
@@ -1371,6 +1396,115 @@ static void DoUse(const Job *job, const Link *link)
         CtrLog_Write(CTR_LOG_FS, "online: %s now version %lu (picked on the console)", key, (unsigned long)job->version);
         SetStatus(CTR_ONLINE_DONE, "NOW VERSION %lu", (unsigned long)job->version);
     }
+    ReplyFree(&reply);
+}
+
+/* ── The voting view's files and the web's focus ─────────────────────── */
+
+static int CachedAtLocked(uint32_t version)
+{
+    for (unsigned i = 0; i < FILE_CACHE; ++i)
+        if (sFiles[i].data && sFiles[i].version == version) return (int)i;
+    return -1;
+}
+
+/* Each asked-for version not in memory yet, one request each, kept in the
+ * cache as it comes (the view takes each up as soon as it is there). */
+static void DoFiles(const Job *job, const Link *link)
+{
+    unsigned got = 0, failed = 0;
+
+    for (unsigned k = 0; k < job->fileCount; ++k)
+    {
+        char urlPath[40];
+        Reply reply;
+        bool have;
+        int slot;
+
+        Lock();
+        have = CachedAtLocked(job->files[k]) >= 0;
+        Unlock();
+        if (have) continue;
+        SetStatus(CTR_ONLINE_BUSY, "PICTURES %u/%u", k + 1, job->fileCount);
+        snprintf(urlPath, sizeof(urlPath), "/api/versions/%lu", (unsigned long)job->files[k]);
+        if (!Http(link, HTTPC_METHOD_GET, urlPath, NULL, 0, NULL, &reply) || reply.status != 200)
+        {
+            ++failed;
+            FailStatus(&reply, "file");
+            ReplyFree(&reply);
+            if (sNetFailed) return;
+            continue;
+        }
+        if (reply.length < 16 || memcmp(reply.body, CTR_STEREO_EDIT_MAGIC, 8) != 0
+            || (reply.body[8] | (reply.body[9] << 8)) != job->fileIds[k])
+        {
+            ++failed;
+            CtrLog_Write(CTR_LOG_ERROR, "online: version %lu's file is damaged", (unsigned long)job->files[k]);
+            ReplyFree(&reply);
+            continue;
+        }
+        Lock();
+        /* An empty slot, else the one asked for longest ago. */
+        slot = 0;
+        for (unsigned i = 0; i < FILE_CACHE; ++i)
+        {
+            if (sFiles[i].data == NULL) { slot = (int)i; break; }
+            if (sFiles[i].used < sFiles[slot].used) slot = (int)i;
+        }
+        free(sFiles[slot].data);
+        sFiles[slot].data = reply.body;
+        sFiles[slot].size = reply.length;
+        sFiles[slot].version = job->files[k];
+        sFiles[slot].id = job->fileIds[k];
+        sFiles[slot].used = ++sFilesUse;
+        ++sFilesSerial;
+        Unlock();
+        reply.body = NULL;
+        ++got;
+    }
+    if (failed) SetStatus(CTR_ONLINE_ERROR, "%u PICTURE%s MISSING", failed, failed == 1 ? "" : "S");
+    else SetStatus(CTR_ONLINE_DONE, got ? "PICTURES IN" : "READY");
+}
+
+/* The account's web app's focus: {"key", "version_ids", "seq", "at"}. Quiet:
+ * it runs every two seconds while the console follows the web. */
+static void DoFocus(const Link *link)
+{
+    Reply reply;
+    CtrOnlineFocus focus;
+    char key[16] = "";
+    long seq = 0, ids[CTR_ONLINE_MAX_VERSIONS];
+
+    memset(&focus, 0, sizeof(focus));
+    if (!Http(link, HTTPC_METHOD_GET, "/api/focus", NULL, 0, NULL, &reply) || reply.status != 200)
+    {
+        if (!sFocusFailed)
+            CtrLog_Write(CTR_LOG_ERROR, "online: focus: HTTP %d (logged once until it works)", reply.status);
+        sFocusFailed = true;
+        if (reply.status == 0) sNetFailed = true;
+        Lock();
+        sFocus.ok = false;
+        ++sFocusSerial;
+        Unlock();
+        ReplyFree(&reply);
+        return;
+    }
+    sFocusFailed = false;
+    JsonNumber((const char *)reply.body, "seq", &seq);
+    if (JsonString((const char *)reply.body, "key", key, sizeof(key)))
+    {
+        focus.id = IdOf(key);
+        focus.count = (uint8_t)JsonNumbers((const char *)reply.body, "version_ids", ids, CTR_ONLINE_MAX_VERSIONS);
+        for (unsigned i = 0; i < focus.count; ++i) focus.versions[i] = (uint32_t)ids[i];
+    }
+    focus.seq = (uint32_t)seq;
+    focus.ok = true;
+    Lock();
+    if (sFocus.seq != focus.seq || !sFocus.ok) CtrLog_Write(CTR_LOG_FS, "online: the web shows %s (seq %ld, %u picked)",
+                                                            key[0] ? key : "nothing", seq, focus.count);
+    sFocus = focus;
+    ++sFocusSerial;
+    Unlock();
     ReplyFree(&reply);
 }
 
@@ -1771,8 +1905,9 @@ static void Worker(void *arg)
     sWifiDown = wifi == 0;
     Unlock();
     sNetFailed = false;
-    CtrLog_Write(CTR_LOG_FS, "online: job %d on %s (Wi-Fi %lu%s)", job.type, link.server, (unsigned long)wifi,
-                 link.verify ? "" : ", certificate checks OFF");
+    if (job.type != JOB_FOCUS)
+        CtrLog_Write(CTR_LOG_FS, "online: job %d on %s (Wi-Fi %lu%s)", job.type, link.server, (unsigned long)wifi,
+                     link.verify ? "" : ", certificate checks OFF");
     sTimeKnown = false;
     sPsReady = R_SUCCEEDED(psInit());
     r = httpcInit(HTTPC_SHARED);
@@ -1796,6 +1931,8 @@ static void Worker(void *arg)
         case JOB_DELETE: DoDelete(&job, &link); break;
         case JOB_TEST: DoTest(&link); break;
         case JOB_NAME: DoName(&link); break;
+        case JOB_FILES: DoFiles(&job, &link); break;
+        case JOB_FOCUS: DoFocus(&link); break;
         }
         /* A name changed meanwhile (or just linked: the card's name). */
         if (job.type != JOB_NAME && sNamePending && !sNetFailed && link.token[0]) DoName(&link);
@@ -1850,7 +1987,8 @@ static bool Start(const Job *job)
     sBusy = true;
     sJob = *job;
     Unlock();
-    SetStatus(CTR_ONLINE_BUSY, "STARTING...");
+    /* The web's focus is asked for every two seconds: no status for it. */
+    if (job->type != JOB_FOCUS) SetStatus(CTR_ONLINE_BUSY, "STARTING...");
     /* The system core: the game's own keeps its frame. */
     if (!CtrPlatform_StartThread(Worker, NULL, WORKER_STACK, 1))
     {
@@ -2115,6 +2253,86 @@ bool CtrOnline_FetchVersions(uint16_t id)
     return Start(&job);
 }
 
+bool CtrOnline_FetchFiles(const uint32_t *versions, const uint16_t *ids, unsigned count)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_FILES;
+    Lock();
+    for (unsigned i = 0; i < count && job.fileCount < CTR_ONLINE_MAX_FILES; ++i)
+    {
+        int at = CachedAtLocked(versions[i]);
+
+        if (at >= 0) sFiles[at].used = ++sFilesUse;
+        else
+        {
+            job.files[job.fileCount] = versions[i];
+            job.fileIds[job.fileCount++] = ids[i];
+        }
+    }
+    Unlock();
+    if (job.fileCount == 0) return true;
+    return Start(&job);
+}
+
+unsigned CtrOnline_FilesSerial(void)
+{
+    unsigned serial;
+
+    Lock();
+    serial = sFilesSerial;
+    Unlock();
+    return serial;
+}
+
+bool CtrOnline_FileCopy(uint32_t version, uint8_t *out, uint32_t max, uint32_t *size)
+{
+    int at;
+    bool ok = false;
+
+    Lock();
+    at = CachedAtLocked(version);
+    if (at >= 0 && sFiles[at].size <= max)
+    {
+        memcpy(out, sFiles[at].data, sFiles[at].size);
+        *size = sFiles[at].size;
+        ok = true;
+    }
+    Unlock();
+    return ok;
+}
+
+bool CtrOnline_HasFile(uint32_t version)
+{
+    bool have;
+
+    Lock();
+    have = CachedAtLocked(version) >= 0;
+    Unlock();
+    return have;
+}
+
+bool CtrOnline_FetchFocus(void)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_FOCUS;
+    return Start(&job);
+}
+
+unsigned CtrOnline_Focus(CtrOnlineFocus *out)
+{
+    unsigned serial;
+
+    Lock();
+    *out = sFocus;
+    serial = sFocusSerial;
+    Unlock();
+    return serial;
+}
+
 bool CtrOnline_UseVersion(uint16_t id, uint32_t version)
 {
     Job job;
@@ -2375,7 +2593,9 @@ unsigned CtrOnline_Serial(void)
  * "uploadall", "sync", "unlink", "versions <key>",
  * "use <key> <version>", "vote <key> [<version> [<version>]]", "index", "flush",
  * "count <key>" (what the console knows of a picture), "editor", "dex" (the
- * editor, or straight into its Pokédex). Each step and its result go to port.log.
+ * editor, or straight into its Pokédex), "verscreen" (its voting view),
+ * "press <hex CTR_KEY_ bits>" and "tap <x> <y>" (keys and a touch there),
+ * "topshot" (the top screen to dump.raw). Each step and its result go to port.log.
  */
 static void TestFrame(void)
 {
@@ -2460,6 +2680,20 @@ static void TestFrame(void)
 
         snprintf(path, sizeof(path), DATA_DIR "/shot-%s.bin", arg);
         CtrBottom_TestShot(path);
+    }
+    else if (strncmp(line, "topshot", 7) == 0)
+    {
+        /* The top screen's last frame to dump.raw (read with dump_frames.py). */
+        CtrVideo_RequestDump();
+        CtrStereoMon_Invalidate();
+    }
+    else if (strncmp(line, "press", 5) == 0) CtrStereoEdit_TestPress((unsigned)strtoul(arg, NULL, 16));
+    else if (strncmp(line, "tap", 3) == 0)
+    {
+        int tx = 0, ty = 0;
+
+        sscanf(line, "%*s %d %d", &tx, &ty);
+        CtrStereoEdit_TestTap(tx, ty);
     }
     else if (strncmp(line, "shot", 4) == 0)
     {

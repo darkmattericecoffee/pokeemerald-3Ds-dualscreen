@@ -310,4 +310,7 @@ int32_t CtrVideo_AffineReference(uint32_t value);
  * for the field, where the voxel world costs the frame (3ds_platform.c). */
 bool CtrVideo_InBattle(void);
 
+/* The L+R+SELECT dump (dump.raw) at the next frame, for a test script. */
+void CtrVideo_RequestDump(void);
+
 #endif
