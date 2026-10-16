@@ -198,13 +198,23 @@ function VersionCard({
   return (
     <Card
       className={cn(
-        "p-3 transition-shadow sm:p-4",
-        showing && "outline outline-[3px] outline-offset-2 outline-primary",
+        "cursor-pointer p-3 transition-[border-color,box-shadow] sm:p-4",
+        // The version in the 3D view: a red stroke (the border, thickened inside) and a red drop.
+        showing
+          ? "border-primary shadow-[inset_0_0_0_1px_var(--primary),0_4px_0_0_var(--primary)]"
+          : "hover:border-primary/60",
         fresh && "animate-fresh",
       )}
+      onClick={(e) => {
+        // A click anywhere on the card views it, except on its buttons and links (and on menus
+        // and dialogs opened from it, which React bubbles here through their portals).
+        const target = e.target as HTMLElement;
+        if (!e.currentTarget.contains(target) || target.closest("button, a, [role=menuitem]")) return;
+        onShow();
+      }}
     >
       <div className="flex gap-3">
-        <button onClick={onShow} className="rounded-lg" aria-label={`Show version ${v.version_id} in 3D`}>
+        <button onClick={onShow} className="rounded-lg" aria-label={`View version ${v.version_id} in 3D`}>
           <Thumb edit={edit} picture={picture} look="tint" label={`Version ${v.version_id}, tinted by plane`} />
         </button>
         <div className="min-w-0 flex-1">
@@ -228,8 +238,14 @@ function VersionCard({
           onToggle={() => vote.mutate({ versionId: v.version_id, on: !voted })}
           className="basis-full sm:basis-auto"
         />
-        <Button variant={showing ? "secondary" : "outline"} onClick={onShow} aria-pressed={showing} className="flex-1 sm:flex-none">
-          <Eye /> 3D
+        <Button
+          variant={showing ? "secondary" : "outline"}
+          onClick={onShow}
+          aria-pressed={showing}
+          title="Show this version in the 3D view"
+          className="flex-1 sm:flex-none"
+        >
+          <Eye /> View
         </Button>
         <Button
           variant={comparing ? "success" : "outline"}
