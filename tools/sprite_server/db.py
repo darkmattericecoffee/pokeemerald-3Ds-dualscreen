@@ -136,6 +136,23 @@ def init(path: str) -> None:
     # chosen, Standard). The versions from before carry none: their files all have 0 there.
     if "depth" not in [r["name"] for r in conn.execute("PRAGMA table_info(versions)")]:
         conn.execute("ALTER TABLE versions ADD COLUMN depth INTEGER NOT NULL DEFAULT 0")
+    # Added later: one version per person per picture. A newer upload of the same person replaces
+    # the older one, which stays as history (replaced_by = the newer one's id) but is not listed,
+    # voted on or current. Older databases are brought in line once, here.
+    if "replaced_by" not in [r["name"] for r in conn.execute("PRAGMA table_info(versions)")]:
+        conn.execute("ALTER TABLE versions ADD COLUMN replaced_by INTEGER")
+    with Tx(conn):
+        for r in conn.execute(
+                "SELECT mon_key, user_id FROM versions WHERE replaced_by IS NULL GROUP BY mon_key, user_id "
+                "HAVING COUNT(*) > 1").fetchall():
+            ids = [x["id"] for x in conn.execute(
+                "SELECT id FROM versions WHERE mon_key = ? AND user_id = ? AND replaced_by IS NULL "
+                "ORDER BY uploaded_at DESC, id DESC", (r["mon_key"], r["user_id"]))]
+            for old in ids[1:]:
+                _replace(conn, old, ids[0], r["mon_key"])
+            cur = conn.execute("SELECT pinned FROM current WHERE mon_key = ?", (r["mon_key"],)).fetchone()
+            if cur is None or not cur["pinned"]:
+                _set_best(conn, r["mon_key"])
     conn.close()
 
 
@@ -321,18 +338,48 @@ def device_for_token(conn: sqlite3.Connection, token: str):
 
 # ── Versions ────────────────────────────────────────────────────────────────
 
+LIVE = "replaced_by IS NULL"  # a version that is listed (not replaced by its person's newer one)
+
+
+def _replace(conn: sqlite3.Connection, old: int, new: int, key: str) -> None:
+    """`new` takes `old`'s place (the same person's): its votes (where the voter has not voted for
+    `new` already) and a pin move over; `old` stays as history."""
+    conn.execute("UPDATE OR IGNORE votes SET version_id = ? WHERE version_id = ?", (new, old))
+    conn.execute("DELETE FROM votes WHERE version_id = ?", (old,))
+    conn.execute("UPDATE versions SET replaced_by = ? WHERE id = ?", (new, old))
+    conn.execute("UPDATE versions SET replaced_by = NULL WHERE id = ?", (new,))
+    cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
+    if cur is not None and cur["version_id"] == old:
+        conn.execute("UPDATE current SET version_id = ?, seq = ? WHERE mon_key = ?", (new, next_seq(conn), key))
+
+
 def add_version(conn: sqlite3.Connection, edit, user_id: int, device_id: Optional[int]):
-    """(version_id, became_current, duplicate)."""
+    """(version_id, became_current, duplicate). One version per person per picture: the new one
+    replaces the uploader's earlier one (_replace). Sending the same file again is a duplicate; an
+    earlier file of one's own that was replaced comes back as one's version."""
     with Tx(conn):
-        old = conn.execute("SELECT id FROM versions WHERE mon_key = ? AND sha256 = ?",
+        old = conn.execute("SELECT id, user_id, replaced_by FROM versions WHERE mon_key = ? AND sha256 = ?",
                            (edit.key, edit.sha256)).fetchone()
-        if old is not None:
+        if old is not None and (old["replaced_by"] is None or old["user_id"] != user_id):
             return old["id"], False, True
+        mine = [r["id"] for r in conn.execute(
+            "SELECT id FROM versions WHERE mon_key = ? AND user_id = ? AND " + LIVE, (edit.key, user_id))]
+        if old is not None:  # an earlier file of one's own, back again
+            for m in mine:
+                _replace(conn, m, old["id"], edit.key)
+            bump_rev(conn)
+            cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
+            if cur is None or not cur["pinned"]:
+                _set_best(conn, edit.key)
+            cur = conn.execute("SELECT version_id FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
+            return old["id"], cur is not None and cur["version_id"] == old["id"], False
         vid = conn.execute(
             "INSERT INTO versions (mon_key, user_id, device_id, planes, frames, final, depth, revision, author_tag, "
             "saved_at, sha256, size, data, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (edit.key, user_id, device_id, edit.planes, edit.frames, int(edit.final), edit.depth, edit.revision,
              edit.author, edit.saved, edit.sha256, len(edit.data), edit.data, now())).lastrowid
+        for m in mine:
+            _replace(conn, m, vid, edit.key)
         bump_rev(conn)
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
         if cur is not None and cur["pinned"]:
@@ -346,7 +393,7 @@ def _best(conn: sqlite3.Connection, key: str) -> Optional[int]:
     """The version with the most votes; among equals (and with none) the newest."""
     row = conn.execute(
         "SELECT v.id, COUNT(t.version_id) AS n FROM versions v LEFT JOIN votes t ON t.version_id = v.id "
-        "WHERE v.mon_key = ? GROUP BY v.id ORDER BY n DESC, v.uploaded_at DESC, v.id DESC LIMIT 1",
+        "WHERE v.mon_key = ? AND v." + LIVE + " GROUP BY v.id ORDER BY n DESC, v.uploaded_at DESC, v.id DESC LIMIT 1",
         (key,)).fetchone()
     return row["id"] if row else None
 
@@ -381,9 +428,19 @@ def set_votes(conn: sqlite3.Connection, user_id: int, key: str, version_ids) -> 
     if len(ids) > MAX_FAVOURITES:
         return "at most %d votes per picture" % MAX_FAVOURITES
     with Tx(conn):
+        live = []
         for v in ids:
-            if conn.execute("SELECT 1 FROM versions WHERE id = ? AND mon_key = ?", (v, key)).fetchone() is None:
+            # A vote for a version its person has replaced since (a console's queued votes) goes to the newer one.
+            row = conn.execute("SELECT id, replaced_by FROM versions WHERE id = ? AND mon_key = ?", (v, key)).fetchone()
+            for _ in range(32):
+                if row is None or row["replaced_by"] is None:
+                    break
+                row = conn.execute("SELECT id, replaced_by FROM versions WHERE id = ?", (row["replaced_by"],)).fetchone()
+            if row is None or row["replaced_by"] is not None:
                 return "version %d is not one of this picture's" % v
+            if row["id"] not in live:
+                live.append(row["id"])
+        ids = live
         conn.execute("DELETE FROM votes WHERE user_id = ? AND mon_key = ?", (user_id, key))
         t = now()
         for i, v in enumerate(ids):
@@ -398,7 +455,8 @@ def set_votes(conn: sqlite3.Connection, user_id: int, key: str, version_ids) -> 
 
 def pin(conn: sqlite3.Connection, key: str, version_id: int) -> bool:
     with Tx(conn):
-        if conn.execute("SELECT 1 FROM versions WHERE id = ? AND mon_key = ?", (version_id, key)).fetchone() is None:
+        if conn.execute("SELECT 1 FROM versions WHERE id = ? AND mon_key = ? AND " + LIVE,
+                        (version_id, key)).fetchone() is None:
             return False
         conn.execute("INSERT OR REPLACE INTO current (mon_key, version_id, pinned, seq) VALUES (?, ?, 1, ?)",
                      (key, version_id, next_seq(conn)))

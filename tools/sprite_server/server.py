@@ -387,10 +387,11 @@ def web_grid(req: Request) -> Response:
     """Everything the progress grid shows: each picture's current version, and the caller's own."""
     rows = req.conn.execute(
         "SELECT c.mon_key, c.version_id, c.pinned, v.final, v.uploaded_at, COALESCE(u.display_name, u.name) AS author, "
-        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n "
+        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key AND w.replaced_by IS NULL) AS n "
         "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id").fetchall()
     uid = req.user["id"]
-    mine = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM versions WHERE user_id = ?", (uid,))]
+    mine = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM versions WHERE user_id = ? AND " + db.LIVE,
+                                           (uid,))]
     voted = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM votes WHERE user_id = ?", (uid,))]
     fronts = ["%03u" % n for n in range(1, DEX_COUNT + 1)]
     known = set(fronts) | {"b" + k for k in fronts}
@@ -413,7 +414,7 @@ def mon_json(req: Request, key: str) -> dict:
         "SELECT v.id, v.user_id, v.planes, v.frames, v.final, v.revision, v.author_tag, v.saved_at, v.sha256, v.size, "
         "v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader, d.console_name "
         "FROM versions v JOIN users u ON u.id = v.user_id LEFT JOIN devices d ON d.id = v.device_id "
-        "WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC", (key,)).fetchall()
+        "WHERE v.mon_key = ? AND v.replaced_by IS NULL ORDER BY v.uploaded_at DESC, v.id DESC", (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
     counts = db.vote_counts(req.conn, key)
     voters: Dict[int, List[str]] = {}
@@ -510,7 +511,8 @@ def web_picture(req: Request, key: str) -> Response:
 def account_json(req: Request) -> dict:
     devices = req.conn.execute("SELECT * FROM devices WHERE user_id = ? AND revoked = 0 ORDER BY created DESC",
                                (req.user["id"],)).fetchall()
-    uploads = req.conn.execute("SELECT COUNT(*) FROM versions WHERE user_id = ?", (req.user["id"],)).fetchone()[0]
+    uploads = req.conn.execute("SELECT COUNT(*) FROM versions WHERE user_id = ? AND " + db.LIVE,
+                               (req.user["id"],)).fetchone()[0]
     return {"name": req.user["name"], "display_name": db.shown_name(req.user), "role": req.user["role"],
             "uploads": uploads, "min_password": MIN_PASSWORD, "base": public_base(req),
             "devices": [{"id": d["id"], "console_name": d["console_name"], "created": d["created"],
@@ -565,7 +567,8 @@ def users_json(req: Request) -> dict:
     users = req.conn.execute(
         "SELECT u.*, (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS consoles, "
         "(SELECT MAX(d.last_seen) FROM devices d WHERE d.user_id = u.id AND d.revoked = 0) AS last_seen, "
-        "(SELECT COUNT(*) FROM versions v WHERE v.user_id = u.id) AS uploads FROM users u ORDER BY u.name").fetchall()
+        "(SELECT COUNT(*) FROM versions v WHERE v.user_id = u.id AND v.replaced_by IS NULL) AS uploads "
+        "FROM users u ORDER BY u.name").fetchall()
     return {"users": [{"id": u["id"], "name": u["name"], "display_name": db.shown_name(u), "role": u["role"],
                        "disabled": bool(u["disabled"]), "consoles": u["consoles"], "uploads": u["uploads"],
                        "created": u["created"], "last_seen": u["last_seen"], "me": u["id"] == req.user["id"]}
@@ -610,34 +613,52 @@ def web_users_act(req: Request, uid: str, act: str) -> Response:
 
 
 class Focus:
-    """What each account's web app is looking at, for its consoles' "follow the web" (GET /api/focus).
-    In memory: a restart forgets it, and the web app sends it again on its next page."""
+    """What each account's web app is looking at, for its consoles' "follow the web" (GET /api/focus):
+    the picture, the versions being compared, and the one selected. In memory: a restart forgets it,
+    and the web app sends it again on its next page. Also when a console of the account last asked,
+    so the web app can say whether a 3DS is following."""
     STALE = 10 * 60
+    EMPTY = {"key": None, "version_ids": [], "selected": None, "seq": 0, "at": 0}
 
     def __init__(self):
         self.lock = threading.Lock()
         self.seq = 0
         self.by_user: Dict[int, dict] = {}
+        self.polled: Dict[int, Tuple[float, str]] = {}  # user id -> (when, console name)
 
-    def set(self, user_id: int, key: Optional[str], version_ids: List[int]) -> dict:
+    def set(self, user_id: int, key: Optional[str], version_ids: List[int], selected: Optional[int],
+            push: bool = False) -> dict:
+        """`push` ("Show on 3DS") moves seq on even when nothing changed, so a console jumps there again."""
         with self.lock:
             old = self.by_user.get(user_id)
-            if old is not None and old["key"] == key and old["version_ids"] == version_ids:
+            same = (old is not None and old["key"] == key and old["version_ids"] == version_ids
+                    and old["selected"] == selected)
+            if same and not push:
                 old["at"] = int(time.time())  # the same page again: still looking
                 return dict(old)
             self.seq += 1
-            self.by_user[user_id] = {"key": key, "version_ids": version_ids, "seq": self.seq, "at": int(time.time())}
+            self.by_user[user_id] = {"key": key, "version_ids": version_ids, "selected": selected,
+                                     "seq": self.seq, "at": int(time.time())}
             return dict(self.by_user[user_id])
 
     def get(self, user_id: int) -> dict:
         with self.lock:
-            f = self.by_user.get(user_id)
-            if f is None:
-                return {"key": None, "version_ids": [], "seq": 0, "at": 0}
-            f = dict(f)
+            f = dict(self.by_user.get(user_id) or self.EMPTY)
         if time.time() - f["at"] > self.STALE:
-            f["key"], f["version_ids"] = None, []
+            f["key"], f["version_ids"], f["selected"] = None, [], None
         return f
+
+    def polled_by(self, user_id: int, console_name: str) -> None:
+        with self.lock:
+            self.polled[user_id] = (time.time(), console_name)
+
+    def follower(self, user_id: int) -> Optional[dict]:
+        """The console that asked last, if one asked in the last 15 s (consoles ask every ~2 s)."""
+        with self.lock:
+            p = self.polled.get(user_id)
+        if p is None or time.time() - p[0] > 15:
+            return None
+        return {"console_name": p[1], "seen": int(p[0])}
 
 
 FOCUS = Focus()
@@ -645,15 +666,26 @@ FOCUS = Focus()
 
 @route("POST", r"/api/web/focus", "web")
 def web_focus(req: Request) -> Response:
-    """{"key", "version_ids"}: the picture (and the versions being compared) this account's web app shows."""
+    """{"key", "version_ids", "selected", "push"}: the picture, the versions being compared and the one
+    selected that this account's web app shows; push (the "Show on 3DS" button) makes consoles jump
+    there again. Answers the focus and the console following it ("follower", or null)."""
     body = json_body(req) or {}
     key = body.get("key")
     ids = body.get("version_ids") or []
+    selected = body.get("selected")
     if key is not None and (not isinstance(key, str) or editfile.key_to_id(key) is None):
         return api_error(400, "no such picture")
     if not isinstance(ids, list) or len(ids) > 16 or any(int_field({"v": v}, "v") is None for v in ids):
         return api_error(400, "version_ids must be up to 16 numbers")
-    return json_resp(FOCUS.set(req.user["id"], key, ids))
+    if selected is not None and int_field(body, "selected") is None:
+        return api_error(400, "selected must be a version id or null")
+    focus = FOCUS.set(req.user["id"], key, ids, selected, body.get("push") is True)
+    return json_resp(dict(focus, follower=FOCUS.follower(req.user["id"])))
+
+
+@route("GET", r"/api/web/focus", "web")
+def web_focus_get(req: Request) -> Response:
+    return json_resp(dict(FOCUS.get(req.user["id"]), follower=FOCUS.follower(req.user["id"])))
 
 
 class Stream:
@@ -768,7 +800,8 @@ def _voter(req: Request) -> int:
 def _versions_json(req: Request, key: str) -> dict:
     rows = req.conn.execute(
         "SELECT v.id, v.user_id, v.revision, v.final, v.depth, v.author_tag, v.sha256, v.size, v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader "
-        "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
+        "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.mon_key = ? AND v.replaced_by IS NULL "
+        "ORDER BY v.uploaded_at DESC, v.id DESC",
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
     counts = db.vote_counts(req.conn, key)
@@ -856,7 +889,7 @@ def api_mons(req: Request) -> Response:
     caller's favourites (a console's Pokédex marks both)."""
     rows = req.conn.execute(
         "SELECT c.mon_key, c.version_id, c.pinned, v.final, COALESCE(u.display_name, u.name) AS author, "
-        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key) AS n, "
+        "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key AND w.replaced_by IS NULL) AS n, "
         "(SELECT COUNT(*) FROM votes t WHERE t.mon_key = c.mon_key AND t.user_id = ?) AS mine "
         "FROM current c JOIN versions v ON v.id = c.version_id JOIN users u ON u.id = v.user_id "
         "ORDER BY c.mon_key", (_voter(req),)).fetchall()
@@ -868,8 +901,10 @@ def api_mons(req: Request) -> Response:
 
 @route("GET", r"/api/focus", "device")
 def api_focus(req: Request) -> Response:
-    """Follow the web: {"key", "version_ids", "seq", "at"}, what the account's web app shows (key null when
-    it has shown nothing for ten minutes). `seq` moves on with every change; consoles act on a new one."""
+    """Follow the web: {"key", "version_ids", "selected", "seq", "at"}, what the account's web app shows
+    (key null when it has shown nothing for ten minutes; selected the version chosen there, or null).
+    `seq` moves on with every change and every "Show on 3DS"; consoles act on a new one."""
+    FOCUS.polled_by(req.device["user_id"], req.device["console_name"])
     return json_resp(FOCUS.get(req.device["user_id"]))
 
 

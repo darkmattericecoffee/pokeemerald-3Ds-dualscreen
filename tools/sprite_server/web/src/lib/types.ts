@@ -123,6 +123,17 @@ export interface Users {
   password?: string;
 }
 
+/** What the account's web app shows, for its consoles that follow the web (/api/web/focus). */
+export interface FocusState {
+  key: string | null;
+  version_ids: number[];
+  selected: number | null;
+  seq: number;
+  at: number;
+  /** The console that asked in the last 15 s, if any: it follows this page. */
+  follower: { console_name: string; seen: number } | null;
+}
+
 /** What the live channel (/api/web/events) sends. */
 export type LiveEvent =
   | { type: "hello"; rev: number }

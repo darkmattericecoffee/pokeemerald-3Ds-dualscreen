@@ -429,7 +429,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 201)
         status, _, body = client.request("GET", base + "/api/mons/009/versions", token)
         depths = sorted(v["depth"] for v in json.loads(body)["versions"])
-        self.assertEqual(depths, [1, 2, 2, 3])
+        self.assertEqual(depths, [2])  # one person: only their newest is listed
         # The newest is current: the Standard one, which sync says too.
         status, _, body = client.request("GET", base + "/api/sync?since=0", token)
         self.assertEqual([i["depth"] for i in json.loads(body)["items"] if i["key"] == "009"], [2])
@@ -442,15 +442,51 @@ class ServerTest(unittest.TestCase):
                          [0, 1, 2, 3])
         conn.close()
 
+    def test_one_version_per_person(self):
+        """A person's new upload replaces their earlier one: votes and a pin move over, the earlier one
+        stays as hidden history, and sending it again brings it back."""
+        _, ann = self.linked_client("ann")
+        ben_web, ben = self.linked_client("ben")
+        up = lambda cfg, seed: json.loads(client.request(  # noqa: E731
+            "POST", self.base + "/api/mons/040/versions", cfg["token"], make_edit("040", seed=seed))[2])
+        listing = lambda: json.loads(client.request(  # noqa: E731
+            "GET", self.base + "/api/mons/040/versions", ben["token"])[2])
+        a1 = up(ann, 1)["version_id"]
+        b1 = up(ben, 2)["version_id"]
+        self.assertEqual(ben_web.api("POST", "/api/web/mons/040/vote", {"version_id": a1, "on": True})[0], 200)
+        status, _ = self.admin.api("POST", "/api/web/mons/040/pin", {"version_id": a1})
+        a2 = up(ann, 3)
+        self.assertFalse(a2["duplicate"])
+        got = listing()
+        self.assertEqual(sorted(v["version_id"] for v in got["versions"]), sorted([a2["version_id"], b1]))
+        self.assertEqual(got["favourites"], [a2["version_id"]])          # Ben's vote moved along
+        self.assertEqual((got["current"], got["pinned"]), (a2["version_id"], True))  # so did the pin
+        # The old one is history: not votable (a queued vote for it lands on the new one), still downloadable.
+        status, _, body = client.request("POST", self.base + "/api/mons/040/votes", ben["token"],
+                                         json.dumps({"version_ids": [a1, b1]}).encode(), "application/json")
+        self.assertEqual(sorted(json.loads(body)["favourites"]), sorted([a2["version_id"], b1]))
+        self.assertEqual(client.request("GET", self.base + "/api/versions/%d" % a1, ben["token"])[0], 200)
+        self.assertEqual(self.admin.api("POST", "/api/web/mons/040/pin", {"version_id": a1})[0], 404)
+        # The same file again is a duplicate; Ann's first file again becomes her version once more.
+        self.assertTrue(up(ann, 3)["duplicate"])
+        back = up(ann, 1)
+        self.assertEqual((back["version_id"], back["duplicate"]), (a1, False))
+        self.assertEqual(sorted(v["version_id"] for v in listing()["versions"]), sorted([a1, b1]))
+        grid = ben_web.api("GET", "/api/web/grid")[1]
+        self.assertEqual(grid["items"]["040"]["versions"], 2)
+
     def test_votes(self):
         _, frank = self.linked_client("frank")
         gina_web, gina = self.linked_client("gina")
         api = lambda method, path, cfg, obj=None: client.request(
             method, self.base + path, cfg["token"], json.dumps(obj).encode() if obj is not None else None,
             "application/json" if obj is not None else None)
+        # Three people, one version each (one version per person per picture).
+        _, fay = self.linked_client("fay")
+        _, finn = self.linked_client("finn")
         ids = []
-        for seed in (1, 2, 3):
-            status, _, body = client.request("POST", self.base + "/api/mons/030/versions", frank["token"],
+        for seed, who in ((1, frank), (2, fay), (3, finn)):
+            status, _, body = client.request("POST", self.base + "/api/mons/030/versions", who["token"],
                                              make_edit("030", seed=seed))
             self.assertEqual(status, 201)
             ids.append(json.loads(body)["version_id"])
@@ -497,10 +533,10 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(gina_web.api("POST", "/api/web/mons/030/vote", {"version_id": ids[1]})[0], 400)
         # Each knows its own versions, and only its uploader takes one off the server.
         listing = json.loads(api("GET", "/api/mons/030/versions", frank)[2])
-        self.assertTrue(all(v["mine"] for v in listing["versions"]))
+        self.assertEqual([v["version_id"] for v in listing["versions"] if v["mine"]], [ids[0]])
         self.assertFalse(any(v["mine"] for v in json.loads(api("GET", "/api/mons/030/versions", gina)[2])["versions"]))
         self.assertEqual(api("POST", "/api/versions/%d/delete" % ids[2], gina)[0], 403)
-        status, _, body = api("POST", "/api/versions/%d/delete" % ids[2], frank)
+        status, _, body = api("POST", "/api/versions/%d/delete" % ids[2], finn)
         self.assertEqual(status, 200)
         self.assertEqual([v["version_id"] for v in json.loads(body)["versions"]], [ids[0], ids[1]])
 
@@ -654,18 +690,29 @@ class ServerTest(unittest.TestCase):
         """The web app says what it shows; the same account's console reads it (GET /api/focus)."""
         b, cfg = self.linked_client("kim")
         status, _, body = client.request("GET", self.base + "/api/focus", cfg["token"])
-        self.assertEqual((status, json.loads(body)["key"]), (200, None))
-        status, f = b.api("POST", "/api/web/focus", {"key": "025", "version_ids": [3, 4]})
+        self.assertEqual((status, json.loads(body)["key"], json.loads(body)["selected"]), (200, None, None))
+        status, f = b.api("POST", "/api/web/focus", {"key": "025", "version_ids": [3, 4], "selected": 4})
         self.assertEqual(status, 200)
+        self.assertEqual(f["follower"]["console_name"], "kim's 3DS")  # it just asked
         seq = f["seq"]
         status, _, body = client.request("GET", self.base + "/api/focus", cfg["token"])
-        self.assertEqual(json.loads(body)["key"], "025")
-        self.assertEqual(json.loads(body)["version_ids"], [3, 4])
-        self.assertEqual(b.api("POST", "/api/web/focus", {"key": "025", "version_ids": [3, 4]})[1]["seq"], seq)
+        got = json.loads(body)
+        self.assertEqual((got["key"], got["version_ids"], got["selected"], got["seq"]), ("025", [3, 4], 4, seq))
+        # The same page again changes nothing; "Show on 3DS" (push) moves seq on all the same.
+        self.assertEqual(b.api("POST", "/api/web/focus", {"key": "025", "version_ids": [3, 4], "selected": 4})[1]["seq"],
+                         seq)
+        pushed = b.api("POST", "/api/web/focus", {"key": "025", "version_ids": [3, 4], "selected": 4, "push": True})[1]
+        self.assertGreater(pushed["seq"], seq)
+        self.assertGreater(b.api("POST", "/api/web/focus", {"key": "025", "version_ids": [3, 4], "selected": 3})[1]["seq"],
+                           pushed["seq"])
         self.assertGreater(b.api("POST", "/api/web/focus", {"key": "b025"})[1]["seq"], seq)
+        self.assertEqual(b.api("GET", "/api/web/focus")[1]["key"], "b025")
         self.assertEqual(b.api("POST", "/api/web/focus", {"key": "nope"})[0], 400)
         self.assertEqual(b.api("POST", "/api/web/focus", {"key": "025", "version_ids": ["x"]})[0], 400)
+        self.assertEqual(b.api("POST", "/api/web/focus", {"key": "025", "selected": "4"})[0], 400)
         self.assertEqual(client.request("GET", self.base + "/api/focus")[0], 401)
+        other, _ = self.linked_client("lou")
+        self.assertIsNone(other.api("GET", "/api/web/focus")[1]["follower"])  # Lou's console never asked
 
 
 if __name__ == "__main__":

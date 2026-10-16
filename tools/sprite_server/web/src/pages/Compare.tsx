@@ -1,13 +1,15 @@
-import { Check, Link2, Plus } from "lucide-react";
+import { Check, Gamepad2, Link2, Plus } from "lucide-react";
 import * as React from "react";
 import { useParams, useSearchParams } from "react-router";
+import { FollowBadge } from "@/components/FollowBadge";
 import { EditPixels } from "@/components/Pixels";
 import { ViewControls } from "@/components/ViewControls";
 import { VoteButton } from "@/components/VoteButton";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { frameCount } from "@/lib/editfile";
-import { postFocus, useMon, useVote } from "@/lib/queries";
+import { postFocus, useMon, useShowOn3ds, useVote } from "@/lib/queries";
 import { useVersionFiles } from "@/lib/useVersions";
 import { cn } from "@/lib/utils";
 import { createOrbit, OrbitContext } from "@/three/orbit";
@@ -23,6 +25,7 @@ export function ComparePage() {
   const [settings, setSettings] = useViewSettings();
   const orbit = React.useMemo(createOrbit, []);
   const vote = useVote(key);
+  const show3ds = useShowOn3ds();
   useArrowKeys(mon, "/compare/");
 
   const asked = (params.get("v") ?? "")
@@ -87,9 +90,19 @@ export function ComparePage() {
           })}
         </div>
         <ViewControls settings={settings} onChange={setSettings} frames={frames} />
-        <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-          <Link2 className="size-3.5" /> The views move together: drag any of them. Your linked 3DS can follow this page.
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="mr-auto flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+            <Link2 className="size-3.5" /> The views move together: drag any of them.
+          </p>
+          <FollowBadge />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => show3ds.mutate({ key, versionIds: ids, what: `these ${ids.length} versions` })}
+          >
+            <Gamepad2 /> Show on 3DS
+          </Button>
+        </div>
       </Card>
 
       <OrbitContext.Provider value={orbit}>

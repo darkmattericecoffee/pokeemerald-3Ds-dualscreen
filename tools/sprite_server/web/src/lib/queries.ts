@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError, setCsrf } from "./api";
 import { parseEdit, parsePicture } from "./editfile";
-import type { Account, Grid, Mon, PairingCode, PictureData, Session, Users } from "./types";
+import type { Account, FocusState, Grid, Mon, PairingCode, PictureData, Session, Users } from "./types";
 
 export const keys = {
   session: ["session"] as const,
@@ -12,6 +12,7 @@ export const keys = {
   picture: (key: string) => ["picture", key] as const,
   account: ["account"] as const,
   users: ["users"] as const,
+  focus: ["focus"] as const,
 };
 
 export function useSession() {
@@ -210,7 +211,41 @@ export function useUserAction() {
   };
 }
 
-/** Tells the server what this page shows, for the account's consoles that follow the web. */
-export function postFocus(key: string | null, versionIds: number[] = []) {
-  api.post("/api/web/focus", { key, version_ids: versionIds }).catch(() => {});
+/** Tells the server what this page shows (the picture, the versions compared, the one selected), for
+ *  the account's consoles that follow the web. */
+export function postFocus(key: string | null, versionIds: number[] = [], selected: number | null = null) {
+  api.post("/api/web/focus", { key, version_ids: versionIds, selected }).catch(() => {});
+}
+
+/** Whether a 3DS of this account follows the web right now (it asks every couple of seconds). */
+export function useFollower() {
+  return useQuery({
+    queryKey: keys.focus,
+    queryFn: () => api.get<FocusState>("/api/web/focus"),
+    refetchInterval: 5000,
+    select: (f) => f.follower,
+  });
+}
+
+/** "Show on 3DS": sends this page's picture and version to the account's following console now. */
+export function useShowOn3ds() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { key: string; versionIds?: number[]; selected?: number | null; what?: string }) =>
+      api.post<FocusState>("/api/web/focus", {
+        key: v.key,
+        version_ids: v.versionIds ?? [],
+        selected: v.selected ?? null,
+        push: true,
+      }),
+    onSuccess: (f, v) => {
+      qc.setQueryData(keys.focus, f);
+      if (f.follower) toast.success(`Showing ${v.what ?? "it"} on ${f.follower.console_name}.`);
+      else
+        toast("Sent, but no 3DS is following right now.", {
+          description: "On the 3DS, open a Pokémon's online view and turn on FOLLOW WEB; it jumps here.",
+        });
+    },
+    onError: errorToast,
+  });
 }

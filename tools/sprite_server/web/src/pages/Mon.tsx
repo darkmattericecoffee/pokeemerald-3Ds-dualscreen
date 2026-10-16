@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { FollowBadge } from "@/components/FollowBadge";
 import { EditPixels, PicturePixels } from "@/components/Pixels";
 import { ViewControls } from "@/components/ViewControls";
 import { VoteButton } from "@/components/VoteButton";
@@ -28,7 +29,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
 import { frameCount, type EditFile, type Picture } from "@/lib/editfile";
 import { useLive } from "@/lib/live";
-import { postFocus, useMon, useMonAction, useVote } from "@/lib/queries";
+import { postFocus, useMon, useMonAction, useShowOn3ds, useVote } from "@/lib/queries";
 import type { Mon, Version } from "@/lib/types";
 import { useVersionFiles } from "@/lib/useVersions";
 import { ago, cn, plural, shownNumber, when } from "@/lib/utils";
@@ -179,6 +180,7 @@ function VersionCard({
   fresh,
   onShow,
   onCompare,
+  onShow3ds,
 }: {
   v: Version;
   mon: Mon;
@@ -189,6 +191,7 @@ function VersionCard({
   fresh: boolean;
   onShow: () => void;
   onCompare: () => void;
+  onShow3ds: () => void;
 }) {
   const vote = useVote(mon.key);
   const act = useMonAction(mon.key);
@@ -198,11 +201,12 @@ function VersionCard({
   return (
     <Card
       className={cn(
-        "cursor-pointer p-3 transition-[border-color,box-shadow] sm:p-4",
-        // The version in the 3D view: a red stroke (the border, thickened inside) and a red drop.
-        showing
-          ? "border-primary shadow-[inset_0_0_0_1px_var(--primary),0_4px_0_0_var(--primary)]"
-          : "hover:border-primary/60",
+        "cursor-pointer p-3 transition-[box-shadow,translate] duration-150 sm:p-4",
+        // A deep base under every card (a block, not a line) that lifts on hover.
+        "shadow-[inset_0_-4px_0_0_var(--hairline),0_8px_0_0_var(--border)] hover:-translate-y-0.5 hover:shadow-[inset_0_-4px_0_0_var(--hairline),0_10px_0_0_var(--border)]",
+        // The version in the 3D view: a red stroke (the border, thickened inside) on a red base.
+        showing &&
+          "border-primary shadow-[inset_0_0_0_1px_var(--primary),inset_0_-4px_0_0_color-mix(in_srgb,var(--primary)_25%,transparent),0_8px_0_0_var(--primary-deep)] hover:shadow-[inset_0_0_0_1px_var(--primary),inset_0_-4px_0_0_color-mix(in_srgb,var(--primary)_25%,transparent),0_10px_0_0_var(--primary-deep)]",
         fresh && "animate-fresh",
       )}
       onClick={(e) => {
@@ -255,6 +259,11 @@ function VersionCard({
           className="flex-1 sm:flex-none"
         >
           <Columns3 /> {comparing ? "Picked" : "Compare"}
+        </Button>
+        <Button variant="outline" onClick={onShow3ds} title="Show this version on your 3DS now" className="flex-1 sm:flex-none">
+          <Gamepad2 />
+          <span className="xl:hidden">3DS</span>
+          <span className="hidden xl:inline">Show on 3DS</span>
         </Button>
         <DropdownMenu>
           <DropdownTrigger asChild>
@@ -360,7 +369,6 @@ export function MonPage() {
     setChosen(null);
     setPicked([]);
   }, [key]);
-  React.useEffect(() => postFocus(key, picked), [key, picked]);
 
   const ids = mon?.versions.map((v) => v.version_id) ?? [];
   // The version in 3D stays put when votes change which one is current; a click picks another.
@@ -373,6 +381,14 @@ export function MonPage() {
   const shownEdit = shownId !== null ? files.edits.get(shownId) : undefined;
   const frames = shownEdit ? frameCount(shownEdit, files.picture) : (files.picture?.frames.length ?? 2);
   const frame = useFrameIndex(settings.frame, frames);
+  const show3ds = useShowOn3ds();
+  // The account's following 3DS shows what this page shows: the picture, the picked versions and the
+  // version in the 3D view.
+  const pickedKey = picked.join(",");
+  React.useEffect(
+    () => postFocus(key, pickedKey ? pickedKey.split(",").map(Number) : [], shownId),
+    [key, pickedKey, shownId],
+  );
 
   if (error) return <p className="panel p-5 font-bold">{(error as Error).message}</p>;
   if (isLoading || !mon) {
@@ -402,9 +418,13 @@ export function MonPage() {
           ) : null}
           <p className="font-pixel text-xs uppercase">No planes yet</p>
           <p className="max-w-md text-sm font-semibold text-muted-foreground">
-            Nobody has uploaded planes for {mon.name} yet. Paint them in the plane editor on the 3DS and upload them from
-            its ONLINE tab; they show up here at once.
+            Nobody has uploaded planes for {mon.name} yet. Make the first version in the plane editor on the 3DS and
+            upload it from its online view; it shows up here at once.
           </p>
+          <Button size="lg" onClick={() => show3ds.mutate({ key: mon.key, what: `${mon.name} (press CREATE there)` })}>
+            <Gamepad2 /> Create on 3DS
+          </Button>
+          <FollowBadge />
         </Card>
       ) : (
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
@@ -446,11 +466,12 @@ export function MonPage() {
             </Card>
           </div>
 
-          <section className="grid gap-3">
+          <section className="grid gap-5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-pixel text-xs uppercase sm:text-sm">
                 Versions <span className="text-muted-foreground">({mon.versions.length})</span>
               </h2>
+              <FollowBadge className="mr-auto" />
               {mon.versions.length >= 2 && (
                 <Button asChild variant="secondary" size="sm">
                   <Link to={`/compare/${mon.key}?v=${ids.slice(0, MAX_COMPARE).join(",")}`}>
@@ -474,6 +495,10 @@ export function MonPage() {
                   if (window.matchMedia("(max-width: 1023px)").matches) window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
                 onCompare={() => togglePick(v.version_id)}
+                onShow3ds={() => {
+                  setChosen(v.version_id);
+                  show3ds.mutate({ key: mon.key, versionIds: picked, selected: v.version_id, what: `#${v.version_id} by ${v.author}` });
+                }}
               />
             ))}
             <p className="px-1 text-xs font-semibold text-muted-foreground">
