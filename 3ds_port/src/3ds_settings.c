@@ -13,6 +13,7 @@
 #include <3ds.h>
 #include "3ds_platform.h"
 #include "3ds_daynight.h"
+#include "3ds_stereo_mon.h"
 
 #define SETTINGS_FILE "settings.txt"
 
@@ -129,6 +130,27 @@ void CtrSettings_ApplyLine(const char *line)
     }
 }
 
+/* A card's 3D depths from before there was a standard (3ds_stereo_mon.h
+ * CtrStereoDepths) put on it, once: the mark goes to the card with the
+ * next setting saved, and until then this only sets the same again. */
+#define DEPTH_STANDARD_KEY "depth_standard"
+static void StandardDepths(void)
+{
+    static const struct { const char *key; int value; } standard[] = {
+        {CTR_DEPTH_BACK_KEY, CTR_DEPTH_BACK_STANDARD}, {CTR_DEPTH_MON_KEY, CTR_DEPTH_MON_STANDARD},
+        {CTR_DEPTH_PIVOT_KEY, CTR_DEPTH_PIVOT_STANDARD},
+        {DEPTH_STANDARD_KEY, 1},
+    };
+    int index = ExtraIndex(DEPTH_STANDARD_KEY, false);
+
+    if (index >= 0 && sExtra[index].value >= 1)
+        return;
+    for (int i = 0; i < COUNT(standard); ++i)
+        if ((index = ExtraIndex(standard[i].key, true)) >= 0)
+            sExtra[index].value = standard[i].value;
+    CtrLog_Write(CTR_LOG_FS, "settings: 3D depths put on the standard");
+}
+
 void CtrSettings_Load(void)
 {
     FILE *file = CtrFs_OpenData(SETTINGS_FILE, "r");
@@ -137,11 +159,13 @@ void CtrSettings_Load(void)
     if (file == NULL)
     {
         CtrLog_Write(CTR_LOG_FS, "settings: none yet, defaults (voxel=0 fps=0)");
+        StandardDepths();
         return;
     }
     while (fgets(line, sizeof(line), file))
         CtrSettings_ApplyLine(line);
     fclose(file);
+    StandardDepths();
     CtrLog_Write(CTR_LOG_FS, "settings: voxel=%d pitch=%d zoom=%d blur=%d battle=%d fps=%d run=%d speed=%d%s",
                  sVoxel ? 1 : 0, sPitches[sPitch], sZooms[sZoom], sBlurs[sBlur],
                  sVoxelBattle ? 1 : 0, sShowFps ? 1 : 0, sRunAlways ? 1 : 0,

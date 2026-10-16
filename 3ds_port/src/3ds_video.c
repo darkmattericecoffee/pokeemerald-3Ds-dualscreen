@@ -6513,17 +6513,15 @@ static void BattleDepthsRefresh(void) {}
 /* Both are OPTIONS' (3ds_extras.c "BATTLE BACK", "BATTLE MONS"), read once
  * a frame, so the scenery's and the sprites' depths can be tried against the
  * depth the planes' stacks take (3ds_stereo_battle.c "MON PLANES"). */
-static float sBattleBackDepth = 4.0f, sBattleSpriteDepth = 2.0f;
+static float sBattleBackDepth = 6.0f, sBattleSpriteDepth = 2.0f;
 #define BATTLE_BACK_DEPTH sBattleBackDepth
 #define BATTLE_SPRITE_DEPTH sBattleSpriteDepth
 static void BattleDepthsRefresh(void)
 {
-    static const float backs[] = {2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f};
-    static const float sprites[] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f};
-    int back = CtrSettings_GetInt("battle_back_depth", 2), sprite = CtrSettings_GetInt("battle_mon_depth", 2);
+    const CtrStereoDepths d = CtrStereoDepths_Get();
 
-    sBattleBackDepth = backs[back >= 0 && back < (int)(sizeof(backs) / sizeof(backs[0])) ? back : 2];
-    sBattleSpriteDepth = sprites[sprite >= 0 && sprite < (int)(sizeof(sprites) / sizeof(sprites[0])) ? sprite : 2];
+    sBattleBackDepth = d.back;
+    sBattleSpriteDepth = d.mon;
 }
 #endif
 /* GBA lines: a sprite centred above the first is at BATTLE_SPRITE_DEPTH, one
@@ -6542,7 +6540,7 @@ static int BattleStereoMargin(void)
 #define BATTLE_STEREO_MARGIN BattleStereoMargin()
 /* The text box in front of everything in the 3D battle: its depth in screen
  * pixels per eye at the slider's top, more than the nearest of a Pokémon's
- * planes (3ds_stereo_battle.c: PARALLAX * DEPTH_SPAN at 3D DEPTH 200%), so
+ * planes (3ds_stereo_battle.c, MON PLANES at its standard 3PX), so
  * the box never cuts into a card standing in front of it. */
 #define BATTLE_TEXT_DEPTH 3.0f
 /* Where the scene surface goes on the logical one (BattleScenePlace). */

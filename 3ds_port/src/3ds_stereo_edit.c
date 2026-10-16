@@ -2012,7 +2012,8 @@ static void VersionLines(uint16_t id, char *a, char *b, char *c)
 
             /* Numbered oldest first: the newest is the highest. */
             snprintf(a, 40, "VERSION %u OF %u", count - (unsigned)at, count);
-            snprintf(b, 40, "BY %s", v->author[0] ? v->author : "?");
+            /* The version is the card's file (CardAt): its sweet spot is the file's. */
+            snprintf(b, 40, "BY %s  DEPTH %u", v->author[0] ? v->author : "?", CtrStereoMon_SweetSpotOf(id));
             snprintf(c, 40, "%u VOTE%s%s%s", v->votes, v->votes == 1 ? "" : "S", mine ? "  YOUR VOTE" : "",
                      v->current ? "  CURRENT" : "");
         }
@@ -2110,9 +2111,20 @@ static void OptionAct(int row, bool rightHalf)
     switch (row)
     {
     case O_DEPTH:
-        CtrStereoMon_SetDepth(CtrStereoMon_Depth() + (rightHalf ? CTR_STEREO_EDIT_DEPTH_STEP : -CTR_STEREO_EDIT_DEPTH_STEP));
+    {
+        /* The picture's sweet spot (3ds_stereo_mon.h), one down on the left
+         * half, one up on the right, round; kept in the file with the next save. */
+        unsigned sweet = CtrStereoMon_SweetSpot() + (rightHalf ? 1 : CTR_SWEET_SPOTS - 1);
+        char line[32];
+
+        sweet = (sweet - 1) % CTR_SWEET_SPOTS + 1;
+        CtrStereoMon_SetSweetSpot(sweet);
+        sE.dirtyFile = true;
         sE.helpDirty = true;
+        snprintf(line, sizeof(line), "DEPTH %u %s", sweet, CtrStereoDepths_SweetName(sweet));
+        Toast(line);
         break;
+    }
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
     case O_COLLAPSE:
         sE.screen = S_EDIT;
@@ -3436,11 +3448,12 @@ static void DrawOptions(void)
             /* A minus at the left half's end and a plus at the right's:
              * a tap on either half. (The game font has no plus.) */
             int mx = OPT_X + OPT_W / 2 - 14, px = OPT_X + OPT_W - 22, cy = y + (OPT_ROW - 4) / 2;
+            unsigned sweet = CtrStereoMon_SweetSpot();
 
             CtrBottomDraw_Fill(mx, cy - 1, 9, 3, Rgb(24, 6, 6));
             CtrBottomDraw_Fill(px, cy - 1, 9, 3, Rgb(24, 6, 6));
             CtrBottomDraw_Fill(px + 3, cy - 4, 3, 9, Rgb(24, 6, 6));
-            snprintf(value, sizeof(value), "%d / %d", CtrStereoMon_Depth(), CTR_STEREO_EDIT_DEPTH_MAX);
+            snprintf(value, sizeof(value), "%u %s", sweet, CtrStereoDepths_SweetName(sweet));
             CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, value, OPT_X + OPT_W * 3 / 4 - 10, y + 5, CTR_DRAW_RED);
             value[0] = 0;
         }
@@ -3614,8 +3627,7 @@ static void DrawKeyboard(void)
 
 /* The top screen's words, in the game's small font: each line drawn into
  * this canvas with the bottom screen's font, then handed to the viewer as
- * a cell of its help sheet (CtrStereoMon_HelpCell). The game font has no
- * percent sign, so the depth is "3D DEPTH 50". */
+ * a cell of its help sheet (CtrStereoMon_HelpCell). */
 /* The canvas's rows hold this many cells at once (two to a row of 14). */
 #define HELP_PASS 32
 static void MakeHelpSheet(void)
@@ -3639,7 +3651,9 @@ static void MakeHelpSheet(void)
     else if (sE.animate) snprintf(text[CTR_HELP_FRAME], 40, "ANIMATING");
     else snprintf(text[CTR_HELP_FRAME], 40, "FRAME %u OF %u", sE.frame + 1, sE.frames);
     snprintf(text[CTR_HELP_PLANE], 40, "PLANE %u%s", number, number == 1 ? " FRONT" : number == PLANES ? " BACK" : "");
-    snprintf(text[CTR_HELP_DEPTH], 40, "3D DEPTH %d%s", CtrStereoMon_Depth(), views[sE.view]);
+    /* The picture's sweet spot, drawn as the battle draws it (CtrStereoDepths). */
+    snprintf(text[CTR_HELP_DEPTH], 40, "DEPTH %u %s%s", CtrStereoMon_SweetSpot(),
+             CtrStereoDepths_SweetName(CtrStereoMon_SweetSpot()), views[sE.view]);
     if (meta->revision) snprintf(text[CTR_HELP_REVISION], 40, "R%u %s", meta->revision, meta->author[0] ? meta->author : "?");
     else text[CTR_HELP_REVISION][0] = 0;
     snprintf(text[CTR_HELP_STATE], 40, "%s", meta->finalized ? "FINAL" : sE.dirtyFile || CtrStereoMon_HasEdit(sE.id) ? "EDITED" : "");

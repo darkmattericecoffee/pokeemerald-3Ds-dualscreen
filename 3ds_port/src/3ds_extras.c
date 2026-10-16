@@ -48,15 +48,14 @@ static const char *const sShinyOdds[] = {"1/8192", "1/4096", "1/1024", "1/256", 
  * the slider's full travel goes, in percent of the renderer's depth. */
 static const char *const sVoxelStereo[] = {CTR_TEXT("AUTO", "AUTO", "AUTO", "AUTO"), CTR_TEXT("ON", "SÍ", "OUI", "SÌ"), CTR_TEXT("OFF", "NO", "NON", "NO")};
 static const char *const sVoxelDepths[] = {"25%", "50%", "75%", "100%", "125%", "150%", "200%"};
-/* The 3D battle's depths, in screen pixels per eye at the slider's top
- * (3ds_video.c BATTLE_BACK_DEPTH, BATTLE_SPRITE_DEPTH; 3ds_stereo_battle.c
- * SPREAD_KEY, PIVOT_KEY): the scenery behind the screen, the opponent's
- * sprite behind it (the player's is on the screen), the planes' stack from
- * its farthest to its nearest, and where that stack stands against the
- * sprite's depth. */
+/* The scene's 3D depths, in pixels per eye at the slider's top, that the
+ * battle, the editor and the Pokédex all take (3ds_stereo_mon.h
+ * CtrStereoDepths, numbered as listed here): the scenery behind the screen,
+ * the opponent's sprite behind it (the player's is on the screen), and where
+ * a picture's planes stand against the sprite's depth. How deep the planes
+ * go is each picture's own sweet spot, chosen in the editor. */
 static const char *const sBattleBacks[] = {"2PX", "3PX", "4PX", "6PX", "8PX", "12PX"};
 static const char *const sBattleMons[] = {"0PX", "1PX", "2PX", "3PX", "4PX"};
-static const char *const sPlaneSpreads[] = {"1PX", "2PX", "3PX", "4PX", "6PX", "8PX"};
 static const char *const sPlanePivots[] = {CTR_TEXT("BEHIND", "DETRÁS", "DERRIÈRE", "DIETRO"), CTR_TEXT("AROUND", "ALREDEDOR", "AUTOUR", "INTORNO"), CTR_TEXT("IN FRONT", "DELANTE", "DEVANT", "DAVANTI")};
 /* The stereoscopic battle's lines are shown only when the build carries
  * planes (romfs/stereo/mons.bin or backs.bin, 3ds_stereo_mon.c): without
@@ -417,11 +416,10 @@ const CtrExtra gCtrExtras[] =
     /* The battle's Pokémon as their depth planes (3ds_stereo_battle.c);
      * the key is read natively, so its fallback is ON there too. */
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D BATTLE MONS", "POKÉMON 3D", "POKÉMON 3D", "POKÉMON 3D"), "battle_mon_3d", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL, PlanesShown},
-    /* The 3D battle's depths, read natively each frame (fallbacks there too). */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE BACK", "FONDO COMBATE", "FOND COMBAT", "SFONDO LOTTA"), "battle_back_depth", 6, 2, sBattleBacks, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE MONS", "POKÉMON COMBATE", "POKÉMON COMBAT", "POKÉMON LOTTA"), "battle_mon_depth", 5, 2, sBattleMons, NULL, NULL, NULL, PlanesShown},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("MON PLANES", "PLANOS POKÉMON", "PLANS POKÉMON", "PIANI POKÉMON"), "battle_plane_spread", 6, 2, sPlaneSpreads, NULL, NULL, NULL, PlanesShown},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("PLANES SIT", "POSICIÓN PLANOS", "POSITION PLANS", "POSIZ. PIANI"), "battle_plane_pivot", 3, 1, sPlanePivots, NULL, NULL, NULL, PlanesShown},
+    /* The 3D depths, read natively each frame (CtrStereoDepths). */
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE BACK", "FONDO COMBATE", "FOND COMBAT", "SFONDO LOTTA"), CTR_DEPTH_BACK_KEY, CTR_DEPTH_BACK_CHOICES, CTR_DEPTH_BACK_STANDARD, sBattleBacks, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("BATTLE MONS", "POKÉMON COMBATE", "POKÉMON COMBAT", "POKÉMON LOTTA"), CTR_DEPTH_MON_KEY, CTR_DEPTH_MON_CHOICES, CTR_DEPTH_MON_STANDARD, sBattleMons, NULL, NULL, NULL, PlanesShown},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("PLANES SIT", "POSICIÓN PLANOS", "POSITION PLANS", "POSIZ. PIANI"), CTR_DEPTH_PIVOT_KEY, CTR_DEPTH_PIVOT_CHOICES, CTR_DEPTH_PIVOT_STANDARD, sPlanePivots, NULL, NULL, NULL, PlanesShown},
     /* The plane editor's and sharing's switches (read by 3ds_stereo_edit.c
      * and 3ds_stereo_mon_game.c): a sync that brings pictures opens the
      * Pokédex on them; FINAL uploads; the editor's controls on its top screen. */

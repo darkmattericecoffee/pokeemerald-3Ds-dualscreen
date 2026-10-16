@@ -64,6 +64,9 @@ button.link { background: none; color: var(--accent); padding: 0; font-weight: 4
   font-size: 11px; border-radius: 999px; padding: 0 6px; }
 .tile:hover { border-color: var(--accent); }
 
+table.sweet { margin: 0 0 14px; font-size: 13px; }
+table.sweet td { border-top: 0; }
+
 /* One picture */
 .monhead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; }
 .monhead .num { color: var(--muted); font-weight: 400; }
