@@ -224,36 +224,23 @@ void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16
  * versions screen and the Pokédex show both sides in 3D; NULL for none. */
 void CtrStereoMon_SetCompanion(uint16_t id, const uint16_t *picture, unsigned frames);
 /*
- * The 3D depths, OPTIONS' BATTLE BACK, FOE MON, YOUR MON, MON PLANES and
- * PLANES SIT (3ds_extras.c), taken alike by the battle, the editor's views,
- * the Pokédex and the voting view, so a picture stands as deep wherever it
- * is seen; testers try values there. `back`, `mon` and `own` are screen
- * pixels per eye at the slider's top behind the screen (negative: in front
- * of it): the scenery, the opponent's side, the player's side (backs).
- * `spread` is how deep every picture's planes go, the stack from its
- * farthest plane to its nearest, in GBA pixels per eye at the slider's top
- * (CTR_BATTLE_ZOOM screen pixels each). `pivot` is where a picture's stack
- * stands against its depth: the plane that far along it, 0 the farthest
- * and 1 the nearest. The settings' choices are numbered as OPTIONS lists
- * them; the standard (6PX, 2PX, AROUND) is the default, and a card set
- * otherwise before there was one is put on it once.
+ * The 3D depths, set as a whole by OPTIONS' 3D PRESET (3ds_extras.c) and
+ * taken alike by the battle, the editor's views, the Pokédex and the voting
+ * view, so a picture stands as deep wherever it is seen. `back`, `mon` and
+ * `own` are screen pixels per eye at the slider's top behind the screen
+ * (negative: in front of it): the scenery, the opponent's side, the
+ * player's side (backs). `spread` is how deep every picture's planes go,
+ * the stack from its farthest plane to its nearest, in GBA pixels per eye
+ * at the slider's top (CTR_BATTLE_ZOOM screen pixels each). `pivot` is
+ * where a picture's stack stands against its depth: the plane that far
+ * along it, 0 the farthest and 1 the nearest. The presets, as OPTIONS lists
+ * them: GENTLE, STANDARD (the default), CLOSE (the two sides near each
+ * other), DEEP.
  */
 typedef struct { float back, mon, own, spread, pivot; } CtrStereoDepths;
-#define CTR_DEPTH_BACK_KEY "battle_back_depth"
-#define CTR_DEPTH_MON_KEY "battle_mon_depth"
-#define CTR_DEPTH_OWN_KEY "battle_own_depth"
-#define CTR_DEPTH_SPREAD_KEY "battle_planes_px"
-#define CTR_DEPTH_PIVOT_KEY "battle_plane_pivot"
-#define CTR_DEPTH_BACK_STANDARD 3
-#define CTR_DEPTH_MON_STANDARD 2
-#define CTR_DEPTH_OWN_STANDARD 2
-#define CTR_DEPTH_SPREAD_STANDARD 2
-#define CTR_DEPTH_PIVOT_STANDARD 1
-#define CTR_DEPTH_BACK_CHOICES 6
-#define CTR_DEPTH_MON_CHOICES 6
-#define CTR_DEPTH_OWN_CHOICES 6
-#define CTR_DEPTH_SPREAD_CHOICES 6
-#define CTR_DEPTH_PIVOT_CHOICES 3
+#define CTR_DEPTH_PRESET_KEY "battle_3d_preset"
+#define CTR_DEPTH_PRESETS 4
+#define CTR_DEPTH_PRESET_STANDARD 1
 CtrStereoDepths CtrStereoDepths_Get(void);
 /* Edit files say how deep the console drew the planes when saved (their
  * trailer's depth byte: MON PLANES in whole pixels) for the server's

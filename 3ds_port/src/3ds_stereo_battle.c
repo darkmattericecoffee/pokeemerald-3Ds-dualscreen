@@ -46,7 +46,7 @@
 #define TEX_H 512
 /* Total stack depth in sprite pixels (3ds_stereo_mon.c). */
 #define DEPTH_SPAN 14.4f /* Original ten-plane span, independent of plane count. */
-/* The stack's depth on screen is every picture's (MON PLANES): the
+/* The stack's depth on screen is every picture's (the 3D PRESET's planes): the
  * GBA pixels per eye at the slider's top between the farthest and the
  * nearest plane; and OPTIONS' "PLANES SIT" (CtrStereoDepths,
  * the editor's and the Pokédex's too), where the stack stands against the sprite's own depth

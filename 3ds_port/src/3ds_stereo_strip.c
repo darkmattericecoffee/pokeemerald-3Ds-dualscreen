@@ -318,8 +318,7 @@ bool CtrStereoStrip_Pending(void)
 
 /*
  * The depths as the viewer's (3ds_stereo_mon.c StackShift and on): the
- * scene's (BATTLE BACK, BATTLE MONS, PLANES SIT) and the planes' own, the
- * same for every picture (MON PLANES).
+ * 3D PRESET's (CtrStereoDepths): the scenery, the two sides, the planes.
  */
 static float StackShift(float sign, float slider, bool back)
 {

@@ -6511,9 +6511,8 @@ static void GpuSplit(void);
 #define BATTLE_OWN_DEPTH 0.0f
 static void BattleDepthsRefresh(void) {}
 #else
-/* OPTIONS' (3ds_extras.c "BATTLE BACK", "FOE MON", "YOUR MON"), read once
- * a frame, so the scenery's and the two sides' depths can be tried against
- * the depth the planes' stacks take ("MON PLANES"). */
+/* OPTIONS' 3D PRESET (3ds_extras.c, CtrStereoDepths), read once a frame:
+ * the scenery's and the two sides' depths. */
 static float sBattleBackDepth = 6.0f, sBattleSpriteDepth = 2.0f, sBattleOwnDepth = 0.0f;
 #define BATTLE_BACK_DEPTH sBattleBackDepth
 #define BATTLE_SPRITE_DEPTH sBattleSpriteDepth
@@ -6544,7 +6543,7 @@ static int BattleStereoMargin(void)
 #define BATTLE_STEREO_MARGIN BattleStereoMargin()
 /* The text box in front of everything in the 3D battle: its depth in screen
  * pixels per eye at the slider's top, more than the nearest of a Pokémon's
- * planes (3ds_stereo_battle.c, MON PLANES at its standard 3PX), so
+ * planes (3ds_stereo_battle.c, the 3D PRESET's planes), so
  * the box never cuts into a card standing in front of it. */
 #define BATTLE_TEXT_DEPTH 3.0f
 /* Where the scene surface goes on the logical one (BattleScenePlace). */

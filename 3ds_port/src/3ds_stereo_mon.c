@@ -710,19 +710,16 @@ static int Choice(const char *key, int count, int standard)
 
 CtrStereoDepths CtrStereoDepths_Get(void)
 {
-    /* As OPTIONS lists them (3ds_extras.c sBattleBacks ...). */
-    static const float backs[CTR_DEPTH_BACK_CHOICES] = {2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f};
-    static const float mons[CTR_DEPTH_MON_CHOICES] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f};
-    static const float owns[CTR_DEPTH_OWN_CHOICES] = {-2.0f, -1.0f, 0.0f, 1.0f, 2.0f, 3.0f};
-    static const float spreads[CTR_DEPTH_SPREAD_CHOICES] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
-    static const float pivots[CTR_DEPTH_PIVOT_CHOICES] = {1.0f, PIVOT_FRACTION, 0.0f};
-    CtrStereoDepths d;
+    /* As OPTIONS lists them (3ds_extras.c sDepthPresets): back, foe, own,
+     * planes, where the planes sit. */
+    static const CtrStereoDepths presets[CTR_DEPTH_PRESETS] = {
+        {4.0f, 1.0f, 0.0f, 2.0f, PIVOT_FRACTION}, /* GENTLE: light, easy on the eyes */
+        {6.0f, 2.0f, 0.0f, 3.0f, PIVOT_FRACTION}, /* STANDARD */
+        {6.0f, 1.0f, 1.0f, 3.0f, PIVOT_FRACTION}, /* CLOSE: the two Pokémon near each other */
+        {8.0f, 3.0f, -1.0f, 4.0f, PIVOT_FRACTION}, /* DEEP: the player's side out of the screen */
+    };
+    const CtrStereoDepths d = presets[Choice(CTR_DEPTH_PRESET_KEY, CTR_DEPTH_PRESETS, CTR_DEPTH_PRESET_STANDARD)];
 
-    d.back = backs[Choice(CTR_DEPTH_BACK_KEY, CTR_DEPTH_BACK_CHOICES, CTR_DEPTH_BACK_STANDARD)];
-    d.mon = mons[Choice(CTR_DEPTH_MON_KEY, CTR_DEPTH_MON_CHOICES, CTR_DEPTH_MON_STANDARD)];
-    d.own = owns[Choice(CTR_DEPTH_OWN_KEY, CTR_DEPTH_OWN_CHOICES, CTR_DEPTH_OWN_STANDARD)];
-    d.spread = spreads[Choice(CTR_DEPTH_SPREAD_KEY, CTR_DEPTH_SPREAD_CHOICES, CTR_DEPTH_SPREAD_STANDARD)];
-    d.pivot = pivots[Choice(CTR_DEPTH_PIVOT_KEY, CTR_DEPTH_PIVOT_CHOICES, CTR_DEPTH_PIVOT_STANDARD)];
     return d;
 }
 
@@ -1326,13 +1323,13 @@ static float DepthOf(uint16_t id) { return BackSide(id) ? BACK_DEPTH : 1.0f; }
  * Every view stands a picture as the battle does (CtrStereoDepths, the
  * battle's 3ds_video.c and 3ds_stereo_battle.c), in screen pixels, so the
  * depth seen while editing is the depth a battle gives: the stack spans
- * MON PLANES at the battle's magnification whatever the view's, an
- * opponent's side stands BATTLE MONS behind the screen and a player's on
- * it, and the scenery lies BATTLE BACK behind. `sign` is the eye's (+1 the
+ * the preset's planes at the battle's magnification whatever the view's,
+ * the opponent's side and the player's stand at the preset's depths, and
+ * the scenery lies the preset's back depth behind. `sign` is the eye's (+1 the
  * left), `slider` the 3D slider's 0..1.
  */
 /* The eye's shift per sprite pixel of the stack's depth (DrawStack): every
- * picture's planes span MON PLANES. */
+ * picture's planes span the 3D PRESET's planes. */
 static float StackShift(float sign, float slider, uint16_t id)
 {
     return sign * slider * CtrStereoDepths_Get().spread * CTR_BATTLE_ZOOM / DEPTH_SPAN * DepthOf(id);

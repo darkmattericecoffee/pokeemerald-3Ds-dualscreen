@@ -137,9 +137,7 @@ void CtrSettings_ApplyLine(const char *line)
 static void StandardDepths(void)
 {
     static const struct { const char *key; int value; } standard[] = {
-        {CTR_DEPTH_BACK_KEY, CTR_DEPTH_BACK_STANDARD}, {CTR_DEPTH_MON_KEY, CTR_DEPTH_MON_STANDARD},
-        {CTR_DEPTH_PIVOT_KEY, CTR_DEPTH_PIVOT_STANDARD}, {CTR_DEPTH_OWN_KEY, CTR_DEPTH_OWN_STANDARD},
-        {CTR_DEPTH_SPREAD_KEY, CTR_DEPTH_SPREAD_STANDARD},
+        {CTR_DEPTH_PRESET_KEY, CTR_DEPTH_PRESET_STANDARD},
         {DEPTH_STANDARD_KEY, 1},
     };
     int index = ExtraIndex(DEPTH_STANDARD_KEY, false);
