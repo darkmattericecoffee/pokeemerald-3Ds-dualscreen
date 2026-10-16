@@ -7,7 +7,7 @@ import { Segmented } from "@/components/ui/toggle-group";
 import { useLive } from "@/lib/live";
 import { postFocus, useGrid } from "@/lib/queries";
 import type { Grid, GridItem } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, shownNumber } from "@/lib/utils";
 
 type Kind = "front" | "back" | "other";
 type Show = "all" | "open" | "done" | "mine" | "voted";
@@ -32,7 +32,6 @@ const Tile = React.memo(function Tile({
   picture: boolean;
   fresh: boolean;
 }) {
-  const number = k.replace(/^[btp]/, "");
   return (
     <Link
       to={`/mon/${k}`}
@@ -43,7 +42,7 @@ const Tile = React.memo(function Tile({
         fresh && "animate-fresh",
       )}
     >
-      <span className="self-start font-pixel text-[9px] text-muted-foreground">#{number}</span>
+      <span className="self-start font-pixel text-[9px] text-muted-foreground">{shownNumber(k)}</span>
       <div className="relative -mt-1 grid size-[72px] place-items-center">
         {picture ? (
           <img

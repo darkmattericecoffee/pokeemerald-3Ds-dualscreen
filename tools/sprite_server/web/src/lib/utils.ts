@@ -20,6 +20,13 @@ export function when(unix: number | null | undefined): string {
   return unix ? new Date(unix * 1000).toLocaleString() : "";
 }
 
+/** "#025" for a Pokémon's front or back, "T012" for a trainer, "P001" for a player's back. */
+export function shownNumber(key: string): string {
+  const m = /^([btp]?)(\d+)$/.exec(key);
+  if (!m) return key;
+  return m[1] === "t" ? `T${m[2]}` : m[1] === "p" ? `P${m[2]}` : `#${m[2]}`;
+}
+
 export function plural(n: number, one: string, many = one + "s"): string {
   return `${n} ${n === 1 ? one : many}`;
 }

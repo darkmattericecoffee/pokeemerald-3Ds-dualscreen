@@ -27,7 +27,7 @@ every start, which breaks linked consoles; see "A fixed address" below for the r
 
 Everything lives in `~/emerald3ds-sprite-server` (`--data` / `DATA=` to change):
 `sprites.db` is the database and the only thing to back up; `sprites.json` is the exported
-game pictures and can be made again.
+game pictures (Pokémon fronts and backs, trainers' fronts, players' backs) and can be made again.
 
 ## Docker (the easy install)
 
@@ -56,7 +56,8 @@ docker compose exec server python server.py --data /data adduser NAME --admin
 components on Radix, TanStack Query for the data, react-three-fiber (three.js) for the 3D
 views. Pages:
 
-- **Progress**: fronts, backs, trainers; all, not done, done, mine, voted; search by name or
+- **Progress**: fronts, backs, trainers (all 93 trainers' fronts and 8 players' backs the game has,
+  numbered T000/P000 as the editor numbers them, listed before anyone uploads one); all, not done, done, mine, voted; search by name or
   number; counts of finals and of pictures with two or more versions to vote on.
 - **A Pokémon** (`/mon/025`): its versions, each with uploader, console, votes (and who),
   and final flag, and a 3D view of any of them. The 3D view draws every plane at its depth,

@@ -31,7 +31,7 @@ import { useLive } from "@/lib/live";
 import { postFocus, useMon, useMonAction, useVote } from "@/lib/queries";
 import type { Mon, Version } from "@/lib/types";
 import { useVersionFiles } from "@/lib/useVersions";
-import { ago, cn, plural, when } from "@/lib/utils";
+import { ago, cn, plural, shownNumber, when } from "@/lib/utils";
 import { Viewer3D } from "@/three/LazyViewer";
 import { defaultSettings, useFrameIndex, type ViewSettings } from "@/three/settings";
 
@@ -61,7 +61,6 @@ export function useViewSettings(): [ViewSettings, (s: ViewSettings) => void] {
 
 export function MonHeader({ mon, compare }: { mon: Mon; compare?: boolean }) {
   const base = compare ? "/compare/" : "/mon/";
-  const number = mon.key.replace(/^[btp]/, "");
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
       <div className="flex min-w-0 items-center gap-3">
@@ -71,7 +70,7 @@ export function MonHeader({ mon, compare }: { mon: Mon; compare?: boolean }) {
           </Link>
         </Button>
         <h1 className="flex min-w-0 items-baseline gap-2.5">
-          <span className="font-pixel text-xs text-primary sm:text-sm">#{number}</span>
+          <span className="font-pixel text-xs text-primary sm:text-sm">{shownNumber(mon.key)}</span>
           <span className="truncate text-2xl font-black sm:text-3xl">{mon.name}</span>
         </h1>
         <Badge variant="dark" className="capitalize">

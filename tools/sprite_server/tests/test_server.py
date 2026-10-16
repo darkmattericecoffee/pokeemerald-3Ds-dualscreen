@@ -265,6 +265,25 @@ class ServerTest(unittest.TestCase):
         finally:
             del server.CFG.sprites["007"]
 
+    def test_trainers_are_listed_before_anyone_uploads(self):
+        """The trainers' fronts and players' backs from sprites.json are on the grid's third tab."""
+        frame = "1" * 4096
+        for key, name in (("t000", "Hiker"), ("t001", "Aqua Grunt M"), ("p000", "Brendan (back)")):
+            server.CFG.sprites[key] = editfile.Sprite(["#000000", "#ff8800"] + ["#102030"] * 14, [frame])
+            server.CFG.names[key] = name
+        try:
+            b, _ = self.linked_client("trainerfan")
+            grid = b.api("GET", "/api/web/grid")[1]
+            self.assertEqual(grid["others"][:3], ["t000", "t001", "p000"])
+            self.assertEqual(grid["names"]["t001"], "Aqua Grunt M")
+            self.assertIn("p000", grid["pictures"])
+            page = b.api("GET", "/api/web/mons/t001")[1]
+            self.assertEqual((page["prev"]["key"], page["next"]["key"], page["other"]), ("t000", "p000", None))
+            self.assertEqual(page["kind"], "trainer")
+        finally:
+            for key in ("t000", "t001", "p000"):
+                del server.CFG.sprites[key], server.CFG.names[key]
+
     def test_the_web_app_is_served(self):
         web = tempfile.mkdtemp(dir=self.tmp)
         os.makedirs(os.path.join(web, "assets"))

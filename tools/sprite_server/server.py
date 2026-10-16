@@ -299,6 +299,11 @@ def app_page(req: Request) -> Response:
 # and, on every POST, the session's CSRF token in the X-CSRF-Token header. /api/web/events is
 # the live channel (Server-Sent Events, events.py) that tells open pages what changed.
 
+def other_keys() -> List[str]:
+    """The trainers' fronts and the players' backs the game has (sprites.json), trainers first."""
+    return sorted((k for k in CFG.names if k[:1] in ("t", "p")), key=lambda k: (k[0] != "t", k))
+
+
 def neighbours(key: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Previous, next and the other side's key."""
     m = editfile.KEY_RE.match(key)
@@ -308,6 +313,10 @@ def neighbours(key: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         nxt = "%s%03u" % (prefix, n + 1) if n < DEX_COUNT else None
         other = ("b%03u" % n) if prefix == "" else ("%03u" % n)
         return prev, nxt, other
+    others = other_keys()
+    if key in others:
+        i = others.index(key)
+        return others[i - 1] if i else None, others[i + 1] if i + 1 < len(others) else None, None
     return None, None, None
 
 
@@ -385,7 +394,8 @@ def web_grid(req: Request) -> Response:
     voted = [r[0] for r in req.conn.execute("SELECT DISTINCT mon_key FROM votes WHERE user_id = ?", (uid,))]
     fronts = ["%03u" % n for n in range(1, DEX_COUNT + 1)]
     known = set(fronts) | {"b" + k for k in fronts}
-    others = sorted({r["mon_key"] for r in rows} - known)
+    listed = other_keys()
+    others = listed + sorted({r["mon_key"] for r in rows} - known - set(listed))
     keys = fronts + ["b" + k for k in fronts] + others
     return json_resp({
         "rev": db.current_rev(req.conn), "dex_count": DEX_COUNT, "others": others,
