@@ -1332,7 +1332,7 @@ static float DepthOf(uint16_t id) { return BackSide(id) ? BACK_DEPTH : 1.0f; }
  * picture's planes span the 3D PRESET's planes. */
 static float StackShift(float sign, float slider, uint16_t id)
 {
-    return sign * slider * CtrStereoDepths_Get().spread * CTR_BATTLE_ZOOM / DEPTH_SPAN * DepthOf(id);
+    return sign * slider * CtrStereoDepths_Get().spread * CtrVideo_BattleZoom() / DEPTH_SPAN * DepthOf(id);
 }
 
 /* The eye's shift of the picture's own depth, where PLANES SIT stands the stack. */
@@ -1682,8 +1682,12 @@ static void DrawHelp(bool right, int y, const Help *help, unsigned count)
  * battle's boxes mocked up: the two HP boxes and the text box. GBA
  * pixels at 1.5x, the frame's 240 columns in the middle of the 400.
  */
-#define BATTLE_SCALE 1.5f
-#define BATTLE_X0 ((CTR_GAME_WIDTH - 240 * BATTLE_SCALE) / 2)
+/* The battle's own magnification and placement (3ds_video.c: GBA (120, 112),
+ * the middle of the scene's bottom edge, on screen (200, 192), or (200, 240)
+ * with BATTLE 2X on and the text box gone to the bottom screen). */
+#define BATTLE_SCALE CtrVideo_BattleZoom()
+#define BATTLE_X0 (CTR_GAME_WIDTH / 2 - 120 * BATTLE_SCALE)
+#define BATTLE_Y0 (CTR_GAME_HEIGHT - (CtrVideo_Battle2x() ? 0 : 48) - 112 * BATTLE_SCALE)
 /* The 64x64 pictures' top-left corners in GBA pixels: the opponent's
  * front, the player's back (where the game's own sprites stand). */
 #define BATTLE_FOE_X 144
@@ -1691,7 +1695,7 @@ static void DrawHelp(bool right, int y, const Help *help, unsigned count)
 #define BATTLE_OWN_X 32
 #define BATTLE_OWN_Y 60
 static float GbaX(float x) { return BATTLE_X0 + x * BATTLE_SCALE; }
-static float GbaY(float y) { return y * BATTLE_SCALE; }
+static float GbaY(float y) { return BATTLE_Y0 + y * BATTLE_SCALE; }
 
 static void DrawBattleBox(float x, float y, float w, float h, const char *name, bool foe)
 {
@@ -1722,12 +1726,16 @@ static void DrawBattleEye(float sign, float slider, unsigned frame)
         C2D_DrawImageAt((C2D_Image){&sBackdrop, &whole}, GbaX(-8) + BackdropShift(sign, slider), GbaY(0), 0, NULL,
                         BATTLE_SCALE, BATTLE_SCALE);
     }
-    /* The text box along the bottom. */
-    C2D_DrawRectSolid(0, GbaY(112), 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT - GbaY(112), C2D_Color32(40, 48, 72, 255));
-    C2D_DrawRectSolid(GbaX(0), GbaY(114), 0, 240 * BATTLE_SCALE, GbaY(44), C2D_Color32(232, 232, 224, 255));
-    C2D_DrawRectSolid(GbaX(2), GbaY(116), 0, 236 * BATTLE_SCALE, GbaY(40), C2D_Color32(56, 80, 128, 255));
-    snprintf(line, sizeof(line), "WHAT WILL %s DO?", sName);
-    DrawText(GbaX(10), GbaY(124), line, C2D_Color32(240, 240, 240, 255));
+    /* The text box along the bottom, 1:1 as the battle draws it; with
+     * BATTLE 2X it is on the bottom screen and the field reaches the edge. */
+    if (!CtrVideo_Battle2x())
+    {
+        C2D_DrawRectSolid(0, GbaY(112), 0, CTR_GAME_WIDTH, CTR_GAME_HEIGHT - GbaY(112), C2D_Color32(40, 48, 72, 255));
+        C2D_DrawRectSolid(0, CTR_GAME_HEIGHT - 46, 0, CTR_GAME_WIDTH, 44, C2D_Color32(232, 232, 224, 255));
+        C2D_DrawRectSolid(2, CTR_GAME_HEIGHT - 44, 0, CTR_GAME_WIDTH - 4, 40, C2D_Color32(56, 80, 128, 255));
+        snprintf(line, sizeof(line), "WHAT WILL %s DO?", sName);
+        DrawText(16, CTR_GAME_HEIGHT - 36, line, C2D_Color32(240, 240, 240, 255));
+    }
     /* The other side, flat, then the planes in their place. */
     DrawMateStack((back ? foeX : ownX) + PictureShift(sign, slider, sMateId), back ? foeY : ownY, BATTLE_SCALE,
                   StackShift(sign, slider, sMateId), frame);
