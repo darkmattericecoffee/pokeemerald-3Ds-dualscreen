@@ -8471,6 +8471,11 @@ static void BottomProfile(u32 frame, u8 mode, const uint64_t ticks[3], unsigned 
     sLabelHits = sLabelMisses = 0;
 }
 
+bool CtrBottom_BattleMenuShown(void)
+{
+    return sShown.mode != 0xFF && sShown.mode >= MODE_BATTLE_ACTION;
+}
+
 void CtrBottom_Frame(void)
 {
     static u32 frames;
@@ -8489,6 +8494,18 @@ void CtrBottom_Frame(void)
         return;
     }
     ++frames;
+    /* The 2x battle's text band over the canvas (CtrVideo_BottomBandRows):
+     * its rows of the canvas are put back when it leaves. */
+    {
+        static int bandY0, bandY1;
+        int y0, y1;
+
+        CtrVideo_BottomBandRows(&y0, &y1);
+        if ((y0 != bandY0 || y1 != bandY1) && bandY1 > bandY0)
+            CtrBottom_BlitRect(sCanvas, 0, bandY0, W, bandY1);
+        bandY0 = y0;
+        bandY1 = y1;
+    }
     ticks[0] = CtrPlatform_Ticks();
     sAsked = sAsk;
     sAsk.kind = ASK_NONE;

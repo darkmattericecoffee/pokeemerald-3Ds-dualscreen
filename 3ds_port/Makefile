@@ -116,6 +116,9 @@ endif
 ifdef TEST_EDIT
 GAMEFLAGS += -DCTR_TEST_EDIT=$(TEST_EDIT)
 endif
+# FRAME_DUMP=1 writes the top screen's eyes to sdmc:/3ds/emerald3ds/frames.raw
+# at fixed frames (3ds_video.c), every DUMP_STEP frames of a battle from its
+# DUMP_FROMth with DUMP_BATTLE=1.
 ifdef FRAME_DUMP
 CPPFLAGS += -DCTR_FRAME_DUMP=1
 ifdef DUMP_BATTLE
