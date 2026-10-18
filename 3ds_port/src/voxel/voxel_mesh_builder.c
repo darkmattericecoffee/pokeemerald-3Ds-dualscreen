@@ -144,6 +144,12 @@ void VoxelBuilder_Quad(VoxelBuilder *builder, const VoxelVertex *a, const VoxelV
         return;
     }
 #endif
+    /* Whole or not at all: half a quad is a sliver along its diagonal. */
+    if (builder->count + 6 > builder->capacity)
+    {
+        builder->dropped += 2;
+        return;
+    }
     VoxelBuilder_Tri(builder, a, b, c);
     VoxelBuilder_Tri(builder, a, c, d);
 }
@@ -565,7 +571,8 @@ static void EmitCutGround(VoxelBuilder *b, int x, int y, float u0, float v0, flo
 typedef VoxelCutDiagonals CutDiagonals;
 
 /* A triangle of the cell, its vertices at pixels (X, Y) of the tile, cut by
- * the diagonals: what is left drawn as quads (a fan of the convex piece). */
+ * the diagonals: what is left drawn as quads (a fan of the convex piece),
+ * an odd one left over as a triangle. */
 static void EmitCutTri(VoxelBuilder *b, const VoxelVertex *v0, const VoxelVertex *v1,
                        const VoxelVertex *v2, const float px[3][2], const CutDiagonals *cut)
 {
@@ -618,7 +625,14 @@ static void EmitCutTri(VoxelBuilder *b, const VoxelVertex *v0, const VoxelVertex
         if (i + 2 < n)
             VoxelBuilder_Quad(b, &poly[cur][0], &poly[cur][i], &poly[cur][i + 1], &poly[cur][i + 2]);
         else
-            VoxelBuilder_Quad(b, &poly[cur][0], &poly[cur][i], &poly[cur][i + 1], &poly[cur][i + 1]);
+        {
+#if CTR_VOXEL_LIGHTING
+            if (b->lighting)
+                VoxelLighting_Tri(b, &poly[cur][0], &poly[cur][i], &poly[cur][i + 1]);
+            else
+#endif
+                VoxelBuilder_Tri(b, &poly[cur][0], &poly[cur][i], &poly[cur][i + 1]);
+        }
     }
 }
 
@@ -1316,11 +1330,12 @@ void VoxelMesh_EmitGroundRow(VoxelBuilder *builder, const VoxelMapInstance *inst
                     builder->lift = foot;
                     builder->shift = foot;
                     /*
-                     * Its flat layer: the tile's own drawing, or - when all
-                     * its background is the plain ground (flag 0x100) - that
-                     * ground itself. The rock the drawing carries, flat at
-                     * the foot, showed as a dark wedge on the sand wherever
-                     * the lifted rock did not cover it.
+                     * Its flat layer: with a ground behind it, that ground
+                     * where the drawing has rock and the drawing where it is
+                     * background (EmitCutGround); with none, the whole
+                     * drawing. The rock the drawing carries, flat at the
+                     * foot, showed as a dark wedge on the sand wherever the
+                     * lifted rock did not cover it.
                      */
                     {
                         unsigned vLayout = 0, vMetatile = 0;
@@ -1549,6 +1564,9 @@ static bool BorderAt(int x, int y)
  * (a sea lowered under the land, Rustboro's, goes on at its own level), at
  * the map's ground otherwise. Over instance 0's base, as the belt is built.
  */
+/* How far along a map's edge a belt of water looks for the map's sea. */
+#define VOXEL_BORDER_SEA_SEARCH 12
+
 static bool BorderWaterLevel(int x, int y, float *level, float *shift)
 {
     const VoxelMapInstance *ring = VoxelWorld_Instance(0);
@@ -1563,6 +1581,30 @@ static bool BorderWaterLevel(int x, int y, float *level, float *shift)
        : y >= ring->originY + ring->height ? ring->originY + ring->height - 1 : y;
     *level = 0.0f;
     *shift = 0.0f;
+    /* Where the map's edge is land, the nearest of its sea along the edge:
+     * a sea filled past an edge (VoxelWorld_BorderMetatile) lies level with
+     * the map's, not raised to the belt's base beside a stretch of shore. */
+    if (VoxelMesh_Classify(ex, ey) != VOXEL_SHAPE_WATER)
+    {
+        bool alongY = x < ring->originX || x >= ring->originX + ring->width;
+
+        for (int k = 1; k <= VOXEL_BORDER_SEA_SEARCH; ++k)
+        {
+            int ax = alongY ? ex : ex - k, ay = alongY ? ey - k : ey;
+            int bx = alongY ? ex : ex + k, by = alongY ? ey + k : ey;
+
+            if (VoxelWorld_GetInstanceAt(ax, ay) == ring && VoxelMesh_Classify(ax, ay) == VOXEL_SHAPE_WATER)
+            {
+                ex = ax, ey = ay;
+                break;
+            }
+            if (VoxelWorld_GetInstanceAt(bx, by) == ring && VoxelMesh_Classify(bx, by) == VOXEL_SHAPE_WATER)
+            {
+                ex = bx, ey = by;
+                break;
+            }
+        }
+    }
     if (VoxelMesh_Classify(ex, ey) == VOXEL_SHAPE_WATER)
     {
         *level = VoxelRelief_CellLift(ring, ex, ey);

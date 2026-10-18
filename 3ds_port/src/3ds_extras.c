@@ -45,9 +45,13 @@ static const char *const sShinyOdds[] = {"1/8192", "1/4096", "1/1024", "1/256", 
 #endif
 /* The voxel world per eye with the 3D slider (3ds_video.c): AUTO is on a
  * New 3DS only (the second pass costs an Old 3DS the frame), and how deep
- * the slider's full travel goes, in percent of the renderer's depth. */
+ * the slider's full travel goes, in percent of the renderer's depth. Read
+ * only with the voxel overworld on: a build without it has no cells for
+ * them, and with it off they are greyed (CtrExtras_NeedsVoxel). */
+#if CTR_VOXEL_ENABLED
 static const char *const sVoxelStereo[] = {CTR_TEXT("AUTO", "AUTO", "AUTO", "AUTO"), CTR_TEXT("ON", "SÍ", "OUI", "SÌ"), CTR_TEXT("OFF", "NO", "NON", "NO")};
 static const char *const sVoxelDepths[] = {"25%", "50%", "75%", "100%", "125%", "150%", "200%"};
+#endif
 /* The 3D depths as a whole (the scenery, the two sides, the planes) that
  * the battle, the editor, the Pokédex and the voting view all take: one of
  * four presets (3ds_stereo_mon.h CtrStereoDepths, numbered as listed here). */
@@ -406,8 +410,10 @@ static const u8 *OnlineNewText(void)
 const CtrExtra gCtrExtras[] =
 {
     /* Features add their lines here. */
+#if CTR_VOXEL_ENABLED
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D WORLD", "MUNDO 3D", "MONDE 3D", "MONDO 3D"), "voxel_stereo", 3, 0, sVoxelStereo, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D DEPTH", "PROFUNDIDAD 3D", "PROFONDEUR 3D", "PROFOND. 3D"), "voxel_depth", 7, 3, sVoxelDepths, NULL, NULL, NULL},
+#endif
     /* The battle's Pokémon as their depth planes (3ds_stereo_battle.c);
      * the key is read natively, so its fallback is ON there too. */
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D BATTLE MONS", "POKÉMON 3D", "POKÉMON 3D", "POKÉMON 3D"), "battle_mon_3d", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL, PlanesShown},
@@ -517,6 +523,16 @@ int CtrExtras_Get(const char *key)
         if (strcmp(gCtrExtras[i].key, key) == 0)
             return CtrExtras_Value(&gCtrExtras[i]);
     return 0;
+}
+
+bool CtrExtras_NeedsVoxel(const CtrExtra *extra)
+{
+#if CTR_VOXEL_ENABLED
+    return extra->values == sVoxelStereo || extra->values == sVoxelDepths;
+#else
+    (void)extra;
+    return false;
+#endif
 }
 
 bool CtrExtras_PageUsed(unsigned page)

@@ -459,6 +459,7 @@ void CtrStereoEdit_PreferDex(bool newOnes);
  * columns of 240, each from the bottom up). */
 void CtrStereoEdit_TestVersions(void);
 void CtrStereoEdit_TestStroke(void);
+void CtrStereoEdit_TestOptions(void);
 /* The picture being edited to the card if it has unsaved changes, and the
  * edit log's waiting lines (the console going to sleep, the game ending). */
 void CtrStereoEdit_SaveNow(void);

@@ -52,6 +52,59 @@ at `u = X, v = Z − Y`, which is what an orthographic camera sees at 45°. So:
 6. Check the ground under it: the generator's `ground:` lines, then `gba`
    and `under` on the town (see "Voxelizing a town: the ground").
 
+## Which shape for what
+
+A model that matches its drawing at 45 degrees can still be wrong: its sides,
+hip ends and depth are seen from the game's camera in perspective. Pick the
+part by what the thing is:
+
+- **Flat-sided things** (blocks, cut corners, frustums, slopes, roofs): the
+  prisms of `voxel_building.py`. `PlanPrism` (an upright prism on a plan
+  polygon; `top=Tile` where the map edge cuts the roof, `shrink` for a
+  frustum), `PlanPyramid` (faceted roofs), `PlatePrism` (an (x, y) polygon
+  run along z: slopes), `SectionPrism` (a (z, y) section run along x: gabled
+  and eaved roofs). The faces the 45-degree view sees are projected (exact);
+  the rest are dressed with a facade strip (`side`, below). Always wrap them
+  in `Grown` - in a spec, `flat(lambda: [...])` - so hidden faces read the
+  grown band and no clear texel becomes a hole.
+- **Hip-roofed houses**: `pitched_house` (Oldale's method: courses laid
+  parallel to each eave, sides from the plaster column).
+- **Smooth round things**: the projected surfaces below (`ProjDome`,
+  `ProjLathe`, `ProjHull`, `ProjCanopy`, `ProjSection`).
+- **Organic things** (statues, rockets, bushes, a tent's cloth): a rough
+  `Volume` (dome, drum, tube, box) read off the drawing, cut to it pixel
+  column by pixel column by `HeightSolid`. The volume must never stand past
+  the outline (alpha-cut faces become holes from other angles).
+  `HeightSolid` turns chamfers, curves and slopes into 1-px stairs, so keep
+  it for genuinely organic shapes.
+
+**Side walls** take a straight stretch of the facade repeated along the
+depth, each height taking the facade's row at that height, so plinths,
+courses and eaves run round the corner: `side=(u0, u1, foot)` (columns u0-u1
+of the facade standing on row `foot`; use it when the edge is drawn
+slanting) or `side=(a, b)` (columns a..b in from the edge) on `PlanPrism`,
+`HeightSolid`, `small_round` and `sootopolis_parts`. Never one edge column
+smeared along the 45-degree ray (diagonal streaks). Walls up to 6 px deep
+(the stairs of a cut corner) keep the projected drawing; round things keep
+`side=None`.
+
+Details that decide whether a shape reads right:
+
+- A turned thing drawn with flat elliptical rings (a lantern, a bollard)
+  needs a plan squash of about 0.5 and a profile fitted to the drawing row
+  by row; otherwise the volume is cut by a 45-degree plane and looks like a
+  slab from the side.
+- `keep` must leave out stray grass dots and leaves, or the solid rises to
+  them as a grass-coloured arch.
+- `HeightSolid(lean=...)` is for cloth or flanks cut at the drawing's last
+  column (a tent); it is wrong for boats (the hull spreads like a decal).
+
+**Look from the sides, every time.** After any change to a model or prop:
+`gen_voxel_buildings.py --verify` (every model), `--preview` views from the
+side cameras (`left`, `right`, `yaw35`, `yaw-50`) on one sheet,
+`voxel_defect_scan.py LAYOUT` on the town, and `voxel_engine_view.py view`
+for what the console builds.
+
 ## Reuse across Hoenn
 
 - `match_rows` says which rows of the drawing must repeat cell for cell. If

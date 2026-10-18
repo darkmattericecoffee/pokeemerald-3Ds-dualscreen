@@ -11,12 +11,13 @@ Run it on the public repository, on an export directory or on a release ZIP:
 What fails the audit:
 
 * ROMs, saves, dumps, console executables of other platforms, logs, Python
-  bytecode, editor/agent state, session transcripts, generated data packs;
+  bytecode, editor/agent state (project skills under .claude/skills/ are
+  documents and pass), session transcripts, generated data packs;
 * files under a validation/ directory or generated RomFS content;
 * files larger than 1 MiB that are not listed in the allowlist;
 * media files (images, audio, tile data) with no provenance entry;
 * absolute paths of a local machine, tokens and private keys;
-* anything that looks like a GBA ROM (header, logo) or a Pokémon Emerald 3Ds Dual Screen data pack;
+* anything that looks like a GBA ROM (header, logo) or a Emerald 3DS data pack;
 * third_party/ directories without a licence and a provenance entry;
 * any pattern of the local denylist (`.public-denylist`, never versioned);
 * with --rom: any file that contains a run of the ROM's own bytes;
@@ -193,6 +194,14 @@ def zip_files(archive: Path) -> list[tuple[str, callable]]:
     return [(i.filename, (lambda i=i: zf.read(i))) for i in zf.infolist() if not i.is_dir()]
 
 
+def agent_skill(parts: list[str], suffix: str) -> bool:
+    """A project skill (.claude/skills/<name>/*.md at the root): written
+    instructions for coding agents, like any other document. Everything else
+    under .claude (settings, sessions, worktrees) stays forbidden."""
+    return (len(parts) >= 4 and parts[0] == ".claude" and parts[1] == "skills"
+            and suffix == ".md" and not any(p in FORBIDDEN_DIRS for p in parts[2:-1]))
+
+
 def audit(entries, allow: Allow, denylist, rom_index: RomIndex | None,
           context: str) -> list[Finding]:
     findings: list[Finding] = []
@@ -208,7 +217,7 @@ def audit(entries, allow: Allow, denylist, rom_index: RomIndex | None,
 
         if suffix in FORBIDDEN_SUFFIXES:
             findings.append(Finding(name, "forbidden-type", suffix))
-        if any(p in FORBIDDEN_DIRS for p in parts[:-1]):
+        if any(p in FORBIDDEN_DIRS for p in parts[:-1]) and not agent_skill(parts, suffix):
             findings.append(Finding(name, "forbidden-dir"))
         if any(rx.match(path.name) for rx in FORBIDDEN_NAMES):
             findings.append(Finding(name, "forbidden-name"))

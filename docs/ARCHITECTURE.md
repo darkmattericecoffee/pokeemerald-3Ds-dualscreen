@@ -1,6 +1,6 @@
 # Architecture
 
-Pokémon Emerald 3Ds Dual Screen runs the pokeemerald game code natively on the 3DS's ARM11. The
+Emerald 3DS runs the pokeemerald game code natively on the 3DS's ARM11. The
 game keeps its own main loop (`AgbMain`), its GBA register model and its data;
 the port supplies what the GBA hardware did, through a small bridge.
 
@@ -117,7 +117,8 @@ capped by the GX queue (32 entries), building textures stream from a worker
 thread, and a fixed sun with baked shade and cast sprite shadows grades the
 scene (`VOXEL_LIGHTING`). Buildings, trees, signposts and drawn terrain relief
 are modelled on the host from each map's own art (`3ds_port/scripts/gen_voxel_*.py`)
-and read at runtime from `voxel/*.bin`.
+and read at runtime from `voxel/*.bin`. How to work on them:
+[VOXEL_GUIDE.md](VOXEL_GUIDE.md).
 
 With the 3D slider up the world is drawn once per eye, each from a camera
 moved half an interocular distance sideways with the asymmetric frustum of a
@@ -194,6 +195,23 @@ per eye, as the voxel battle's is. The voxel battle's stereo surface is asked
 for every frame of a battle with the slider up (`sStereoWanted`), not only on
 the frames the world is shown, so it is there the frame a move's background
 goes away.
+
+## The camera at a map's edge
+
+The 400x240 screen shows more of a map than the GBA's, and past a map's edge
+there is only its border tiled over and over. On the edges chosen map by map
+(`sCameraEdgeMaps` in `field_camera.c`; none by default) the camera stops at
+that edge and only the player walks on. In front of a map joined to part of
+such an edge, and in dark caves, whose circle of light is the middle of the
+picture, the camera stays on the player. In 2D (`field_camera.c`) the game's
+camera still follows the player, as the scripts expect of it; the
+picture, backgrounds and sprites alike, is held back from it by a shift, and
+the tilemap's ring follows the picture rather than the camera. A map narrower
+than the screen, stopped at both ends, is centred on it. In voxel
+(`voxel_camera.c`) the point the camera looks at stops short of the player instead, never so far that the
+player walks into the diorama's blur. Both ease to a new place when the edges
+change under them, as on a crossing, and the people spawned move with the
+view (`3ds_field_view.c`).
 
 ## Saves and logs
 

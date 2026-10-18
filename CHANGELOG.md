@@ -2,6 +2,143 @@
 
 ## Unreleased
 
+- Stereoscopic Pokémon viewer: a Pokémon's front picture as layered depth
+  planes on the top screen, with real 3D from the slider and a slow turn, on
+  the Pokédex's info page and in a gallery (L+R+START in the field, or START
+  held for a second and a half). The planes come from the Sprite Stereo Lab
+  (`scripts/gen_stereo_mons.py`, `STEREO_WORK` in `local.mk`); builds without
+  them leave the viewer off. Up/Down sets the depth, L/R how many planes the
+  picture is split into.
+- Stereoscopic Pokémon in battle: an opponent whose species has depth planes
+  is drawn as its stack of planes where its sprite stands, with the sprite's
+  own palette (so its fades and tints are kept), each plane at its depth with
+  the slider, never turned or swayed, so its pixels stay crisp. Move effects pass in front
+  of it, the intro's curtain over it; each plane carries a skirt of the
+  planes behind it so no gap opens between them (the viewer's too); the
+  moment the sprite is not the plain
+  picture (a Substitute, Transform, the slide of a faint) the sprite itself
+  is drawn as before. OPTIONS' SETTINGS 2/2 has 3D BATTLE MONS (ON/OFF);
+  3D DEPTH scales the stack's depth as it does the world's.
+  CHEATS has 3D WILD ONLY: every wild Pokémon met is one with planes, to try
+  it anywhere.
+- The player's side of the battle in 3D too: the Pokémon's back sprites,
+  the trainers' front sprites in the intro and the player's own back with
+  its throw are drawn as their planes, from a second collection
+  (`stereo/backs.bin`, `scripts/gen_stereo_backs.py` from the authored
+  back-and-trainer work; `STEREO_BACKS` in `local.mk`). Up to four
+  pictures share the planes texture: eight planes each for two, four each
+  in a double battle.
+- The battle's message box in 3D: a panel a little in front of the screen,
+  slightly narrower than it and centred over dark gutters, so the Pokémon
+  in front of the scene are not walled in by it.
+- The planes collection now covers all 385 Hoenn-dex species (two poses
+  each; Castform's forms, Unown's other letters and Spinda's spots keep the
+  plain sprite). A finished pack is built in with `STEREO_PACK` in
+  `local.mk`.
+- Pokédex on the top screen: while the Pokédex is open on the bottom
+  screen, the top shows the device itself - the red shell, lens and lights,
+  a screen window - with the Pokémon's planes in the window at 2x (crisp,
+  at their depths, both animation frames) over the battle terrain of the
+  place it is met (tall grass, cave, water, pond, mountain; by type for
+  one never met wild). On the info page and under the list's cursor; holds
+  through page turns and scrolls.
+- 3D battle on a New 3DS: a move that blends with the scene (a stat change's
+  glow, a screen flash) no longer flattens the Pokémon onto the scenery for
+  as long as it lasts; the frame is composed per eye instead, as the voxel
+  battle's is. The voxel battle's stereo surface is kept through the whole
+  battle, so a move's background no longer costs a frame of 2D when the
+  world comes back; and when it finds no room in VRAM at a battle's start
+  it has the field's idle layer textures given back at once, instead of
+  the first six seconds of the battle staying flat.
+- Voxel overworld in stereoscopic 3D on a New 3DS: with the 3D slider up the
+  world is drawn once per eye from its own camera, so buildings, trees,
+  terrain relief, shadows, reflections and the fog stand at their own depth;
+  the player is just behind the screen and the text and weather on it. An
+  Old 3DS keeps the world flat, as before (the second pass costs it the
+  frame). OPTIONS' SETTINGS tab has a second screen for it: 3D WORLD
+  (AUTO by console, ON, OFF) and 3D DEPTH (25% to 200% of the slider's
+  depth). Build with `VOXEL_STEREO=1` or `=0` to change what AUTO does.
+- The camera can stop at the edge of a map: on the edges chosen map by map
+  (for now Routes 103 to 107 and Rustboro City), in 2D and in voxel, the
+  picture no longer shows the border tiled past the edge that the wider screen
+  used to bring into view; only the player walks on. Where another map joins
+  part of such an edge, the camera follows the player in front of it. Every
+  other map keeps the camera on the player as before.
+
+## 0.4.0 — 2026-10-16
+
+- The project is now called Emerald 3DS, by Zallax: new name on the HOME
+  Menu, in the builder and in the documentation, a new developer logo under
+  the title screen and a new HOME Menu banner. The forwarder CIA is 1.1.0.
+
+- More of Hoenn in voxel: Slateport finished (market, museum, contest hall,
+  shipyard, Battle Tent, boats); Mauville, Rustboro and Petalburg revised;
+  first buildings in many more towns; Route 110's Cycling Road as a bridge on
+  girders and the two-storey Trick House; Routes 111 to 115 in terraces;
+  Rusturf Tunnel carved out of the rock; Route 109's beach; Rustboro's
+  fountain rebuilt with its animated jet; Littleroot's rooms, the Pokémon
+  Centers and the Mart refurnished. Still a work in progress: many parts of
+  the map and most interiors stay flat, and the Battle Frontier is only an
+  early start.
+
+- HD battle interface: the info boxes and the text box are drawn at the top
+  screen's resolution, the text box floats with margins, and in a 3D battle
+  it slides in as the cinema bars leave. The 3D battle keeps its depth
+  through stat changes, blended backgrounds and see-through moves.
+
+- A new SAVE screen on the bottom screen (the save shown as a plate with the
+  trainer, location, Pokédex, time, badges and party) and a 1.5x step in the
+  speed options.
+
+- Visible wild Pokémon reworked: they stay after a battle or a menu and
+  across map borders, grow in over a rustle, a splash or dust, and only MANY
+  replaces random encounters (FEW and SOME keep them).
+
+- Battles: an evolution or an egg hatching after a battle could show a
+  piece of the last battle's info box in place of the Pokémon; a box is now
+  forgotten once its sprites are gone.
+
+- Evolution and the legendaries' cutscenes, by @eathanpage (pull request
+  #92): the evolution scene no longer shows a battle platform at the screen's
+  left edge. Groudon and Kyogre's fight and Rayquaza's arrival fill the top
+  screen, centred, instead of sitting in a corner of it; Rayquaza's descent
+  shows its ray of light again, the chase has no black bars, and the bottom
+  screen stays dark while they play.
+
+- Spanish, French and Italian: Easy Chat lists the moves (and, in French,
+  the Pokémon) in the language's own alphabetical order, read from your ROM,
+  instead of the English one; the French link trainer card and Pokéblock
+  menu use the French ROM's layout.
+
+- The camera: past a map's corner it shows the nearest map's border, and a
+  small town no longer changes the zoom.
+
+- Voxel overworld in stereoscopic 3D on a New 3DS, by @darkmattericecoffee
+  (pull request #67): with the 3D slider up the
+  world is drawn once per eye from its own camera, so buildings, trees,
+  terrain relief, shadows, reflections and the fog stand at their own depth;
+  the player is just behind the screen and the text and weather on it. An
+  Old 3DS keeps the world flat, as before (the second pass costs it the
+  frame). OPTIONS' SETTINGS tab has a second screen for it: 3D WORLD
+  (AUTO by console, ON, OFF) and 3D DEPTH (25% to 200% of the slider's
+  depth). Build with `VOXEL_STEREO=1` or `=0` to change what AUTO does.
+
+- The 3D battle on a real console, by @darkmattericecoffee (pull request
+  #89): fixes for what only hardware showed, found with surface dumps on a
+  New 3DS. Sprites no longer pick up stale tiles from the GPU's texture
+  cache, new surfaces start cleared, and the voxel battle no longer goes flat
+  when VRAM is fragmented, because the world's picture shares the battle
+  scene's surface. A Pokémon no longer leaves a lit copy at a battle's end,
+  and no lines run down the screen's sides at the stereo shift. The linear
+  heap gains about 700 KiB: the bottom screen is RGB565, and the command
+  buffer is 512 KiB. Follow-ups: the new surfaces are cleared two per GPU
+  queue entry within the room each frame leaves, and the sprites are packed
+  more tightly, so they keep their 3D beside the world's picture.
+
+- Touch menu: the POKéDEX button shows a red Pokédex, by @luksgrin (pull
+  request #91), in place of the Fame Checker: Emerald has no Pokédex item
+  graphic, so it is port art mastered from Pokémon Platinum's menu icon.
+
 - Follower Pokémon (OPTIONS > ENHANCEMENTS > FOLLOWER, off by default): the
   party's lead walks behind the player on its HeartGold/SoulSilver overworld
   sprite, comes out of and goes back into its Poké Ball (warps, surf, bike,
@@ -33,7 +170,7 @@
 - The builder rejects a modified French (BPEF) ROM, by @andyst-dev (pull
   request #62).
 
-- Local wireless play between 3DS systems nearby, by @eathanpage (pull
+- Local wireless play (experimental, expect bugs) between 3DS systems nearby, by @eathanpage (pull
   request #76): the Union Room, the Direct Corner's Trade Center and
   Colosseum, the Berry Blender, the wireless minigames, link contests and the
   Battle Tower's link multi battle, two to four players, through an emulated
@@ -49,47 +186,19 @@
   seconds and each step relights the voxel world, which an Old 3DS shows as
   frame drops; at 1X it runs smoothly.
 
-- Dewford exterior models and the bounded window-mask pool
-  have user-reported physical-3DS acceptance. Follow-up fixes give the caught-mon
-  Pokédex its own clipped, scroll-isolated bottom-screen layout and recover the
-  gym-side sign from its original two-cell artwork. The user confirms the final
-  preview on a physical 3DS and authorizes publication on October 12, 2026.
-
-- User-tested refinement: brighter, cool-blue outdoor
-  nights with a moonlit ambient blend capped at 6%, eased with the existing clock.
-  Reuse the 2D/voxel texture stages without extra draw calls or assets; keep warm
-  window/lamp emission, neutral interiors/UI and complete black/white fades.
-- Local staging packs now select their ROM fingerprint from the compiled game
-  language, rather than marking Spanish data as English. An explicitly supplied
-  ROM must match that language; synthetic tests cover both profiles and rejection.
-- City lighting (user-reported 3DS acceptance): extend authored voxel
-  glass masks to shared Pokémon Centers, marts and gyms, Rustboro apartment
-  blocks and Devon; correct Littleroot east-house window coordinates.
-  Original Rustboro lamps emit warm glass and bounded floor-only light pools,
-  cached with the visible map state and faded by the existing shared clock.
-  Unmodelled buildings and classic 2D windows remain outside local emission.
-- CI: remove Python 3.12-only f-string expressions from asset-table generation
-  so the Python 3.11 build container can bootstrap. Add URI/offset regression
-  tests in that container and update voxel fixtures for tileset-aware tree APIs,
-  atlas dimensions and clock updates. Package CI's engine-only ZIP under the
-  existing allowed `payload/` layout without weakening publication checks.
-- Experimental follow-up: berry growth shares clock acceleration, with
-  fractional bonus-minute carry, continuous speed changes and save-bound clock
-  persistence. Sleep/offline time stays at 1X; daily RTC events remain original.
-- Correct Spanish clock accents, add display-only EVENING / TARDE and
-  translate modern party EXP text; the wild and foe prefixes stay as the
-  Spanish ROM writes them.
-- Experimental follow-up: clock-driven voxel sun and cast shadows, with
-  15-game-minute direction updates through the existing chunk budget,
-  retained caster caches, and no additional shadow rendering pass.
-- Experimental follow-up: two-hour eased visual transitions and authored
-  amber window emission on shared exterior voxel houses (including Petalburg),
-  disabled with day/night and excluded from interiors. No new encounter bands.
-- Opt-in ORIGINAL / TIMED grass encounters on eleven Hoenn routes, shared
-  by random encounters, Sweet Scent and new visible wild spawns, with original
-  levels/rates and unchanged water, caves, facilities and special encounters.
-- Optional bottom MAP footer showing effective HH:MM, time band and clock
-  rate, independently of lighting, localized in Spanish and partial-redrawn.
+- Day/night details: cool-blue moonlit nights; warm lit windows on the
+  modelled Pokémon Centers, Marts, gyms, houses, Rustboro's apartment blocks
+  and Devon, and pools of light under Rustboro's street lamps; the voxel sun
+  and its shadows turn with the hour; two-hour eased transitions. Berries grow
+  with the clock's speed (time asleep or off stays at 1X). Optional ORIGINAL /
+  TIMED grass encounters on eleven routes, shared by random encounters, Sweet
+  Scent and visible wild Pokémon. An optional footer under the bottom
+  screen's map shows the hour, the time band and the clock's speed. Dewford's
+  exteriors are modelled from their own art.
+- Spanish: clock accents, EVENING / TARDE and the party EXP text; the wild and
+  foe prefixes stay as the Spanish ROM writes them.
+- Building from source: a local staging pack takes its ROM fingerprint from
+  the compiled game's language; CI builds on Python 3.11.
 
 - Optional outdoor morning, day, sunset and night lighting in classic 2D and
   voxel mode, disabled by default and configurable from ENHANCEMENTS.
@@ -234,62 +343,6 @@ Fixed:
   frame, the Pokénav condition cancel icon, the Battle Factory screens, the
   Trainer Hill records, the Battle Pyramid floor colours and the slots' Reel
   Time window are drawn as on the GBA.
-- Stereoscopic Pokémon viewer: a Pokémon's front picture as layered depth
-  planes on the top screen, with real 3D from the slider and a slow turn, on
-  the Pokédex's info page and in a gallery (L+R+START in the field, or START
-  held for a second and a half). The planes come from the Sprite Stereo Lab
-  (`scripts/gen_stereo_mons.py`, `STEREO_WORK` in `local.mk`); builds without
-  them leave the viewer off. Up/Down sets the depth, L/R how many planes the
-  picture is split into.
-- Stereoscopic Pokémon in battle: an opponent whose species has depth planes
-  is drawn as its stack of planes where its sprite stands, with the sprite's
-  own palette (so its fades and tints are kept), each plane at its depth with
-  the slider, never turned or swayed, so its pixels stay crisp. Move effects pass in front
-  of it, the intro's curtain over it; each plane carries a skirt of the
-  planes behind it so no gap opens between them (the viewer's too); the
-  moment the sprite is not the plain
-  picture (a Substitute, Transform, the slide of a faint) the sprite itself
-  is drawn as before. OPTIONS' SETTINGS 2/2 has 3D BATTLE MONS (ON/OFF);
-  3D DEPTH scales the stack's depth as it does the world's.
-  CHEATS has 3D WILD ONLY: every wild Pokémon met is one with planes, to try
-  it anywhere.
-- The player's side of the battle in 3D too: the Pokémon's back sprites,
-  the trainers' front sprites in the intro and the player's own back with
-  its throw are drawn as their planes, from a second collection
-  (`stereo/backs.bin`, `scripts/gen_stereo_backs.py` from the authored
-  back-and-trainer work; `STEREO_BACKS` in `local.mk`). Up to four
-  pictures share the planes texture: eight planes each for two, four each
-  in a double battle.
-- The battle's message box in 3D: a panel a little in front of the screen,
-  slightly narrower than it and centred over dark gutters, so the Pokémon
-  in front of the scene are not walled in by it.
-- The planes collection now covers all 385 Hoenn-dex species (two poses
-  each; Castform's forms, Unown's other letters and Spinda's spots keep the
-  plain sprite). A finished pack is built in with `STEREO_PACK` in
-  `local.mk`.
-- Pokédex on the top screen: while the Pokédex is open on the bottom
-  screen, the top shows the device itself - the red shell, lens and lights,
-  a screen window - with the Pokémon's planes in the window at 2x (crisp,
-  at their depths, both animation frames) over the battle terrain of the
-  place it is met (tall grass, cave, water, pond, mountain; by type for
-  one never met wild). On the info page and under the list's cursor; holds
-  through page turns and scrolls.
-- 3D battle on a New 3DS: a move that blends with the scene (a stat change's
-  glow, a screen flash) no longer flattens the Pokémon onto the scenery for
-  as long as it lasts; the frame is composed per eye instead, as the voxel
-  battle's is. The voxel battle's stereo surface is kept through the whole
-  battle, so a move's background no longer costs a frame of 2D when the
-  world comes back; and when it finds no room in VRAM at a battle's start
-  it has the field's idle layer textures given back at once, instead of
-  the first six seconds of the battle staying flat.
-- Voxel overworld in stereoscopic 3D on a New 3DS: with the 3D slider up the
-  world is drawn once per eye from its own camera, so buildings, trees,
-  terrain relief, shadows, reflections and the fog stand at their own depth;
-  the player is just behind the screen and the text and weather on it. An
-  Old 3DS keeps the world flat, as before (the second pass costs it the
-  frame). OPTIONS' SETTINGS tab has a second screen for it: 3D WORLD
-  (AUTO by console, ON, OFF) and 3D DEPTH (25% to 200% of the slider's
-  depth). Build with `VOXEL_STEREO=1` or `=0` to change what AUTO does.
 
 ## 0.3.0 — 2026-10-08
 

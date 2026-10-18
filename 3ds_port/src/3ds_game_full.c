@@ -75,6 +75,7 @@
 #include "port_log.h"
 #include "port_prof.h"
 
+#include "3ds_battle_hud.h"
 #include "3ds_platform.h"
 #include "3ds_video.h"
 #include "3ds_assets.h"
@@ -168,6 +169,12 @@ static void WaitForResetKeysUp(void)
     }
 }
 
+/* follower_mon.c, from the optional follower feature (patch 0056); without
+ * it there is nothing to free. */
+void __attribute__((weak)) FollowerMon_ReleaseAll(void)
+{
+}
+
 void CtrGame_SoftReset(void)
 {
     if (sGameAtStart == NULL)
@@ -175,6 +182,12 @@ void CtrGame_SoftReset(void)
         CTR_STUB("RESET", "soft reset unavailable");
         return;
     }
+    /* Port state that belongs to the running game lives outside the restored
+     * sections: the bottom screen's would keep acting as if in the field. */
+    CtrBottom_SoftReset();
+    /* The follower's buffers are malloc'd and only pointed to from the game's
+     * data, which the copy below puts back to NULL: freed first, or leaked. */
+    FollowerMon_ReleaseAll();
     /* The sound worker mixes from the game's variables: not while they change. */
     CtrAudio_LockSound();
     memcpy(__ctr_game_data, sGameAtStart, GameDataBytes());
@@ -183,6 +196,7 @@ void CtrGame_SoftReset(void)
     StartCgbChannels();
     CtrAudio_UnlockSound();
     ++sResets;
+    CtrPlatform_ReportMemory("at soft reset");
     WaitForResetKeysUp();
     longjmp(sAgbMainEntry, 1);
 }
@@ -292,6 +306,13 @@ void CtrStage_SetVBlankCallback(IntrCallback callback)
 void CtrStageFaded_SetVBlankCallback(IntrCallback callback)
 {
     RememberCallback(&sStage, callback, 1);
+    SetVBlankCallback(callback);
+}
+
+/* A stage magnified to fit the screen (ctr_gba_stage.h). */
+void CtrStageZoomed_SetVBlankCallback(IntrCallback callback)
+{
+    RememberCallback(&sStage, callback, 2);
     SetVBlankCallback(callback);
 }
 
@@ -445,10 +466,15 @@ static void UpdateStage(void)
     }
     CtrVideo_SetStage(!caughtMonPage && sStage.on);
     CtrVideo_SetStageFaded(!caughtMonPage && sStage.on && sStage.screen == 1);
+    CtrVideo_SetStageZoomed(!caughtMonPage && sStage.on && sStage.screen == 2);
     CtrVideo_SetCentred(caughtMonPage ? CTR_CENTRED_POKEDEX_CAUGHT
                                     : sCentred.on ? sCentred.screen : CTR_CENTRED_NONE);
     CtrVideo_SetBattle(!caughtMonPage && sBattle.on);
     CtrVideo_SetTransition(!caughtMonPage && TransitionOn());
+    /* The battle's info boxes made ready on a worker while the transition
+     * plays, not in a frame of the battle (3ds_battle_hud.c). */
+    if (sTransition.on)
+        CtrBattleHud_Warm();
 }
 
 /*
@@ -651,7 +677,9 @@ bool CtrGame_IsOutdoor(void)
 
 bool CtrGame_LocalTimeSeconds(unsigned *seconds)
 {
-    struct SiiRtcInfo rtc;
+    /* RtcGetInfo leaves rtc unwritten when the RTC call fails (locked):
+       start from rtc.c's 2000-01-01 fallback, never stack garbage. */
+    struct SiiRtcInfo rtc = { .month = MONTH_JAN, .day = 1 };
     struct Time local;
 
     if (gSaveBlock2Ptr == NULL || gMapHeader.mapLayout == NULL)

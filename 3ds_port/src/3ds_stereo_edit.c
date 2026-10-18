@@ -622,6 +622,15 @@ void CtrStereoEdit_SaveNow(void)
     CtrStereoMon_FlushLog();
 }
 
+void CtrStereoEdit_TestOptions(void)
+{
+    if (sE.active && sE.pl != NULL && sE.screen == S_EDIT)
+    {
+        sE.screen = S_OPTIONS;
+        sE.dirtyDraw = true;
+    }
+}
+
 void CtrStereoEdit_TestStroke(void)
 {
     unsigned n = 0;

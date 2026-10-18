@@ -1,13 +1,14 @@
-Pokémon Emerald 3Ds Dual Screen
-===============================
+Emerald 3DS
+===========
 
 A native Nintendo 3DS port of Pokémon Emerald that uses both screens.
 
 This download does NOT contain the game. You need your own dump of your own
-Pokémon Emerald (USA, Europe) or Pokémon Esmeralda (Spain) cartridge; the game
-is built in that ROM's language. The builder reads that ROM on this
-computer and generates the game's data pack from it. The ROM is not uploaded,
-copied or modified, and no Internet connection is needed.
+Pokémon Emerald (USA, Europe), Pokémon Esmeralda (Spain), Pokémon Émeraude
+(France) or Pokémon Smeraldo (Italy) cartridge; the game is built in that
+ROM's language. The builder reads that ROM on this computer and generates the
+game's data pack from it. The ROM is not uploaded, copied or modified. An
+Internet connection is only used to download the optional follower sprites.
 
 What you need
 -------------
@@ -29,7 +30,7 @@ Install
        /3ds/emerald3ds/Emerald3DS.3dsx
        /3ds/emerald3ds/Emerald3DS.smdh
        /3ds/emerald3ds/emerald3ds.pak
-6. Put the card back in the console and start Pokémon Emerald 3Ds Dual Screen from the
+6. Put the card back in the console and start Emerald 3DS from the
    Homebrew Launcher.
 
 Saves are kept in /3ds/emerald3ds/emerald3ds.sav. Reinstalling or updating
@@ -49,6 +50,6 @@ game tells you when they do not match.
 
 Legal
 -----
-Pokémon Emerald 3Ds Dual Screen is an unofficial fan project, not affiliated with or endorsed by
+Emerald 3DS is an unofficial fan project, not affiliated with or endorsed by
 Nintendo, Game Freak, Creatures or The Pokémon Company. Pokémon and Pokémon
 Emerald are trademarks of their respective owners. See LICENSES/.

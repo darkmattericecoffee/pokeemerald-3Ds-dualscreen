@@ -105,6 +105,11 @@ signposts, relief) and audits the link. The builder's tests:
 python -m unittest discover -s builder/tests
 ```
 
+## Voxel work
+
+Modelling buildings, rooms or terrain for the voxel world has its own method
+and checks: [VOXEL_GUIDE.md](VOXEL_GUIDE.md).
+
 ## Keeping the upstream patches small
 
 Game-side changes belong in `3ds_port/` whenever a hook can carry them; a

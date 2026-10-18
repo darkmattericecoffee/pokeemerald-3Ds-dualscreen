@@ -17,7 +17,9 @@
 #include "metatile_behavior.h"
 #include "event_object_movement.h"
 #include "field_player_avatar.h"
+#include "field_camera.h"
 #include "constants/map_types.h"
+#include "constants/maps.h"
 #include "constants/metatile_behaviors.h"
 #include "port_platform.h"
 
@@ -26,6 +28,7 @@
 #include "voxel_tree.h"
 #include "voxel_atlas.h"
 #ifdef PLATFORM_3DS
+#include "voxel_building.h"
 #include "field_weather.h"
 #include "palette.h"
 #include "constants/field_weather.h"
@@ -154,44 +157,6 @@ unsigned Voxel_MetatileCount(const void *tilesetPtr, unsigned limit)
         return limit;
     bytes /= NUM_TILES_PER_METATILE * sizeof(u16);
     return bytes < limit ? (unsigned)bytes : limit;
-}
-
-bool Voxel_LoadTiles(const void *tilesetPtr, uint8_t *dest, uint32_t destSize)
-{
-    const struct Tileset *tileset = tilesetPtr;
-    const void *tiles;
-    u32 available;
-
-    if (tileset == NULL || tileset->tiles == NULL || dest == NULL)
-        return false;
-
-    if (tileset->isCompressed)
-    {
-        /*
-         * LZ77UnCompWram cannot be told how large the destination is, so the
-         * header is read first and a payload that does not fit is refused
-         * rather than allowed to run off the end of the scratch buffer.
-         */
-        const u8 *packed = Port_ResolveAssetPointer(tileset->tiles);
-        u32 size;
-
-        if (packed == NULL)
-            return false;
-        size = (u32)packed[1] | ((u32)packed[2] << 8) | ((u32)packed[3] << 16);
-        if (size == 0 || size > destSize)
-            return false;
-        LZDecompressWram((const u32 *)packed, dest);
-        return true;
-    }
-
-    tiles = Port_ResolveAssetPointer(tileset->tiles);
-    if (tiles == NULL)
-        return false;
-    available = Port_GetAssetSizeExact(tileset->tiles);
-    if (available == 0 || available > destSize)
-        available = destSize;
-    memcpy(dest, tiles, available);
-    return true;
 }
 
 /* ── Availability ───────────────────────────────────────────────────────── */
@@ -383,6 +348,22 @@ static void AddConnections(const VoxelMapInstance *from, bool far)
     }
 }
 
+#ifdef PLATFORM_3DS
+/* Ground variant (layout, metatile) is drawn from `inst`'s own tileset of
+ * that metatile, the one the atlas composes it from (voxel_atlas.c
+ * AtlasSourceOf). */
+static bool VariantFits(const VoxelMapInstance *inst, unsigned layoutId, unsigned metatile)
+{
+    const struct MapLayout *layout = Port_GetMapLayoutById((u16)layoutId);
+
+    if (layout == NULL)
+        return false;
+    return metatile < NUM_METATILES_IN_PRIMARY
+         ? layout->primaryTileset == inst->primaryTileset
+         : layout->secondaryTileset == inst->secondaryTileset;
+}
+#endif
+
 /*
  * The current map, its connections, and theirs. The game loads only the first
  * two, which is all its 15 x 10 tiles of screen can reach; the 3D view sees
@@ -398,6 +379,9 @@ void VoxelWorld_BuildInstances(void)
 {
     unsigned near;
 
+#ifdef PLATFORM_3DS
+    VoxelBuildings_SetVariantFits(VariantFits);
+#endif
     sInstanceCount = 0;
     if (gMapHeader.mapLayout == NULL)
         return;
@@ -725,6 +709,11 @@ bool VoxelWorld_MapIsConnected(void)
     return gMapHeader.connections != NULL && gMapHeader.connections->count > 0;
 }
 
+unsigned VoxelWorld_ClosedEdges(void)
+{
+    return GetMapClosedEdges();
+}
+
 /*
  * The fade the game has put on the background palettes, as one blend towards
  * a colour. The world's textures are baked from the tilesets' own palettes,
@@ -834,6 +823,84 @@ void VoxelWorld_SetMaterialView(const int rect[4], int margin)
     sMaterialMargin = margin;
 }
 
+/*
+ * What lies past a map's edge, in voxel.
+ *
+ * The voxel camera sees past a map's edges, further than the 2D field does,
+ * and what it sees there is the map's border block tiled outwards: a wood on
+ * Rustboro's west, beyond its sea. Map by map, an edge (or a stretch of one)
+ * can be filled with another metatile instead, one that goes on from what the
+ * map shows there: the sea going on as sea. Voxel only; the 2D field keeps
+ * the game's border. Water is laid level with the map's own sea there
+ * (BorderWaterLevel, voxel_mesh_builder.c), anything else as the border is.
+ *
+ * One row a stretch: the map, its edge (one of the EDGE_* below), the first
+ * and last cell along that edge it covers - rows for the west and east edges,
+ * columns for the north and south, both inclusive, -1, -1 for the whole edge
+ * - and the metatile it is filled with (its id in the map's tilesets, as the
+ * map's own blocks give it: map.bin or Porymap). A corner past two edges
+ * takes the first row that covers either.
+ */
+#define EDGE_W 1u
+#define EDGE_E 2u
+#define EDGE_N 4u
+#define EDGE_S 8u
+
+static const struct
+{
+    uint16_t map; /* MAP_* */
+    uint8_t edge;
+    int16_t first, last;
+    uint16_t metatile;
+} sEdgeFills[] =
+{
+    {MAP_RUSTBORO_CITY, EDGE_W, -1, -1, 0x170}, /* the sea */
+};
+
+/* The metatile an edge fill puts at (worldX, worldY), or -1. */
+static int EdgeFillAt(int worldX, int worldY)
+{
+    const VoxelMapInstance *map = sInstanceCount > 0 ? &sInstances[0] : NULL;
+    uint16_t id;
+    int lx, ly, cx, cy;
+
+    if (map == NULL || map->indoor || map->width <= 0 || map->height <= 0)
+        return -1;
+    id = (uint16_t)((map->mapGroup << 8) | map->mapNum);
+    lx = worldX - map->originX;
+    ly = worldY - map->originY;
+    cx = lx < 0 ? 0 : lx >= map->width ? map->width - 1 : lx;
+    cy = ly < 0 ? 0 : ly >= map->height ? map->height - 1 : ly;
+    for (unsigned i = 0; i < ARRAY_COUNT(sEdgeFills); ++i)
+    {
+        unsigned edge = sEdgeFills[i].edge;
+        int along;
+
+        if (sEdgeFills[i].map != id)
+            continue;
+        if ((edge == EDGE_W && lx < 0) || (edge == EDGE_E && lx >= map->width))
+            along = cy;
+        else if ((edge == EDGE_N && ly < 0) || (edge == EDGE_S && ly >= map->height))
+            along = cx;
+        else
+            continue;
+        if (sEdgeFills[i].first >= 0 && (along < sEdgeFills[i].first || along > sEdgeFills[i].last))
+            continue;
+        return sEdgeFills[i].metatile;
+    }
+    return -1;
+}
+
+/* The edge fills' metatiles for this map, kept in its atlas. */
+static void MarkEdgeFills(const VoxelMapInstance *inst, uint8_t *used)
+{
+    uint16_t id = (uint16_t)((inst->mapGroup << 8) | inst->mapNum);
+
+    for (unsigned i = 0; i < ARRAY_COUNT(sEdgeFills); ++i)
+        if (sEdgeFills[i].map == id && sEdgeFills[i].metatile < NUM_METATILES_TOTAL)
+            used[sEdgeFills[i].metatile] = 2;
+}
+
 void VoxelWorld_MarkUsedMetatiles(const void *primaryTileset, const void *secondaryTileset,
                                   uint8_t *used)
 {
@@ -858,6 +925,8 @@ void VoxelWorld_MarkUsedMetatiles(const void *primaryTileset, const void *second
             if (y1 > sMaterialView[3] + sMaterialMargin - inst->originY)
                 y1 = sMaterialView[3] + sMaterialMargin - inst->originY;
         }
+        if (i == 0)
+            MarkEdgeFills(inst, used);
         const uint16_t *map = i == 0 ? gBackupMapLayout.map : Voxel_ResolveMap(layout);
         if (map != NULL)
             for (int y = y0; y < y1; ++y)
@@ -1007,16 +1076,21 @@ uint32_t VoxelWorld_BlockHash(int x0, int y0, int x1, int y1)
  *
  * Whose border, and in which phase, is fieldmap.c's to say: the nearest map's
  * whose border the current tilesets draw, the same answer the 2D camera
- * gives, and the same from either side of a crossing.
+ * gives, and the same from either side of a crossing. Past an edge filled
+ * for the current map (sEdgeFills), its fill.
  */
 int VoxelWorld_BorderMetatile(int worldX, int worldY)
 {
     const uint16_t *border;
     const void *source, *resolved;
     u8 index;
+    int fill;
 
     if (sInstanceCount == 0 || sInstances[0].layout == NULL)
         return -1;
+    fill = EdgeFillAt(worldX, worldY);
+    if (fill >= 0)
+        return fill;
     source = MapGridGetCameraBorderAt(worldX - sInstances[0].originX,
                                       worldY - sInstances[0].originY, &index);
     if (source == NULL)
