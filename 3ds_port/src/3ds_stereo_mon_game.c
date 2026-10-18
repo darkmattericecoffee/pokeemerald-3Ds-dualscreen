@@ -492,9 +492,11 @@ void CtrStereoMonGame_Frame(void)
         sOpenEditor = TRUE;
         sMask = 2;
     }
-    else if (sGallery && CtrStereoMonGame_TryBattleOn() && (down & CTR_KEY_START))
+    else if (CtrStereoMonGame_TryBattleOn() && (down & CTR_KEY_START))
     {
-        /* START in the editor's battle: run from it. */
+        /* START in the editor's battle: run from it. Whatever opened the
+         * editor (the gallery, OPTIONS, the Pokédex): the gallery flag is
+         * not always up here, and START did nothing then. */
         CtrStereoMonGame_LeaveBattle();
     }
     else if (sGallery && CtrStereoEdit_Active() && !CtrStereoMonGame_TryBattleOn())
@@ -503,7 +505,8 @@ void CtrStereoMonGame_Frame(void)
          * battle the game has them and the editor keeps the stylus. */
         CtrStereoEdit_Keys(down, held);
     }
-    else if (((held & OPEN_KEYS) == OPEN_KEYS && (down & CTR_KEY_START)) || sStartHeld == START_HOLD_FRAMES)
+    else if (!CtrStereoMonGame_TryBattleOn()
+             && (((held & OPEN_KEYS) == OPEN_KEYS && (down & CTR_KEY_START)) || sStartHeld == START_HOLD_FRAMES))
     {
         sGallery = !sGallery;
         sMask = 2;
