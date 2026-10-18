@@ -5606,10 +5606,16 @@ static void DrawObjects(unsigned priority, bool effects)
             SpriteBatchFlush();
             Blend(4, effects, false);
             ViewBase();
+            /* The 2x battle's own Pokémon with MON fade on: its feet fade
+             * here as on its placed cell (DrawFeetFaded). */
+            CtrStereoBattle_SetFeetFade(sBattle2x && sFade2x == 2 && sBattle && !sSlotComposing && x < 120
+                                            && y + (int)boxH / 2 > CTR_BATTLE_SIDE_SPLIT ? FEET_FADE_GBA : 0,
+                                        FEET_FADE_ALPHA);
             /* The picture's corner: in a double-size affine box, its middle. */
             CtrStereoBattle_Draw(i, x + CTR_VIEW_X + sLayerShift + ((int)boxW - (int)width) / 2,
                                  y + CTR_VIEW_Y + ((int)boxH - (int)height) / 2, 1.0f,
                                  sSpriteDepth ? sEyeParallax : 0.0f, 1.0f / sShiftZoom, false);
+            CtrStereoBattle_SetFeetFade(0, 1.0f);
             C2D_Flush();
             continue;
         }

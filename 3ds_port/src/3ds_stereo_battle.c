@@ -804,6 +804,47 @@ void CtrStereoBattle_Veto(unsigned oam, uint32_t skip[4])
     skip[oam >> 5] &= ~(1u << (oam & 31));
 }
 
+/* The last `rows` sprite lines of the next draws fade to `alpha`
+ * (CtrStereoBattle_SetFeetFade): the 2x battle's own Pokémon in the flat
+ * path, drawn here straight into the scene. The cards are premultiplied, so
+ * the ramp is a black tint blended in by 1 - a with alpha a. */
+static int sFeetRows;
+static float sFeetAlpha = 1.0f;
+
+void CtrStereoBattle_SetFeetFade(int rows, float alpha)
+{
+    sFeetRows = rows;
+    sFeetAlpha = alpha;
+}
+
+static void DrawCard(C2D_Image image, float x, float y, float scale)
+{
+    const Tex3DS_SubTexture *cut = image.subtex;
+    int th = cut->height;
+
+    if (sFeetRows <= 0 || th <= sFeetRows)
+    {
+        C2D_DrawImageAt(image, x, y, 0, NULL, scale, scale);
+        return;
+    }
+    {
+        float vSplit = cut->top + (cut->bottom - cut->top) * (float)(th - sFeetRows) / th;
+        const Tex3DS_SubTexture upper = {cut->width, (u16)(th - sFeetRows), cut->left, cut->top, cut->right, vSplit};
+        const Tex3DS_SubTexture lower = {cut->width, (u16)sFeetRows, cut->left, vSplit, cut->right, cut->bottom};
+        C2D_ImageTint tint;
+
+        for (unsigned c = 0; c < 4; ++c)
+        {
+            float a = c < 2 ? 1.0f : sFeetAlpha;
+
+            tint.corners[c].color = C2D_Color32f(0, 0, 0, a);
+            tint.corners[c].blend = 1.0f - a;
+        }
+        C2D_DrawImageAt((C2D_Image){image.tex, &upper}, x, y, 0, NULL, scale, scale);
+        C2D_DrawImageAt((C2D_Image){image.tex, &lower}, x, y + (th - sFeetRows) * scale, 0, &tint, scale, scale);
+    }
+}
+
 void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eyeParallax, float shiftScale,
                           bool smooth)
 {
@@ -857,7 +898,7 @@ void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eye
                  * is sampled unevenly, and composed at 2x (3ds_video.c
                  * MonCells) that is half a GBA pixel, the finest the eye
                  * shift can be. */
-                C2D_DrawImageAt(image, roundf(x + depth * z), roundf(y), 0, NULL, scale, scale);
+                DrawCard(image, roundf(x + depth * z), roundf(y), scale);
             }
             else
             {

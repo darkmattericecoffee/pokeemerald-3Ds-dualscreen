@@ -391,6 +391,8 @@ void CtrStereoBattle_Veto(unsigned oam, uint32_t skip[4]);
  * ONE, ONE_MINUS_SRC_ALPHA), else nearest. The caller has set the blend
  * state it wants and forgets it afterwards.
  */
+/* The last `rows` sprite lines of the plain draws that follow fade to `alpha`; 0 rows for none. */
+void CtrStereoBattle_SetFeetFade(int rows, float alpha);
 void CtrStereoBattle_Draw(unsigned oam, float x, float y, float scale, float eyeParallax, float shiftScale,
                           bool smooth);
 
