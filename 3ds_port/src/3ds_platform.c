@@ -21,9 +21,20 @@ static uint64_t sFrames, sStart, sLastFrame, sFrameMs;
 static uint64_t sWorkStart, sLastTick, sExitStart;
 static CtrTiming sTiming;
 
+/* The plane editor's unsaved picture (3ds_stereo_edit.c), where it is
+ * linked in: the editor writes the card only when a picture is left, so the
+ * lid closing, HOME and the game ending save it too. */
+void CtrStereoEdit_SaveNow(void) __attribute__((weak));
+
+static void SaveEditor(void)
+{
+    if (CtrStereoEdit_SaveNow) CtrStereoEdit_SaveNow();
+}
+
 static void Lifecycle(APT_HookType type, void *parameter)
 {
     (void)parameter;
+    if (type == APTHOOK_ONSLEEP || type == APTHOOK_ONSUSPEND) SaveEditor();
     if (type == APTHOOK_ONSLEEP)
     {
         CtrLog_Write(CTR_LOG_BOOT, "suspend/sleep");
@@ -460,6 +471,7 @@ void CtrPlatform_Shutdown(void)
     if (!sInitialized)
         return;
     sInitialized = false;
+    SaveEditor();
     /* The last segment and what the GPU's memory holds, before it is freed. */
     CtrProf_Close();
     CtrAssets_StopWarmup();

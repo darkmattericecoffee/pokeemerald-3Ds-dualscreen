@@ -163,7 +163,6 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 /* Below this size (screen pixels) a lasso is a tap. */
 #define TAP_SLOP 6
 /* Unsaved changes go to the SD card this long after the last one. */
-#define AUTOSAVE_FRAMES 90
 
 enum { T_BRUSH, T_ERASE, T_LASSO, T_FILL, T_PAN, T_COUNT };
 enum { B_OPACITY, B_GRID, B_COUNT };
@@ -542,8 +541,10 @@ static void Toast(const char *text)
 static void Changed(void)
 {
     sE.dirtyDraw = true;
+    /* The top screen's state line reads EDITED from the first change on:
+     * its sheet is made again then, not after every stroke. */
+    if (!sE.dirtyFile) sE.helpDirty = true;
     sE.dirtyFile = true;
-    sE.helpDirty = true;
     sE.changedAt = sE.tick;
     CtrStereoMon_Recompose();
     CtrStereoBattle_LiveChanged();
@@ -592,6 +593,7 @@ static void BeginStroke(const char *name)
 }
 
 static void ApplyErase(void);
+static void SetPixelTo(unsigned i, unsigned plane);
 
 static void EndStroke(void)
 {
@@ -610,6 +612,29 @@ static void EndStroke(void)
     snprintf(line, sizeof(line), "f%u %s P%u %upx", sE.frame, sE.strokeName, sE.layer, sE.strokeCount);
     CtrStereoMon_LogEdit(line);
     Changed();
+}
+
+static void Save(bool quiet);
+
+void CtrStereoEdit_SaveNow(void)
+{
+    if (sE.active && sE.dirtyFile) Save(true);
+    CtrStereoMon_FlushLog();
+}
+
+void CtrStereoEdit_TestStroke(void)
+{
+    unsigned n = 0;
+
+    if (!sE.active || sE.pl == NULL || sE.screen != S_EDIT) return;
+    BeginStroke("test");
+    for (unsigned i = 0; i < N && n < 40; ++i)
+        if (Opaque(sE.frame, i) && GetPlane(sE.frame, i) != NONE)
+        {
+            SetPixelTo(i, (GetPlane(sE.frame, i) + 1) % sE.planes);
+            ++n;
+        }
+    EndStroke();
 }
 
 static void SetPixelTo(unsigned i, unsigned plane)
@@ -1002,12 +1027,13 @@ static void CollapsePlanes(void)
     Toast("ONE LAYER NOW - UNDO TAKES IT BACK");
 }
 
-/* Plane `from` moved to position `to` in the stack, the others closing up. */
+/* Plane `from` moved to position `to` in the stack, the others closing up:
+ * in the frame being edited only, the other frame keeps its order. */
 static void MovePlane(unsigned from, unsigned to)
 {
     if (from == to || from >= sE.planes || to >= sE.planes) return;
     PushUndo();
-    for (unsigned f = 0; f < sE.frames; ++f)
+    for (unsigned f = sE.frame; f == sE.frame; ++f)
         for (unsigned i = 0; i < N; ++i)
         {
             unsigned v = GetPlane(f, i), nv = v;
@@ -1699,8 +1725,10 @@ static void ToggleFinal(void)
     sE.dirtyFile = true;
     Save(true);
     Toast(final ? "MARKED FINAL" : "NOT FINAL ANY MORE");
-    /* OPTIONS' AUTO UPLOAD: a finished picture goes to the server too. */
-    if (final && !sE.dirtyFile && CtrOnline_Linked() && CtrSettings_GetInt("online_auto", 1)) Upload();
+    /* SETTINGS' UPLOAD ON FINAL (off unless turned on): a finished picture
+     * goes to the server too. Otherwise nothing leaves the console unless
+     * asked (UPLOAD on FINAL's question, UPLOAD MINE, UPLOAD ALL EDITS). */
+    if (final && !sE.dirtyFile && CtrOnline_Linked() && CtrSettings_GetInt("online_auto", 0)) Upload();
 }
 
 /* The save's button: unsaved changes go to the card; saved already, it
@@ -4704,8 +4732,11 @@ bool CtrStereoEdit_BottomFrame(void)
         CtrStereoMon_SetEditing(true, sE.layer);
         CtrStereoMon_SetEditView(sE.frame, sE.animate, sE.outlineOn, sE.mark, sE.view, sE.controls);
     }
-    /* Changes go to the card by themselves once the stylus has rested. */
-    if (sE.dirtyFile && !sE.touching && sE.screen == S_EDIT && sE.tick - sE.changedAt > AUTOSAVE_FRAMES) Save(true);
+    /* No autosave while drawing: the card is written when the picture is
+     * left (another one, the Pokédex, the versions screen, a battle, the
+     * editor closed), on SAVE, and when the console sleeps or the game ends
+     * (CtrStereoEdit_SaveNow). Writing it every time the stylus rested
+     * stalled the drawing. */
     OnlineFrame();
     CtrStereoMon_SetChooser(sE.screen == S_CHOOSE || (sE.screen == S_KEYBOARD && sE.kbReturn == S_CHOOSE));
     CtrStereoMon_SetVersionsView(sE.screen == S_VERSIONS);

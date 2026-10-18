@@ -417,7 +417,7 @@ const CtrExtra gCtrExtras[] =
      * and 3ds_stereo_mon_game.c): a sync that brings pictures opens the
      * Pokédex on them; FINAL uploads; the editor's controls on its top screen. */
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("OPEN NEW ONES", "ABRIR NUEVOS", "OUVRIR NOUV.", "APRI NUOVI"), "online_open_new", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("EDITOR CONTROLS", "CONTROLES EDITOR", "COMMANDES ÉDIT.", "COMANDI EDITOR"), "edit_controls", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
     {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("SPEED", "VELOC. JUEGO", "VITESSE", "VELOCITÀ"), "speed", 0, 0, NULL, NULL, SpeedStep, SpeedText},
     /* The game and the music keep real time on a slow frame; the sound

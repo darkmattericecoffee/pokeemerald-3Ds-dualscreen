@@ -2674,6 +2674,7 @@ static void TestFrame(void)
     }
     else if (strncmp(line, "editor", 6) == 0) CtrStereoMonGame_OpenEditor();
     else if (strncmp(line, "verscreen", 9) == 0) CtrStereoEdit_TestVersions();
+    else if (strncmp(line, "stroke", 6) == 0) CtrStereoEdit_TestStroke();
     else if (strncmp(line, "optionstab", 10) == 0) CtrBottom_TestOptions((unsigned)strtoul(arg, NULL, 10));
     else if (strncmp(line, "bottomshot", 10) == 0)
     {

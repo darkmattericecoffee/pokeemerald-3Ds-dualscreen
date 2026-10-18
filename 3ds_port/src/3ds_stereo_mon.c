@@ -917,6 +917,11 @@ static void EnsureEditDir(void)
     mkdir(EDIT_DIR, 0777);
 }
 
+/* The edit log's waiting lines (CtrStereoMon_LogEdit). */
+static char sLogBuf[2048];
+static unsigned sLogLen;
+static uint16_t sLogId;
+
 bool CtrStereoMon_SaveEdit(void)
 {
     uint8_t header[EDIT_HEADER_BYTES] = {0};
@@ -969,6 +974,7 @@ bool CtrStereoMon_SaveEdit(void)
         SetMark(sId, true);
         SetMarkOf(sId, true, sMeta.finalized);
         CtrStereoBattle_ForgetPlanes();
+        CtrStereoMon_FlushLog();
     }
     CtrLog_Write(ok ? CTR_LOG_FS : CTR_LOG_ERROR, "stereo: id %04x edit %s (r%u by %s%s)", sId, ok ? "saved" : "NOT saved",
                  sMeta.revision, sMeta.author, sMeta.finalized ? ", final" : "");
@@ -983,6 +989,7 @@ bool CtrStereoMon_ResetEdit(void)
     unsigned entryFrames = 0;
 
     if (!sActive) return false;
+    if (sLogId == sId) sLogLen = 0;
     EditPath(sId, "bin", path, sizeof(path));
     remove(path);
     EditPath(sId, "log", path, sizeof(path));
@@ -1091,16 +1098,37 @@ bool CtrStereoMon_HasEdit(uint16_t id)
     return marks != NULL && ((marks[bit >> 3] >> (bit & 7)) & 1);
 }
 
-void CtrStereoMon_LogEdit(const char *line)
+/* The edit log's lines wait here and go to the card with the picture's
+ * save (or when the buffer fills, another picture logs, or the game ends):
+ * opening the file for every stroke stalled the drawing. */
+
+void CtrStereoMon_FlushLog(void)
 {
     FILE *f;
 
-    if (!sActive || line == NULL) return;
+    if (sLogLen == 0) return;
     EnsureEditDir();
-    f = OpenEdit(sId, "log", "a");
-    if (f == NULL) return;
-    fprintf(f, "%s\n", line);
-    fclose(f);
+    f = OpenEdit(sLogId, "log", "a");
+    if (f)
+    {
+        fwrite(sLogBuf, 1, sLogLen, f);
+        fclose(f);
+    }
+    sLogLen = 0;
+}
+
+void CtrStereoMon_LogEdit(const char *line)
+{
+    size_t n;
+
+    if (!sActive || line == NULL) return;
+    n = strlen(line) + 1;
+    if (sLogLen && (sLogId != sId || sLogLen + n > sizeof(sLogBuf))) CtrStereoMon_FlushLog();
+    if (n > sizeof(sLogBuf)) return;
+    sLogId = sId;
+    memcpy(sLogBuf + sLogLen, line, n - 1);
+    sLogBuf[sLogLen + n - 1] = '\n';
+    sLogLen += (unsigned)n;
 }
 
 /* ── The texture ─────────────────────────────────────────────────────── */

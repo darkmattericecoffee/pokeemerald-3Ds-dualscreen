@@ -458,6 +458,11 @@ void CtrStereoEdit_PreferDex(bool newOnes);
  * and the bottom screen to a file (RGB565 in the canvas's layout: 320
  * columns of 240, each from the bottom up). */
 void CtrStereoEdit_TestVersions(void);
+void CtrStereoEdit_TestStroke(void);
+/* The picture being edited to the card if it has unsaved changes, and the
+ * edit log's waiting lines (the console going to sleep, the game ending). */
+void CtrStereoEdit_SaveNow(void);
+void CtrStereoMon_FlushLog(void);
 void CtrStereoEdit_TestShot(const char *path);
 /* And the voting view's keys (CTR_KEY_* bits, the D-pad's as the D-pad)
  * and a tap at a touch screen pixel (down one frame, up the next). */
