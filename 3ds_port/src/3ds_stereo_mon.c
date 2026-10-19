@@ -1338,14 +1338,19 @@ static void DrawText(float x, float y, const char *text, uint32_t colour)
 
 /* ── Drawing ─────────────────────────────────────────────────────────── */
 
-/* A back's stack is shallower: seen from behind and drawn large at the
- * bottom of the battle, it tore apart at a front's depth. */
+/* A back's stack is shallower in the battle: seen from behind and drawn
+ * large at the bottom of the battle, it tore apart at a front's depth. Only
+ * the editor's BATTLE view keeps that (sBattleView): looked at alone or
+ * beside its front (the Pokédex, the versions screen), a back is judged as
+ * a front is, at the same depth and the same place. A tester found the two
+ * sides wanted different slider positions otherwise. */
 static bool BackSide(uint16_t id)
 {
     return (id & 0xC000) == CTR_STEREO_ID_BACK || (id & 0xC000) == CTR_STEREO_ID_PLAYER;
 }
 
-static float DepthOf(uint16_t id) { return BackSide(id) ? BACK_DEPTH : 1.0f; }
+static bool sBattleView;
+static float DepthOf(uint16_t id) { return sBattleView && BackSide(id) ? BACK_DEPTH : 1.0f; }
 
 /*
  * Every view stands a picture as the battle does (CtrStereoDepths, the
@@ -1368,7 +1373,7 @@ static float PictureShift(float sign, float slider, uint16_t id)
 {
     const CtrStereoDepths d = CtrStereoDepths_Get();
 
-    return -sign * slider * (BackSide(id) ? d.own : d.mon);
+    return -sign * slider * (sBattleView && BackSide(id) ? d.own : d.mon);
 }
 
 /* The eye's shift of the scenery behind. */
@@ -1757,10 +1762,12 @@ static void DrawBattleEye(float sign, float slider, unsigned frame)
     snprintf(line, sizeof(line), "WHAT WILL %s DO?", sName);
     DrawText(GbaX(10), GbaY(124), line, C2D_Color32(240, 240, 240, 255));
     /* The other side, flat, then the planes in their place. */
+    sBattleView = true;
     DrawMateStack((back ? foeX : ownX) + PictureShift(sign, slider, sMateId), back ? foeY : ownY, BATTLE_SCALE,
                   StackShift(sign, slider, sMateId), frame);
     DrawStack((back ? ownX : foeX) + PictureShift(sign, slider, sId), back ? ownY : foeY, BATTLE_SCALE,
               StackShift(sign, slider, sId), frame, NULL);
+    sBattleView = false;
     if (sEditOutline && sEditPlane < Groups() && sTexReady && sComposed == sToCompose)
     {
         OutlineRuns(frame, sEditPlane);

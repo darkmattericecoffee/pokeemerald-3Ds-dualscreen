@@ -25,10 +25,11 @@
 #define GROUPS 4
 #define TILES_PER_SLOT (2 * GROUPS)
 /* As the viewer's own stacks (3ds_stereo_mon.c): the planes' span in
- * sprite pixels, the cards' skirt, a back's depth against a front's. */
+ * sprite pixels, the cards' skirt. A back stands as a front does here (the
+ * same depth, the same place): the strip compares the two sides, and with
+ * a back shallower each side wanted its own slider position. */
 #define DEPTH_SPAN 14.4f
 #define SKIRT 4
-#define BACK_DEPTH 0.6f
 #define DEOXYS_NATIONAL 386
 /* The battle's size, three columns across. */
 #define SCALE CTR_BATTLE_ZOOM
@@ -322,13 +323,15 @@ bool CtrStereoStrip_Pending(void)
  */
 static float StackShift(float sign, float slider, bool back)
 {
-    return sign * slider * CtrStereoDepths_Get().spread * CTR_BATTLE_ZOOM / DEPTH_SPAN * (back ? BACK_DEPTH : 1.0f);
+    (void)back;
+    return sign * slider * CtrStereoDepths_Get().spread * CTR_BATTLE_ZOOM / DEPTH_SPAN;
 }
 static float PictureShift(float sign, float slider, bool back)
 {
     const CtrStereoDepths d = CtrStereoDepths_Get();
 
-    return -sign * slider * (back ? d.own : d.mon);
+    (void)back;
+    return -sign * slider * d.mon;
 }
 static float Pivot(void) { return CtrStereoDepths_Get().pivot; }
 static float BackdropShift(float sign, float slider) { return -sign * slider * CtrStereoDepths_Get().back; }

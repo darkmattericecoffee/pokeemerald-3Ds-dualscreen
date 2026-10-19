@@ -58,6 +58,15 @@ extern const char *const gCtrExtrasOffOn[2];   /* "OFF", "ON" */
 extern const unsigned gCtrExtraCount;
 
 int CtrExtras_Value(const CtrExtra *extra);
+/* The line with this key, or NULL. */
+const CtrExtra *CtrExtras_Find(const char *key);
+/* The plane editor's tune (settings key, its values in 3ds_extras.c): a
+ * song id, or one of these two. */
+#define CTR_EDITOR_MUSIC_KEY "editor_music"
+#define CTR_EDITOR_SONG_MAP 0xFFFE   /* the place's own music goes on */
+#define CTR_EDITOR_SONG_OFF 0xFFFD   /* none */
+uint16_t CtrExtras_EditorSong(void);
+const char *CtrExtras_EditorSongName(void);
 /* For the game code: the value of the extra with this key (0 when no build
  * line has it). */
 int CtrExtras_Get(const char *key);

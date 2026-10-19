@@ -434,30 +434,38 @@ static void NewFromServer(void);
  * start; the editor's own BATTLE preview lets it go while it plays. A calm
  * tune plays instead of the map's, which comes back when the editor closes.
  */
-#define EDITOR_SONG MUS_POKE_CENTER
 
 bool CtrStereoMonGame_WorldPaused(void)
 {
     return sGallery && CtrStereoEdit_Active() && !CtrStereoMonGame_TryBattleOn() && CtrGame_IsOverworld();
 }
 
+/* The tune is OPTIONS' EDITOR MUSIC (CtrExtras_EditorSong; the editor's
+ * MORE panel steps it too): the Pokémon Center's by default, the map's own
+ * left playing, none, or a chosen one; changed while the editor is open, it
+ * plays at once. */
 static void EditorMusic(void)
 {
     static bool8 playing;
-    static u16 mapSong;
+    static u16 mapSong, song;
     bool8 paused = CtrStereoMonGame_WorldPaused();
+    u16 want = CtrExtras_EditorSong();
 
-    if (paused && !playing)
+    if (paused && (!playing || want != song))
     {
+        if (!playing) mapSong = GetCurrentMapMusic();
+        if (want == CTR_EDITOR_SONG_OFF) FadeOutBGM(4);
+        else if (want == CTR_EDITOR_SONG_MAP) { if (playing && mapSong != MUS_NONE) PlayBGM(mapSong); }
+        else PlayBGM(want);
         playing = TRUE;
-        mapSong = GetCurrentMapMusic();
-        PlayBGM(EDITOR_SONG);
-        CtrLog_Write(CTR_LOG_GAME, "editor: the world waits; music %u instead of %u", EDITOR_SONG, mapSong);
+        song = want;
+        CtrLog_Write(CTR_LOG_GAME, "editor: the world waits; music %s (%u) instead of %u", CtrExtras_EditorSongName(),
+                     want, mapSong);
     }
     else if (!paused && playing)
     {
         playing = FALSE;
-        if (!CtrStereoMonGame_TryBattleOn() && mapSong != MUS_NONE) PlayBGM(mapSong);
+        if (!CtrStereoMonGame_TryBattleOn() && mapSong != MUS_NONE && song != CTR_EDITOR_SONG_MAP) PlayBGM(mapSong);
         CtrLog_Write(CTR_LOG_GAME, "editor: the world goes on; music %u again", mapSong);
     }
 }

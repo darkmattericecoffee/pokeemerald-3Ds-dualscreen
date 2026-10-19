@@ -58,6 +58,7 @@
 #include "3ds_bottom.h"
 #include "3ds_bottom_draw.h"
 #include "3ds_edit_icons.h"
+#include "3ds_extras.h"
 #include "3ds_edit_sprites.h"
 #include "3ds_menu_icon.h"
 #include "3ds_input.h"
@@ -220,7 +221,7 @@ static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
-enum { O_CONTROLS, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
+enum { O_CONTROLS, O_MUSIC, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -329,6 +330,7 @@ static struct
     uint8_t side;
     bool confirmDelete, versionsAfterBind;
     bool versionsFromDex;             /* the versions screen was opened from the Pokédex: closing goes back there */
+    uint8_t versionsAgainFromDex;     /* the C-stick's next Pokémon's versions: 1 keep closing to the editor, 2 to the Pokédex */
     /* The voting view's filmstrip: the columns (each a front's and a
      * back's version, 0 for none), the ones shown (all, or those holding
      * the web's picks), the cursor, the slide (in columns: the first one
@@ -940,41 +942,28 @@ static void FinishLasso(void)
     EndStroke();
 }
 
-/* The bucket: from the picture pixel tapped, every opaque pixel reached
- * without crossing the plane being edited (nor transparency) goes to that
- * plane: the inside of a shape outlined on it. */
+/* The bucket: the colour cell under the stylus (ColourCell: the connected
+ * pixels of that colour, bounded by the outline and transparency, with the
+ * outline that touches it) goes to the plane being edited. It once flooded
+ * every pixel reachable without crossing that plane, which with no shape
+ * outlined on it was the whole Pokémon. */
 static void BucketFill(unsigned s)
 {
-    static const int8_t nb[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-    unsigned head = 0, tail = 0;
+    char line[40];
 
-    if (!Opaque(sE.frame, s) || GetPlane(sE.frame, s) == sE.layer) return;
-    memset(sMask, 0, sizeof(sMask));
-    for (unsigned i = 0; i < N; ++i) sLabel[i] = -1;
-    sLabel[s] = 0;
-    sQueue[tail++] = (int16_t)s;
-    while (head < tail)
+    if (!Opaque(sE.frame, s))
     {
-        unsigned j = (unsigned)sQueue[head++];
-        int x = (int)(j % DIM), y = (int)(j / DIM);
-
-        BitSet(sMask, j);
-        for (unsigned n = 0; n < 4; ++n)
-        {
-            int nx = x + nb[n][0], ny = y + nb[n][1];
-            unsigned k;
-
-            if (nx < 0 || ny < 0 || nx >= DIM || ny >= DIM) continue;
-            k = (unsigned)(ny * DIM + nx);
-            if (sLabel[k] >= 0 || !Opaque(sE.frame, k) || GetPlane(sE.frame, k) == sE.layer) continue;
-            sLabel[k] = 0;
-            sQueue[tail++] = (int16_t)k;
-        }
+        Toast("BUCKET: TAP A COLOUR");
+        return;
     }
+    ColourCell(s);
     BeginStroke("bucket");
     for (unsigned i = 0; i < N; ++i)
         if (BitGet(sMask, i)) SetPixel(i);
+    if (sE.strokeCount) snprintf(line, sizeof(line), "%u PIXELS TO PLANE %u", sE.strokeCount, PLANES - sE.layer);
+    else snprintf(line, sizeof(line), "ALREADY ON PLANE %u", PLANES - sE.layer);
     EndStroke();
+    Toast(line);
 }
 
 /* ── Planes ─────────────────────────────────────────────────────────── */
@@ -1898,7 +1887,7 @@ static void TouchEdit(const CtrInput *in)
             int px, py;
 
             if (PictureAt(x, y, &px, &py)) BucketFill((unsigned)(py * DIM + px));
-            else Toast("BUCKET: TAP INSIDE A SHAPE");
+            else Toast("BUCKET: TAP A COLOUR");
         }
         else
         {
@@ -2174,10 +2163,14 @@ static void OnlineFrame(void)
 
 static void OptionAct(int row, bool rightHalf)
 {
-    (void)rightHalf;
     switch (row)
     {
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
+    case O_MUSIC:
+        /* The left half the tune before, the right half the next; the game
+         * side (3ds_stereo_mon_game.c EditorMusic) plays it at once. */
+        if (CtrExtras_Find(CTR_EDITOR_MUSIC_KEY)) CtrExtras_Step(CtrExtras_Find(CTR_EDITOR_MUSIC_KEY), rightHalf ? 1 : -1);
+        return;
     case O_COLLAPSE:
         sE.screen = S_EDIT;
         CollapsePlanes();
@@ -2944,8 +2937,11 @@ void CtrStereoEdit_TestPress(unsigned keys)
     if (sE.active && sE.screen == S_VERSIONS) VersionsKeysPad(keys, keys);
 }
 
-/* A test tap: down on one frame, up on the next (CtrStereoEdit_TestTap). */
-static int sTapX = -1, sTapY, sTapPhase;
+/* A test tap: down on one frame, up on the next (CtrStereoEdit_TestTap);
+ * a test push of the C-stick, one frame (CtrStereoEdit_TestCstick). */
+static int sTapX = -1, sTapY, sTapPhase, sTestCstick;
+
+void CtrStereoEdit_TestCstick(int x) { sTestCstick = x; }
 
 void CtrStereoEdit_TestTap(int x, int y)
 {
@@ -2958,8 +2954,14 @@ static const CtrInput *TapInput(const CtrInput *in)
 {
     static CtrInput synth;
 
-    if (sTapX < 0) return in;
+    if (sTapX < 0 && sTestCstick == 0) return in;
     synth = *in;
+    if (sTestCstick)
+    {
+        synth.cstickX = (int16_t)sTestCstick;
+        sTestCstick = 0;
+        if (sTapX < 0) return &synth;
+    }
     synth.touchX = (uint16_t)sTapX;
     synth.touchY = (uint16_t)sTapY;
     synth.touchActive = sTapPhase == 0;
@@ -4166,7 +4168,7 @@ static void StripLabels(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -4178,6 +4180,12 @@ static void DrawOptions(void)
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, names[row], OPT_X + 14, y + 5, CTR_DRAW_DARK);
         value[0] = 0;
         if (row == O_CONTROLS) snprintf(value, sizeof(value), "%s", sE.controls ? "ON" : "OFF");
+        if (row == O_MUSIC && CtrExtras_Find(CTR_EDITOR_MUSIC_KEY))
+        {
+            const CtrExtra *music = CtrExtras_Find(CTR_EDITOR_MUSIC_KEY);
+
+            snprintf(value, sizeof(value), "%s", music->values[CtrExtras_Value(music)]);
+        }
         if (value[0])
             CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, value,
                                OPT_X + OPT_W - 14 - CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, value), y + 5, CTR_DRAW_RED);
@@ -4639,12 +4647,14 @@ static const CtrInput *TestInput(const CtrInput *real)
 }
 #endif
 
-/* The C-stick: pushed left or right, another Pokémon; once per push. */
+/* The C-stick: pushed left or right, another Pokémon; once per push. The
+ * same on every screen (a tester's wish): in the Pokédex the cursor moves
+ * to the next one, on the versions screen the next one's versions open
+ * (back where this one's were opened from), elsewhere the next one is
+ * edited. The keyboard types, so it keeps the C-stick out. */
 static void CstickMon(const CtrInput *in)
 {
     int cx = in->cstickX, ax = cx < 0 ? -cx : cx, cy = in->cstickY, ay = cy < 0 ? -cy : cy;
-
-    (void)ay;
     unsigned count = CtrStereoMon_GalleryCount();
 
     if (sE.cstickMoved)
@@ -4652,12 +4662,29 @@ static void CstickMon(const CtrInput *in)
         if (ax < CSTICK_OFF && ay < CSTICK_OFF) sE.cstickMoved = false;
         return;
     }
-    if (ax < CSTICK_ON || count == 0) return;
+    if (ax < CSTICK_ON || count == 0 || sE.screen == S_KEYBOARD) return;
     sE.cstickMoved = true;
+    if (sE.screen == S_CHOOSE)
+    {
+        if (sListCount == 0) return;
+        sE.chooseCursor = cx > 0 ? (sE.chooseCursor + 1) % sListCount : (sE.chooseCursor + sListCount - 1) % sListCount;
+        sE.dirtyDraw = true;
+        sE.helpDirty = true;
+        return;
+    }
     {
         unsigned index = CtrStereoMonGame_GalleryIndex();
+        unsigned next = cx > 0 ? (index + 1) % count : (index + count - 1) % count;
 
-        Choose(cx > 0 ? (index + 1) % count : (index + count - 1) % count);
+        if (sE.screen == S_VERSIONS)
+        {
+            if (sE.inBattle) return;
+            sE.versionsAgainFromDex = sE.versionsFromDex ? 2 : 1;
+            sE.versionsFromDex = false;
+            CloseVersions();
+            sE.versionsAfterBind = true;
+        }
+        Choose(next);
     }
 }
 
@@ -4733,8 +4760,9 @@ bool CtrStereoEdit_BottomFrame(void)
     {
         TouchEdit(in);
         PadPan(in);
-        CstickMon(in);
     }
+    if (!sE.active) return true;
+    CstickMon(in);
     if (!sE.active) return true;
     if (sE.screen != S_CHOOSE && sE.screen != S_KEYBOARD && sE.pl != NULL)
     {
@@ -4757,7 +4785,10 @@ bool CtrStereoEdit_BottomFrame(void)
     {
         sE.versionsAfterBind = false;
         OpenVersions();
-        sE.versionsFromDex = sE.screen == S_VERSIONS;
+        /* The C-stick's next Pokémon keeps where the versions were opened from. */
+        if (sE.versionsAgainFromDex) sE.versionsFromDex = sE.versionsAgainFromDex == 2 && sE.screen == S_VERSIONS;
+        else sE.versionsFromDex = sE.screen == S_VERSIONS;
+        sE.versionsAgainFromDex = 0;
     }
     if (sE.helpDirty && (sE.pl != NULL || sE.screen == S_CHOOSE || sE.screen == S_VERSIONS))
     {

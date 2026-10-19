@@ -2595,7 +2595,7 @@ unsigned CtrOnline_Serial(void)
  * "use <key> <version>", "vote <key> [<version> [<version>]]", "index", "flush",
  * "count <key>" (what the console knows of a picture), "editor", "dex" (the
  * editor, or straight into its Pokédex), "verscreen" (its voting view),
- * "press <hex CTR_KEY_ bits>" and "tap <x> <y>" (keys and a touch there),
+ * "press <hex CTR_KEY_ bits>", "tap <x> <y>" and "cstick <x>" (keys, a touch there, the C-stick pushed),
  * "topshot" (the top screen to dump.raw). Each step and its result go to port.log.
  */
 static void TestFrame(void)
@@ -2691,6 +2691,7 @@ static void TestFrame(void)
         CtrStereoMon_Invalidate();
     }
     else if (strncmp(line, "press", 5) == 0) CtrStereoEdit_TestPress((unsigned)strtoul(arg, NULL, 16));
+    else if (strncmp(line, "cstick", 6) == 0) CtrStereoEdit_TestCstick((int)strtol(arg, NULL, 10));
     else if (strncmp(line, "tap", 3) == 0)
     {
         int tx = 0, ty = 0;

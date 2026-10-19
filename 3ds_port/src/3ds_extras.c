@@ -56,6 +56,43 @@ static const char *const sVoxelDepths[] = {"25%", "50%", "75%", "100%", "125%", 
  * the battle, the editor, the Pokédex and the voting view all take: one of
  * four presets (3ds_stereo_mon.h CtrStereoDepths, numbered as listed here). */
 static const char *const sDepthPresets[] = {CTR_TEXT("GENTLE", "SUAVE", "DOUX", "LEGGERO"), CTR_TEXT("STANDARD", "ESTÁNDAR", "STANDARD", "STANDARD"), CTR_TEXT("CLOSE", "CERCA", "PROCHE", "VICINO"), CTR_TEXT("DEEP", "PROFUNDO", "PROFOND", "PROFONDO")};
+/* The plane editor's tune (3ds_stereo_mon_game.c EditorMusic): the Pokémon
+ * Center's as before, the place's own left playing, none, or a town's or
+ * route's. A tester missed drawing to Dewford's. sEditorSongs runs with
+ * sEditorMusic, one id a name. */
+static const char *const sEditorMusic[] = {
+    "POKE CENTER", "MAP'S OWN", "OFF", "DEWFORD", "LITTLEROOT", "PETALBURG", "OLDALE", "SLATEPORT", "RUSTBORO",
+    "VERDANTURF", "FALLARBOR", "FORTREE", "LILYCOVE", "SOOTOPOLIS", "EVER GRANDE", "ROUTE 101", "ROUTE 104",
+    "ROUTE 110", "ROUTE 113", "ROUTE 119", "ROUTE 120", "ROUTE 122", "SURF", "CYCLING", "PETALBURG WOODS",
+    "ABANDONED SHIP", "CAVE OF ORIGIN", "MT PYRE", "SEALED CHAMBER", "SAFARI ZONE", "UNDERWATER", "SCHOOL",
+    "GAME CORNER", "CONTEST LOBBY", "MT CHIMNEY", "CABLE CAR", "PALLET", "PEWTER", "CELADON", "VIRIDIAN FOREST",
+    "SEVII ROUTE", "KANTO CYCLING",
+};
+static const u16 sEditorSongs[] = {
+    MUS_POKE_CENTER, CTR_EDITOR_SONG_MAP, CTR_EDITOR_SONG_OFF, MUS_DEWFORD, MUS_LITTLEROOT, MUS_PETALBURG, MUS_OLDALE,
+    MUS_SLATEPORT, MUS_RUSTBORO, MUS_VERDANTURF, MUS_FALLARBOR, MUS_FORTREE, MUS_LILYCOVE, MUS_SOOTOPOLIS,
+    MUS_EVER_GRANDE, MUS_ROUTE101, MUS_ROUTE104, MUS_ROUTE110, MUS_ROUTE113, MUS_ROUTE119, MUS_ROUTE120,
+    MUS_ROUTE122, MUS_SURF, MUS_CYCLING, MUS_PETALBURG_WOODS, MUS_ABANDONED_SHIP, MUS_CAVE_OF_ORIGIN, MUS_MT_PYRE,
+    MUS_SEALED_CHAMBER, MUS_SAFARI_ZONE, MUS_UNDERWATER, MUS_SCHOOL, MUS_GAME_CORNER, MUS_CONTEST_LOBBY,
+    MUS_MT_CHIMNEY, MUS_CABLE_CAR, MUS_RG_PALLET, MUS_RG_PEWTER, MUS_RG_CELADON, MUS_RG_VIRIDIAN_FOREST,
+    MUS_RG_SEVII_ROUTE, MUS_RG_CYCLING,
+};
+#define EDITOR_SONGS ((int)ARRAY_COUNT(sEditorSongs))
+
+u16 CtrExtras_EditorSong(void)
+{
+    int choice = CtrExtras_Get(CTR_EDITOR_MUSIC_KEY);
+
+    return sEditorSongs[choice >= 0 && choice < EDITOR_SONGS ? choice : 0];
+}
+
+const char *CtrExtras_EditorSongName(void)
+{
+    int choice = CtrExtras_Get(CTR_EDITOR_MUSIC_KEY);
+
+    return sEditorMusic[choice >= 0 && choice < EDITOR_SONGS ? choice : 0];
+}
+
 /* The stereoscopic battle's lines are shown only when the build carries
  * planes (romfs/stereo/mons.bin or backs.bin, 3ds_stereo_mon.c): without
  * them the settings would do nothing. */
@@ -425,6 +462,7 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("OPEN NEW ONES", "ABRIR NUEVOS", "OUVRIR NOUV.", "APRI NUOVI"), "online_open_new", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("EDITOR CONTROLS", "CONTROLES EDITOR", "COMMANDES ÉDIT.", "COMANDI EDITOR"), "edit_controls", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("EDITOR MUSIC", "MÚSICA EDITOR", "MUSIQUE ÉDIT.", "MUSICA EDITOR"), CTR_EDITOR_MUSIC_KEY, EDITOR_SONGS, 0, sEditorMusic, NULL, NULL, NULL},
     {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("SPEED", "VELOC. JUEGO", "VITESSE", "VELOCITÀ"), "speed", 0, 0, NULL, NULL, SpeedStep, SpeedText},
     /* The game and the music keep real time on a slow frame; the sound
      * engine mixes on the DSP's clock (3ds_platform.c, 3ds_audio.c). */
@@ -515,6 +553,14 @@ void CtrExtras_Step(const CtrExtra *extra, int direction)
     CtrSettings_SetInt(extra->key, (CtrExtras_Value(extra) + (direction < 0 ? extra->count - 1 : 1)) % extra->count);
     if (extra->act)
         extra->act();
+}
+
+const CtrExtra *CtrExtras_Find(const char *key)
+{
+    for (unsigned i = 0; i < gCtrExtraCount; ++i)
+        if (strcmp(gCtrExtras[i].key, key) == 0)
+            return &gCtrExtras[i];
+    return NULL;
 }
 
 int CtrExtras_Get(const char *key)
