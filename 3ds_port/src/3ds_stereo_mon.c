@@ -122,6 +122,13 @@ static unsigned sEditPlane;
  * along each row, worked out again whenever the planes or the frame change. */
 static unsigned sEditFrame;
 static bool sEditAnimate, sEditOutline;
+/* The editor's strays (CtrStereoMon_SetStrays): their frame, where, how
+ * many, and a version for the redraw key. Ringed over the plane they are on
+ * (any plane: the ring sits at the screen's depth, over the whole stack).
+ * They blink every STRAY_BLINK frames. */
+#define STRAY_BLINK 20
+static unsigned sStrayFrame, sStrayCount, sStrayVersion;
+static uint8_t sStrayXY[CTR_STEREO_STRAYS_MAX][2];
 static uint32_t sEditMark;
 /* The editor's other views: every pixel in its plane's colour (composed
  * from sTinted instead of the picture), and the battle's. */
@@ -739,6 +746,35 @@ void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16
 }
 
 const CtrStereoEditMeta *CtrStereoMon_EditMeta(void) { return &sMeta; }
+
+void CtrStereoMon_SetStrays(unsigned frame, const uint8_t (*xy)[2], unsigned count)
+{
+    if (count > CTR_STEREO_STRAYS_MAX) count = CTR_STEREO_STRAYS_MAX;
+    if (frame == sStrayFrame && count == sStrayCount && (count == 0 || memcmp(sStrayXY, xy, count * 2) == 0)) return;
+    sStrayFrame = frame;
+    sStrayCount = count;
+    if (count) memcpy(sStrayXY, xy, count * 2);
+    ++sStrayVersion;
+}
+
+/* The strays' rings: a pixel outside each cell, at the plane's place on
+ * screen (the nearest plane's X, so the ring sits over the stack). */
+static void DrawStrays(unsigned frame)
+{
+    const uint32_t ring = (sTick / STRAY_BLINK) & 1 ? C2D_Color32(255, 255, 255, 240) : C2D_Color32(0, 0, 0, 240);
+    const float s = sPlaneScale, x0 = sPlaneX[0];
+
+    if (!sEditing || sStrayCount == 0 || frame != sStrayFrame) return;
+    for (unsigned q = 0; q < sStrayCount; ++q)
+    {
+        float x = x0 + sStrayXY[q][0] * s, y = sPlaneY + sStrayXY[q][1] * s;
+
+        C2D_DrawRectSolid(x - 1, y - 1, 0, s + 2, 1, ring);
+        C2D_DrawRectSolid(x - 1, y + s, 0, s + 2, 1, ring);
+        C2D_DrawRectSolid(x - 1, y, 0, 1, s, ring);
+        C2D_DrawRectSolid(x + s, y, 0, 1, s, ring);
+    }
+}
 
 /* The companion: the other side's picture, flat, in a 128x64 texture (its
  * frames side by side). */
@@ -1773,6 +1809,7 @@ static void DrawBattleEye(float sign, float slider, unsigned frame)
         OutlineRuns(frame, sEditPlane);
         DrawOutline();
     }
+    DrawStrays(frame);
     /* The HP boxes: the opponent's at the top left, the player's at the right. */
     DrawBattleBox(GbaX(20), GbaY(14), 100 * BATTLE_SCALE, 24 * BATTLE_SCALE, sName, true);
     DrawBattleBox(GbaX(130), GbaY(82), 104 * BATTLE_SCALE, 26 * BATTLE_SCALE, sName, false);
@@ -1952,6 +1989,7 @@ static void DrawEditEye(float sign, float slider, unsigned frame)
         OutlineRuns(frame, sEditPlane);
         DrawOutline();
     }
+    DrawStrays(frame);
     /* The name and the frame at the top left; what is being edited (the
      * plane in its colour, the depth, who, how far) at the top right. */
     DrawHelpCell(CTR_HELP_NAME, 8, 4, white);
@@ -2072,6 +2110,7 @@ typedef struct
     uint8_t editBattle, editLayers, editControls, backdrop, mate, final, undrawn, chooser;
     int depth, slider, boxLeft, boxRight, boxBottom;
     uint32_t mark;
+    uint32_t strays;
     unsigned planesVersion, composed, toCompose, helpVersion, frames;
     bool texReady;
     char name[CTR_STEREO_MON_NAME];
@@ -2116,6 +2155,8 @@ static void MakeKey(DrawKey *k, uint32_t tick, float slider, bool stereo)
     k->boxRight = sBoxRight;
     k->boxBottom = sBoxBottom;
     k->mark = sEditMark;
+    /* The strays' rings blink: the frame is drawn again each phase while any show. */
+    k->strays = sEditing && sStrayCount && FrameAt(tick) == sStrayFrame ? (sStrayVersion << 1 | ((tick / STRAY_BLINK) & 1)) : 0;
     k->planesVersion = sPlanesVersion;
     k->composed = sComposed;
     k->toCompose = sToCompose;

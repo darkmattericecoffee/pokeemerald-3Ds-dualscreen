@@ -218,6 +218,11 @@ void CtrStereoMon_SetEditing(bool editing, unsigned plane);
  * plane's colour, or the picture in its place in a battle. */
 enum { CTR_STEREO_VIEW_COLOURS, CTR_STEREO_VIEW_LAYERS, CTR_STEREO_VIEW_BATTLE };
 void CtrStereoMon_SetEditView(unsigned frame, bool animate, bool outline, uint16_t mark, unsigned view, bool controls);
+/* The editor's stray pixels of `frame` (3ds_stereo_edit.c FindStrays), each
+ * an (x, y): ringed, blinking, on the top screen's picture while that frame
+ * shows. At most this many are listed. */
+#define CTR_STEREO_STRAYS_MAX 48
+void CtrStereoMon_SetStrays(unsigned frame, const uint8_t (*xy)[2], unsigned count);
 /* The other side of the picture on show (a front's back, a back's front),
  * id `id`: `frames` of 64x64 RGBA5551 pixels, copied here, and its planes
  * (its card edit, else the pack's) composed into a stack of its own, so the

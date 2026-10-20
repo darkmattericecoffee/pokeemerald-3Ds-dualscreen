@@ -221,7 +221,7 @@ static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
-enum { O_CONTROLS, O_MUSIC, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
+enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -254,6 +254,7 @@ static struct
     bool sizeSlider;
     /* The tick of the last change, for the autosave. */
     uint32_t changedAt;
+    uint32_t strayStamp;              /* bumped on every change: the strays are found again (FindStrays) */
     /* The top screen's words want drawing again (MakeHelpSheet). */
     bool helpDirty;
     bool dirtyDraw, dirtyFile;
@@ -548,6 +549,7 @@ static void Changed(void)
     if (!sE.dirtyFile) sE.helpDirty = true;
     sE.dirtyFile = true;
     sE.changedAt = sE.tick;
+    ++sE.strayStamp;
     CtrStereoMon_Recompose();
     CtrStereoBattle_LiveChanged();
 }
@@ -719,6 +721,132 @@ static void ApplyErase(void)
         for (unsigned k = 0; k < sizeof(placed); ++k) placed[k] &= (uint8_t)~now[k];
     }
     memset(sErase, 0, sizeof(sErase));
+}
+
+/* ── Strays ─────────────────────────────────────────────────────────── */
+
+/*
+ * Stray pixels: a patch of at most STRAY_MAX connected pixels on one plane
+ * with the picture around it on others (so the patch is usually a slip of
+ * the pencil, left behind far from its plane's body). They are found once
+ * per change (the pass is a flood over the 4096 pixels, well under a
+ * millisecond), kept as a mask and a short list, blinked on both screens
+ * (the top screen through CtrStereoMon_SetStrays) and counted in the MORE
+ * panel, whose FIX row moves them to the plane around them as the eraser
+ * would (ApplyErase).
+ */
+#define STRAY_MAX 3
+#define STRAY_BLINK 20
+static uint8_t sStray[N / 8];
+static unsigned sStrayCount;
+static uint8_t sStrayList[CTR_STEREO_STRAYS_MAX][2];
+static unsigned sStrayListed;
+static uint32_t sStrayStamp;
+static unsigned sStrayFrame;
+static uint16_t sStrayId;
+static bool sStrayValid;
+
+static void FindStrays(void)
+{
+    static const int8_t nb[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    unsigned before = sStrayCount;
+
+    if (sE.pl == NULL) { sStrayCount = sStrayListed = 0; sStrayValid = false; return; }
+    if (sStrayValid && sStrayStamp == sE.strayStamp && sStrayFrame == sE.frame && sStrayId == sE.id) return;
+    sStrayValid = true;
+    sStrayStamp = sE.strayStamp;
+    sStrayFrame = sE.frame;
+    sStrayId = sE.id;
+    sStrayCount = sStrayListed = 0;
+    memset(sStray, 0, sizeof(sStray));
+    for (unsigned i = 0; i < N; ++i) sLabel[i] = -1;
+    for (unsigned s = 0; s < N; ++s)
+    {
+        unsigned p, head = 0, tail = 0;
+        bool touches = false;
+
+        if (sLabel[s] >= 0 || !Opaque(sE.frame, s) || (p = GetPlane(sE.frame, s)) == NONE) continue;
+        /* The patch: the same plane's pixels connected to it. */
+        sLabel[s] = 0;
+        sQueue[tail++] = (int16_t)s;
+        while (head < tail && tail <= STRAY_MAX)
+        {
+            unsigned j = (unsigned)sQueue[head++];
+            int x = (int)(j % DIM), y = (int)(j / DIM);
+
+            for (unsigned n = 0; n < 4; ++n)
+            {
+                int nx = x + nb[n][0], ny = y + nb[n][1];
+                unsigned k;
+
+                if (nx < 0 || ny < 0 || nx >= DIM || ny >= DIM) continue;
+                k = (unsigned)(ny * DIM + nx);
+                if (!Opaque(sE.frame, k)) continue;
+                if (GetPlane(sE.frame, k) != p) { touches = true; continue; }
+                if (sLabel[k] >= 0) continue;
+                sLabel[k] = 0;
+                sQueue[tail++] = (int16_t)k;
+            }
+        }
+        if (tail > STRAY_MAX)
+        {
+            /* Too big to be a stray: the rest of the patch is walked over
+             * without the size cap, so it is not looked at again. */
+            while (head < tail)
+            {
+                unsigned j = (unsigned)sQueue[head++];
+                int x = (int)(j % DIM), y = (int)(j / DIM);
+
+                for (unsigned n = 0; n < 4; ++n)
+                {
+                    int nx = x + nb[n][0], ny = y + nb[n][1];
+                    unsigned k;
+
+                    if (nx < 0 || ny < 0 || nx >= DIM || ny >= DIM) continue;
+                    k = (unsigned)(ny * DIM + nx);
+                    if (sLabel[k] >= 0 || !Opaque(sE.frame, k) || GetPlane(sE.frame, k) != p) continue;
+                    sLabel[k] = 0;
+                    sQueue[tail++] = (int16_t)k;
+                }
+            }
+            continue;
+        }
+        if (!touches) continue;
+        for (unsigned q = 0; q < tail; ++q)
+        {
+            unsigned j = (unsigned)sQueue[q];
+
+            BitSet(sStray, j);
+            ++sStrayCount;
+            if (sStrayListed < CTR_STEREO_STRAYS_MAX)
+            {
+                sStrayList[sStrayListed][0] = (uint8_t)(j % DIM);
+                sStrayList[sStrayListed][1] = (uint8_t)(j / DIM);
+                ++sStrayListed;
+            }
+        }
+    }
+    CtrStereoMon_SetStrays(sE.frame, sStrayList, sStrayListed);
+    if (sStrayCount != before) sE.helpDirty = true;
+}
+
+/* FIX: every stray goes to the plane most of the pixels around it are on. */
+static void FixStrays(void)
+{
+    char line[40];
+
+    FindStrays();
+    if (sStrayCount == 0)
+    {
+        Toast("NO STRAY PIXELS");
+        return;
+    }
+    BeginStroke("strays");
+    memcpy(sErase, sStray, sizeof(sErase));
+    ApplyErase();
+    snprintf(line, sizeof(line), "%u STRAY PIXELS PLACED", sE.strokeCount);
+    EndStroke();
+    Toast(line);
 }
 
 /* The brush (or the eraser) at one picture pixel: a disc `size` pixels across. */
@@ -1118,6 +1246,7 @@ static bool Bind(void)
     sE.frames = frames;
     for (unsigned f = 0; f < MAX_FRAMES; ++f) sE.pic[f] = f < frames ? CtrStereoMon_Picture(f) : NULL;
     sE.frame = 0;
+    ++sE.strayStamp;
     sE.lassoing = sE.stroking = sE.panning = false;
     sE.dirtyFile = false;
     sE.dirtyDraw = true;
@@ -2166,6 +2295,10 @@ static void OptionAct(int row, bool rightHalf)
     switch (row)
     {
     case O_CONTROLS: sE.controls = !sE.controls; CtrSettings_SetInt("edit_controls", sE.controls); break;
+    case O_STRAYS:
+        sE.screen = S_EDIT;
+        FixStrays();
+        break;
     case O_MUSIC:
         /* The left half the tune before, the right half the next; the game
          * side (3ds_stereo_mon_game.c EditorMusic) plays it at once. */
@@ -3358,6 +3491,21 @@ static void DrawPicture(void)
             }
         }
     }
+    /* The strays, each in a blinking ring a pixel outside its cell. */
+    if (sStrayCount)
+    {
+        const uint16_t ring = (sE.tick / STRAY_BLINK) & 1 ? Rgb(31, 63, 31) : Rgb(0, 0, 0);
+
+        for (unsigned q = 0; q < sStrayListed; ++q)
+        {
+            int sx = ox + sStrayList[q][0] * s, sy = oy + sStrayList[q][1] * s;
+
+            CanvasFill(sx - 1, sy - 1, s + 2, 1, ring);
+            CanvasFill(sx - 1, sy + s, s + 2, 1, ring);
+            CanvasFill(sx - 1, sy, 1, s, ring);
+            CanvasFill(sx + s, sy, 1, s, ring);
+        }
+    }
     /* The lasso's loop as it is drawn. */
     if (sE.lassoing && sE.pathLen > 1)
     {
@@ -4168,7 +4316,7 @@ static void StripLabels(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -4180,6 +4328,8 @@ static void DrawOptions(void)
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, names[row], OPT_X + 14, y + 5, CTR_DRAW_DARK);
         value[0] = 0;
         if (row == O_CONTROLS) snprintf(value, sizeof(value), "%s", sE.controls ? "ON" : "OFF");
+        if (row == O_STRAYS && sStrayCount) snprintf(value, sizeof(value), "%u", sStrayCount);
+        else if (row == O_STRAYS) snprintf(value, sizeof(value), "NONE");
         if (row == O_MUSIC && CtrExtras_Find(CTR_EDITOR_MUSIC_KEY))
         {
             const CtrExtra *music = CtrExtras_Find(CTR_EDITOR_MUSIC_KEY);
@@ -4382,7 +4532,14 @@ static void MakeHelpSheet(void)
     snprintf(text[CTR_HELP_DEPTH], 40, "%s", views[sE.view]);
     if (meta->revision) snprintf(text[CTR_HELP_REVISION], 40, "R%u %s", meta->revision, meta->author[0] ? meta->author : "?");
     else text[CTR_HELP_REVISION][0] = 0;
-    snprintf(text[CTR_HELP_STATE], 40, "%s", meta->finalized ? "FINAL" : sE.dirtyFile || CtrStereoMon_HasEdit(sE.id) ? "EDITED" : "");
+    {
+        const char *state = meta->finalized ? "FINAL" : sE.dirtyFile || CtrStereoMon_HasEdit(sE.id) ? "EDITED" : "";
+
+        /* The strays' count before it, while the picture is being edited. */
+        if (sStrayCount && sE.screen != S_CHOOSE && sE.screen != S_VERSIONS)
+            snprintf(text[CTR_HELP_STATE], 40, "%u STRAY%s%s", sStrayCount, state[0] ? "  " : "", state);
+        else snprintf(text[CTR_HELP_STATE], 40, "%s", state);
+    }
     for (unsigned k = 0; k < sizeof(fixed) / sizeof(fixed[0]); ++k) snprintf(text[CTR_HELP_L_PLANE + k], 40, "%s", fixed[k]);
     /* The server's words about the picture in focus, the Pokédex's. */
     VersionLines(FocusId(), text[CTR_HELP_VERSION], text[CTR_HELP_VERSION_BY], text[CTR_HELP_VERSION_VOTES]);
@@ -4479,6 +4636,7 @@ static void MakeHelpSheet(void)
 
 static void Draw(void)
 {
+    if (sE.screen == S_EDIT || sE.screen == S_OPTIONS) FindStrays();
     CtrBottomDraw_Begin(sCanvas);
     if (sE.screen == S_CHOOSE)
         DrawChooser();
@@ -4800,6 +4958,8 @@ bool CtrStereoEdit_BottomFrame(void)
     if (sE.toastFrames && --sE.toastFrames == 0) sE.dirtyDraw = true;
     /* The lasso's dashes run while it is drawn. */
     if (sE.lassoing && sE.tick % 8 == 0) sE.dirtyDraw = true;
+    /* The strays' rings blink: a redraw a few times a second while any are there. */
+    if (sStrayCount && sE.screen == S_EDIT && sE.tick % STRAY_BLINK == 0) sE.dirtyDraw = true;
     /* The chooser's icons come in one a frame. */
     if (sE.screen == S_CHOOSE && sE.iconsMissing) sE.dirtyDraw = true;
     /* The top screen's frame number follows the animation. */
