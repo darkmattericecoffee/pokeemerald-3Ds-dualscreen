@@ -68,6 +68,8 @@ void CtrProf_LogIdentity(void);
 /* The game's current screen (its callback2), as the profiler last heard. */
 uintptr_t CtrProf_Scene(void);
 void CtrProf_Close(void);
+/* The session's worst frames to sdmc:/3ds/emerald3ds/stalls.txt (3ds_prof.c). */
+void CtrProf_WriteStalls(void);
 
 /*
  * Measured scenarios (3ds_scenario.c): a session recorded from boot - its

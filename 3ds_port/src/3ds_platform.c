@@ -34,7 +34,11 @@ static void SaveEditor(void)
 static void Lifecycle(APT_HookType type, void *parameter)
 {
     (void)parameter;
-    if (type == APTHOOK_ONSLEEP || type == APTHOOK_ONSUSPEND) SaveEditor();
+    if (type == APTHOOK_ONSLEEP || type == APTHOOK_ONSUSPEND)
+    {
+        SaveEditor();
+        CtrProf_WriteStalls();
+    }
     if (type == APTHOOK_ONSLEEP)
     {
         CtrLog_Write(CTR_LOG_BOOT, "suspend/sleep");

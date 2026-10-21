@@ -2433,7 +2433,10 @@ static void VersionLines(uint16_t id, char *a, char *b, char *c)
         bool voted;
         unsigned count = CtrOnline_VersionCount(id, &voted);
 
+        char who[17];
+
         if (count) snprintf(a, 40, "%u VERSION%s ON THE SERVER", count, count == 1 ? "" : "S");
+        if (count && CtrOnline_CurrentAuthor(id, who, sizeof(who))) snprintf(b, 40, "CURRENT BY %s", who);
         if (voted) snprintf(c, 40, "YOU VOTED");
     }
 }
@@ -2465,7 +2468,7 @@ static void OnlineFrame(void)
     /* Which version the card holds: read again after a job or a reload,
      * and in the Pokédex once the cursor rests. */
     if ((sE.cardFor != id || CtrOnline_Serial() != sE.cardSerial || CtrStereoMon_ReloadCount() != sE.cardReloads)
-        && (sE.screen != S_CHOOSE || sE.tick - sE.focusSince >= 10) && !busy)
+        && sE.screen != S_CHOOSE && !busy)
     {
         sE.cardVersion = CtrOnline_CardVersion(id);
         sE.cardFor = id;
@@ -2486,9 +2489,11 @@ static void OnlineFrame(void)
             sE.dirtyDraw = true;
         }
     }
-    /* The list of the picture in focus, once the cursor rests on it. */
-    if ((!sE.versionsLoaded || sE.versions.id != id) && !busy && id != 0
-        && sE.tick - sE.focusSince >= (sE.screen == S_CHOOSE ? 20u : 2u)
+    /* The list of the picture being edited, once it has been looked at
+     * for two seconds (browsing with the C-stick asks for nothing); the
+     * Pokédex shows the index's counts and authors and asks for no lists. */
+    if ((!sE.versionsLoaded || sE.versions.id != id) && !busy && id != 0 && sE.screen != S_CHOOSE
+        && sE.tick - sE.focusSince >= (sE.forkPending ? 2u : 120u)
         && (sE.askedFor != id || sE.tick - sE.askedAt > 600))
     {
         sE.askedFor = id;

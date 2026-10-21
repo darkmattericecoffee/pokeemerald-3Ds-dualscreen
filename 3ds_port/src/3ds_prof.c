@@ -52,11 +52,81 @@ static const char *const sNames[PORT_PROF_COUNT] = {
  * and the engine's copies alone are hundreds of sections a frame. */
 static int sOn = -1;
 
+/* Always on: the sections cost a tick read each, and without debug.txt
+ * the lines and perf.bin go nowhere (CtrLog_Write returns at once). What
+ * stays is the stall table below, written as one small file at exit and
+ * sleep, so a plain run still says where its worst frames went. */
 static bool ProfOn(void)
 {
     if (sOn < 0)
-        sOn = CtrLog_Enabled();
+        sOn = 1;
     return sOn;
+}
+
+static int Sections(char *text, size_t size, const uint32_t *ticks, const uint64_t *sums, unsigned frames);
+/* The worst frames of the session (over STALL_MS of work), kept in memory
+ * and written to stalls.txt by CtrProf_WriteStalls. */
+#define STALL_MS 40.0f
+#define STALLS 24
+typedef struct { uint64_t frame; float work, wait, game; uint32_t scene; char text[160]; } Stall;
+static Stall sStalls[STALLS];
+static unsigned sStallCount, sStallsOver;
+static uint64_t sLastFrame;
+
+static void StallNote(float workMs, float waitMs, uint64_t frame)
+{
+    unsigned at = sStallCount;
+    char text[400];
+
+    ++sStallsOver;
+    if (sStallCount == STALLS)
+    {
+        /* Full: the lightest one goes if this is heavier. */
+        at = 0;
+        for (unsigned i = 1; i < STALLS; ++i)
+            if (sStalls[i].work < sStalls[at].work) at = i;
+        if (sStalls[at].work >= workMs) return;
+    }
+    else ++sStallCount;
+    Sections(text, sizeof(text), sFrame, NULL, 0);
+    sStalls[at].frame = frame;
+    sStalls[at].work = workMs;
+    sStalls[at].wait = waitMs;
+    sStalls[at].game = CtrPlatform_GetTiming()->gameMs;
+    sStalls[at].scene = (uint32_t)sScene;
+    {
+        size_t n = strlen(text);
+
+        if (n >= sizeof(sStalls[at].text)) n = sizeof(sStalls[at].text) - 1;
+        memcpy(sStalls[at].text, text, n);
+        sStalls[at].text[n] = 0;
+    }
+}
+
+void CtrProf_WriteStalls(void)
+{
+    FILE *f;
+
+    if (sStallCount == 0) return;
+    f = fopen("sdmc:/3ds/emerald3ds/stalls.txt", "w");
+    if (f == NULL) return;
+    fprintf(f, "frames=%llu over%.0fms=%u (the %u worst, by frame; work=the frame's ms, game=the game's share, then its sections)\n",
+            (unsigned long long)sLastFrame, (double)STALL_MS, sStallsOver, sStallCount);
+    for (unsigned n = 0; n < sStallCount; ++n)
+    {
+        /* By frame: the earliest not yet written. */
+        unsigned best = STALLS;
+
+        for (unsigned i = 0; i < sStallCount; ++i)
+            if (sStalls[i].frame != 0 && (best == STALLS || sStalls[i].frame < sStalls[best].frame)) best = i;
+        if (best == STALLS) break;
+        fprintf(f, "f=%llu work=%.1f wait=%.1f game=%.1f scene=%08lx:%s\n", (unsigned long long)sStalls[best].frame,
+                (double)sStalls[best].work, (double)sStalls[best].wait, (double)sStalls[best].game,
+                (unsigned long)sStalls[best].scene, sStalls[best].text);
+        sStalls[best].frame = 0;
+    }
+    fclose(f);
+    sStallCount = 0;
 }
 
 uint32_t Port_ProfTick(void)
@@ -421,7 +491,9 @@ void CtrProf_EndFrame(float workMs, float waitMs, uint64_t frame)
     if (!ProfOn())
         return;
     start = svcGetSystemTick();
-    if (workMs > PROF_SLOW_MS && sSlowLines < PROF_SLOW_LINES)
+    sLastFrame = frame;
+    if (workMs > STALL_MS) StallNote(workMs, waitMs, frame);
+    if (workMs > PROF_SLOW_MS && sSlowLines < PROF_SLOW_LINES && CtrLog_Enabled())
     {
         ++sSlowLines;
         Sections(text, sizeof(text), sFrame, NULL, 0);
@@ -457,6 +529,7 @@ void CtrProf_EndFrame(float workMs, float waitMs, uint64_t frame)
 /* The last segment, at exit. */
 void CtrProf_Close(void)
 {
+    CtrProf_WriteStalls();
     if (!ProfOn())
         return;
     SegmentReport();
