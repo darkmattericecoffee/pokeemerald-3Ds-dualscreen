@@ -17,6 +17,8 @@
 #ifndef CTR_CHEATS_MENU
 #define CTR_CHEATS_MENU 0
 #endif
+#include "3ds_randomizer.h"
+#include "3ds_nuzlocke_ui.h"
 #include "3ds_platform.h"
 #include "3ds_daynight.h"
 #include "event_data.h"
@@ -31,17 +33,26 @@
 #include "constants/songs.h"
 #include "3ds_stereo_mon.h"
 
-const char *const gCtrExtrasOffOn[2] = {CTR_TEXT("OFF", "NO", "NON", "NO"), CTR_TEXT("ON", "SÍ", "OUI", "SÌ")};
+const char *const gCtrExtrasOffOn[2] = {CTR_TEXT("OFF", "NO", "NON", "NO", "NENHUM"), CTR_TEXT("ON", "SÍ", "OUI", "SÌ", "SIM")};
 
-static const char *const sDayNight[] = {CTR_TEXT("OFF", "NO", "NON", "NO"), "AUTO"};
+static const char *const sDayNight[] = {CTR_TEXT("OFF", "NO", "NON", "NO", "NENHUM"), "AUTO"};
 static const char *const sClockSpeeds[] = {"1X", "6X", "12X", "24X", "60X", "120X"};
-static const char *const sTimedEncounters[] = {CTR_TEXT("ORIGINAL", "ORIGINAL", "ORIGINAL", "ORIGINALE"),
-                                               CTR_TEXT("TIMED", "POR HORARIO", "PAR HORAIRE", "PER ORARIO")};
+/* SYNC CLOCK: the local clock and 1X again, bonus berry time kept; on disk
+ * with the next in-game save, like any other progress. */
+static const char *const sClockSync[] = {CTR_TEXT("SAVE TO KEEP", "GUARDA PARA FIJAR", "SAUVER P. GARDER", "SALVA PER TENERE", "SALVE P/ MANTER")};
 
-static const char *const sVisibleWild[] = {CTR_TEXT("OFF", "NO", "NON", "NO"), CTR_TEXT("FEW", "POCOS", "PEU", "POCHE"), CTR_TEXT("SOME", "ALGUNOS", "MOYEN", "ALCUNE"), CTR_TEXT("MANY", "MUCHOS", "BEAUCOUP", "MOLTE")};
+static void SyncClock(void)
+{
+    PlaySE(CtrDayNight_SyncToConsole() ? SE_SUCCESS : SE_FAILURE);
+}
+
+static const char *const sTimedEncounters[] = {CTR_TEXT("ORIGINAL", "ORIGINAL", "ORIGINAL", "ORIGINALE", "ORIGINAL"),
+                                               CTR_TEXT("TIMED", "POR HORARIO", "PAR HORAIRE", "PER ORARIO", "POR HORÁRIO")};
+
+static const char *const sVisibleWild[] = {CTR_TEXT("OFF", "NO", "NON", "NO", "NENHUM"), CTR_TEXT("FEW", "POCOS", "PEU", "POCHE", "POUCOS"), CTR_TEXT("SOME", "ALGUNOS", "MOYEN", "ALCUNE", "ALGUNS"), CTR_TEXT("MANY", "MUCHOS", "BEAUCOUP", "MOLTE", "MUITOS")};
 #if CTR_CHEATS_MENU
-static const char *const sEncounterRate[] = {CTR_TEXT("NORMAL", "NORMAL", "NORMAL", "NORMALE"), CTR_TEXT("OFF", "NO", "NON", "NO"), "1/4", "1/2", "2X"};
-static const char *const sShinyOdds[] = {"1/8192", "1/4096", "1/1024", "1/256", "1/64", CTR_TEXT("ALWAYS", "SIEMPRE", "TOUJOURS", "SEMPRE")};
+static const char *const sEncounterRate[] = {CTR_TEXT("NORMAL", "NORMAL", "NORMAL", "NORMALE", "NORMAL"), CTR_TEXT("OFF", "NO", "NON", "NO", "NENHUM"), "1/4", "1/2", "2X"};
+static const char *const sShinyOdds[] = {"1/8192", "1/4096", "1/1024", "1/256", "1/64", CTR_TEXT("ALWAYS", "SIEMPRE", "TOUJOURS", "SEMPRE", "SEMPRE")};
 #endif
 /* The voxel world per eye with the 3D slider (3ds_video.c): AUTO is on a
  * New 3DS only (the second pass costs an Old 3DS the frame), and how deep
@@ -49,13 +60,13 @@ static const char *const sShinyOdds[] = {"1/8192", "1/4096", "1/1024", "1/256", 
  * only with the voxel overworld on: a build without it has no cells for
  * them, and with it off they are greyed (CtrExtras_NeedsVoxel). */
 #if CTR_VOXEL_ENABLED
-static const char *const sVoxelStereo[] = {CTR_TEXT("AUTO", "AUTO", "AUTO", "AUTO"), CTR_TEXT("ON", "SÍ", "OUI", "SÌ"), CTR_TEXT("OFF", "NO", "NON", "NO")};
+static const char *const sVoxelStereo[] = {CTR_TEXT("AUTO", "AUTO", "AUTO", "AUTO", "AUTO"), CTR_TEXT("ON", "SÍ", "OUI", "SÌ", "SIM"), CTR_TEXT("OFF", "NO", "NON", "NO", "NENHUM")};
 static const char *const sVoxelDepths[] = {"25%", "50%", "75%", "100%", "125%", "150%", "200%"};
 #endif
 /* The 3D depths as a whole (the scenery, the two sides, the planes) that
  * the battle, the editor, the Pokédex and the voting view all take: one of
  * four presets (3ds_stereo_mon.h CtrStereoDepths, numbered as listed here). */
-static const char *const sDepthPresets[] = {CTR_TEXT("GENTLE", "SUAVE", "DOUX", "LEGGERO"), CTR_TEXT("STANDARD", "ESTÁNDAR", "STANDARD", "STANDARD"), CTR_TEXT("CLOSE", "CERCA", "PROCHE", "VICINO"), CTR_TEXT("DEEP", "PROFUNDO", "PROFOND", "PROFONDO")};
+static const char *const sDepthPresets[] = {CTR_TEXT("GENTLE", "SUAVE", "DOUX", "LEGGERO", "GENTLE"), CTR_TEXT("STANDARD", "ESTÁNDAR", "STANDARD", "STANDARD", "STANDARD"), CTR_TEXT("CLOSE", "CERCA", "PROCHE", "VICINO", "CLOSE"), CTR_TEXT("DEEP", "PROFUNDO", "PROFOND", "PROFONDO", "DEEP")};
 /* The plane editor's tune (3ds_stereo_mon_game.c EditorMusic): the Pokémon
  * Center's as before, the place's own left playing, none, or a town's or
  * route's. A tester missed drawing to Dewford's. sEditorSongs runs with
@@ -134,13 +145,13 @@ static void CompleteNationalDex(void)
     PlaySE(SE_SUCCESS);
 }
 
-static const char *const sDexDone[] = {CTR_TEXT("TAP TO SET", "TOCA PARA ACTIVAR", "ACTIVER", "ATTIVA")};
+static const char *const sDexDone[] = {CTR_TEXT("TAP TO SET", "TOCA PARA ACTIVAR", "ACTIVER", "ATTIVA", "TOQUE P/ ATIVAR")};
 /*
  * Give items (CHEATS): a pocket, an item of it, a count, and GIVE puts them in
  * the bag (OPTIONS is only open in the field). The item steps through the
  * pocket's items in the game's order, skipping unused ids.
  */
-static const char *const sGivePockets[] = {CTR_TEXT("ITEMS", "OBJETOS", "OBJETS", "OGGETTI"), CTR_TEXT("POKE BALLS", "POKé BALLS", "POKÉ BALLS", "POKé BALL"), CTR_TEXT("TMS & HMS", "MT Y MO", "CT ET CS", "MT E MN"), CTR_TEXT("BERRIES", "BAYAS", "BAIES", "BACCHE"), CTR_TEXT("KEY ITEMS", "OBJ. CLAVE", "OBJ. RARES", "STRUM. BASE")};
+static const char *const sGivePockets[] = {CTR_TEXT("ITEMS", "OBJETOS", "OBJETS", "OGGETTI", "ITENS"), CTR_TEXT("POKE BALLS", "POKé BALLS", "POKÉ BALLS", "POKé BALL", "POKé BOLAS"), CTR_TEXT("TMS & HMS", "MT Y MO", "CT ET CS", "MT E MN", "MTs E MOs"), CTR_TEXT("BERRIES", "BAYAS", "BAIES", "BACCHE", "FRUTAS"), CTR_TEXT("KEY ITEMS", "OBJ. CLAVE", "OBJ. RARES", "STRUM. BASE", "ITENS CHAVE")};
 static const char *const sGiveCounts[] = {"1", "5", "10", "50", "99"};
 static const u8 sGiveCountValues[] = {1, 5, 10, 50, 99};
 
@@ -218,9 +229,9 @@ static void GiveItemsNow(void)
         PlaySE(SE_FAILURE);
 }
 
-static const char *const sGiveText[] = {CTR_TEXT("TAP TO GIVE", "TOCA PARA DAR", "DONNER", "DAI")};
-static const char *const sGiveOpenText[] = {CTR_TEXT("TAP TO OPEN", "TOCA PARA ABRIR", "OUVRIR", "APRI")};
-static const char *const sGiveBackText[] = {CTR_TEXT("BACK TO CHEATS", "VOLVER A TRUCOS", "RETOUR", "INDIETRO")};
+static const char *const sGiveText[] = {CTR_TEXT("TAP TO GIVE", "TOCA PARA DAR", "DONNER", "DAI", "TOQUE P/ DAR")};
+static const char *const sGiveOpenText[] = {CTR_TEXT("TAP TO OPEN", "TOCA PARA ABRIR", "OUVRIR", "APRI", "TOQUE P/ ABRIR")};
+static const char *const sGiveBackText[] = {CTR_TEXT("BACK TO CHEATS", "VOLVER A TRUCOS", "RETOUR", "INDIETRO", "VOLTAR")};
 
 /* The cells have a screen of their own, opened from the first. */
 static void GiveOpen(void)
@@ -298,7 +309,7 @@ static const u8 *OnlineLinkText(void)
     char text[32];
 
     if (!CtrOnline_Linked())
-        return OnlineGame(CTR_TEXT("TAP TO LINK", "TOCA PARA ENLAZAR", "LIER", "COLLEGA"));
+        return OnlineGame(CTR_TEXT("TAP TO LINK", "TOCA PARA ENLAZAR", "LIER", "COLLEGA", "TAP TO LINK"));
     snprintf(text, sizeof(text), "%s", CtrOnline_User());
     for (char *c = text; *c; ++c)
         if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 'a' + 'A');
@@ -314,7 +325,7 @@ static void OnlineUnlink(void)
 
 static const u8 *OnlineUnlinkText(void)
 {
-    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO UNLINK", "TOCA", "DÉLIER", "SCOLLEGA") : "-");
+    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO UNLINK", "TOCA", "DÉLIER", "SCOLLEGA", "TAP TO UNLINK") : "-");
 }
 
 static void OnlineUploadAll(void)
@@ -329,12 +340,12 @@ static void OnlineSync(void)
 
 static const u8 *OnlineSendText(void)
 {
-    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO SEND", "TOCA PARA ENVIAR", "ENVOYER", "INVIA") : "-");
+    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO SEND", "TOCA PARA ENVIAR", "ENVOYER", "INVIA", "TAP TO SEND") : "-");
 }
 
 static const u8 *OnlineSyncText(void)
 {
-    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO FETCH", "TOCA PARA BAJAR", "RECEVOIR", "RICEVI") : "-");
+    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO FETCH", "TOCA PARA BAJAR", "RECEVOIR", "RICEVI", "TAP TO FETCH") : "-");
 }
 
 static const u8 *OnlineStatusText(void)
@@ -378,8 +389,8 @@ static void OnlineStandard(void)
 
 static const u8 *OnlineStandardText(void)
 {
-    return OnlineGame(CtrOnline_ServerIsStandard() ? CTR_TEXT("IN USE", "EN USO", "UTILISE", "IN USO")
-                                                   : CTR_TEXT("TAP TO USE", "TOCA PARA USAR", "UTILISER", "USA"));
+    return OnlineGame(CtrOnline_ServerIsStandard() ? CTR_TEXT("IN USE", "EN USO", "UTILISE", "IN USO", "IN USE")
+                                                   : CTR_TEXT("TAP TO USE", "TOCA PARA USAR", "UTILISER", "USA", "TAP TO USE"));
 }
 
 static void OnlineTest(void)
@@ -389,7 +400,7 @@ static void OnlineTest(void)
 
 static const u8 *OnlineTestText(void)
 {
-    return OnlineGame(CTR_TEXT("TAP TO CHECK", "TOCA PARA PROBAR", "VERIFIER", "VERIFICA"));
+    return OnlineGame(CTR_TEXT("TAP TO CHECK", "TOCA PARA PROBAR", "VERIFIER", "VERIFICA", "TAP TO CHECK"));
 }
 
 /* The status row's refresh button: fetch what is new on the server. */
@@ -412,7 +423,7 @@ static const u8 *OnlineNameText(void)
 {
     const char *name = CtrStereoMon_Author();
 
-    return OnlineGame(name[0] ? name : CTR_TEXT("TAP TO SET", "TOCA", "CHOISIR", "SCEGLI"));
+    return OnlineGame(name[0] ? name : CTR_TEXT("TAP TO SET", "TOCA", "CHOISIR", "SCEGLI", "TAP TO SET"));
 }
 
 /* NEW FROM SERVER: the editor on what the last sync brought, its chooser
@@ -439,8 +450,8 @@ static const u8 *OnlineNewText(void)
     char text[24];
     unsigned count = CtrOnline_NewIds(NULL, 0);
 
-    if (count == 0) return OnlineGame(CTR_TEXT("OPEN THE POKEDEX", "ABRIR POKEDEX", "OUVRIR POKEDEX", "APRI POKEDEX"));
-    snprintf(text, sizeof(text), CTR_TEXT("%u NEW: OPEN", "%u NUEVOS: ABRIR", "%u NOUV.: OUVRIR", "%u NUOVI: APRI"), count);
+    if (count == 0) return OnlineGame(CTR_TEXT("OPEN THE POKEDEX", "ABRIR POKEDEX", "OUVRIR POKEDEX", "APRI POKEDEX", "OPEN THE POKEDEX"));
+    snprintf(text, sizeof(text), CTR_TEXT("%u NEW: OPEN", "%u NUEVOS: ABRIR", "%u NOUV.: OUVRIR", "%u NUOVI: APRI", "%u NEW: OPEN"), count);
     return OnlineGame(text);
 }
 
@@ -448,85 +459,93 @@ const CtrExtra gCtrExtras[] =
 {
     /* Features add their lines here. */
 #if CTR_VOXEL_ENABLED
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D WORLD", "MUNDO 3D", "MONDE 3D", "MONDO 3D"), "voxel_stereo", 3, 0, sVoxelStereo, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D DEPTH", "PROFUNDIDAD 3D", "PROFONDEUR 3D", "PROFOND. 3D"), "voxel_depth", 7, 3, sVoxelDepths, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D WORLD", "MUNDO 3D", "MONDE 3D", "MONDO 3D", "MUNDO 3D"), "voxel_stereo", 3, 0, sVoxelStereo, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D DEPTH", "PROFUNDIDAD 3D", "PROFONDEUR 3D", "PROFOND. 3D", "PROFUNDIDADE 3D"), "voxel_depth", 7, 3, sVoxelDepths, NULL, NULL, NULL},
 #endif
     /* The battle's Pokémon as their depth planes (3ds_stereo_battle.c);
      * the key is read natively, so its fallback is ON there too. */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D BATTLE MONS", "POKÉMON 3D", "POKÉMON 3D", "POKÉMON 3D"), "battle_mon_3d", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL, PlanesShown},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D BATTLE MONS", "POKÉMON 3D", "POKÉMON 3D", "POKÉMON 3D", "3D BATTLE MONS"), "battle_mon_3d", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL, PlanesShown},
     /* The 3D depths, read natively each frame (CtrStereoDepths). */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D PRESET", "PERFIL 3D", "PROFIL 3D", "PROFILO 3D"), CTR_DEPTH_PRESET_KEY, CTR_DEPTH_PRESETS, CTR_DEPTH_PRESET_STANDARD, sDepthPresets, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("3D PRESET", "PERFIL 3D", "PROFIL 3D", "PROFILO 3D", "3D PRESET"), CTR_DEPTH_PRESET_KEY, CTR_DEPTH_PRESETS, CTR_DEPTH_PRESET_STANDARD, sDepthPresets, NULL, NULL, NULL},
     /* The plane editor's and sharing's switches (read by 3ds_stereo_edit.c
      * and 3ds_stereo_mon_game.c): a sync that brings pictures opens the
      * Pokédex on them; FINAL uploads; the editor's controls on its top screen. */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("OPEN NEW ONES", "ABRIR NUEVOS", "OUVRIR NOUV.", "APRI NUOVI"), "online_open_new", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO"), "online_auto", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("EDITOR CONTROLS", "CONTROLES EDITOR", "COMMANDES ÉDIT.", "COMANDI EDITOR"), "edit_controls", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("EDITOR MUSIC", "MÚSICA EDITOR", "MUSIQUE ÉDIT.", "MUSICA EDITOR"), CTR_EDITOR_MUSIC_KEY, EDITOR_SONGS, 0, sEditorMusic, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("SPEED", "VELOC. JUEGO", "VITESSE", "VELOCITÀ"), "speed", 0, 0, NULL, NULL, SpeedStep, SpeedText},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("OPEN NEW ONES", "ABRIR NUEVOS", "OUVRIR NOUV.", "APRI NUOVI", "OPEN NEW ONES"), "online_open_new", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("UPLOAD ON FINAL", "SUBIR AL ACABAR", "ENVOI SI FINI", "INVIA SE FINITO", "UPLOAD ON FINAL"), "online_auto", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("EDITOR CONTROLS", "CONTROLES EDITOR", "COMMANDES ÉDIT.", "COMANDI EDITOR", "EDITOR CONTROLS"), "edit_controls", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_OPTIONS, 1), CTR_TEXT("EDITOR MUSIC", "MÚSICA EDITOR", "MUSIQUE ÉDIT.", "MUSICA EDITOR", "EDITOR MUSIC"), CTR_EDITOR_MUSIC_KEY, EDITOR_SONGS, 0, sEditorMusic, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("SPEED", "VELOC. JUEGO", "VITESSE", "VELOCITÀ", "VELOCIDADE"), "speed", 0, 0, NULL, NULL, SpeedStep, SpeedText},
     /* The game and the music keep real time on a slow frame; the sound
      * engine mixes on the DSP's clock (3ds_platform.c, 3ds_audio.c). */
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("REAL-TIME PACING", "RITMO REAL", "RYTHME RÉEL", "RITMO REALE"), "audio_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("EXP FOR CATCHING", "EXP AL CAPTURAR", "EXP. CAPTURE", "ESP. CATTURA"), "exp_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PARTY EXP SHARE", "EXP TODO EQUIPO", "MULTI EXP.", "CONDIV. ESP."), "exp_share", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("TRADE EVO LV. 40", "EVOL. INTERC. N40", "ÉVOL. NIV. 40", "SCAMBIO LIV. 40"), "trade_evo", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("HMS WITHOUT MOVE", "MO SIN APRENDER", "CS SANS CAP.", "MN SENZA MOSSA"), "field_hms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("VISIBLE WILD", "SALVAJES VISIBLES", "SAUV. VISIBLES", "SELV. VISIBILI"), "visible_wild", 4, 0, sVisibleWild, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("IVS AND EVS", "IV Y EV", "IV ET EV", "IV ED EV"), "ivs_evs", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("REPEL PROMPT", "AVISO REPELENTE", "RAPPEL REPOUSSE", "AVVISO REPELL."), "repel_prompt", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("INFINITE TMS", "MT INFINITAS", "CT INFINIES", "MT INFINITE"), "infinite_tms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("RUN INDOORS", "CORRER DENTRO", "COURSE INTÉR.", "CORRI DENTRO"), "run_indoors", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("REAL-TIME PACING", "RITMO REAL", "RYTHME RÉEL", "RITMO REALE", "RITMO REAL"), "audio_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("EXP FOR CATCHING", "EXP AL CAPTURAR", "EXP. CAPTURE", "ESP. CATTURA", "EXP. POR CAPTURA"), "exp_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PARTY EXP SHARE", "EXP TODO EQUIPO", "MULTI EXP.", "CONDIV. ESP.", "EXP. PARA EQUIPE"), "exp_share", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("TRADE EVO LV. 40", "EVOL. INTERC. N40", "ÉVOL. NIV. 40", "SCAMBIO LIV. 40", "EVO. TROCA NV. 40"), "trade_evo", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("HMS WITHOUT MOVE", "MO SIN APRENDER", "CS SANS CAP.", "MN SENZA MOSSA", "MOS SEM GOLPE"), "field_hms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("VISIBLE WILD", "SALVAJES VISIBLES", "SAUV. VISIBLES", "SELV. VISIBILI", "SELVAGEM VISÍVEL"), "visible_wild", 4, 0, sVisibleWild, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("IVS AND EVS", "IV Y EV", "IV ET EV", "IV ED EV", "IVS E EVS"), "ivs_evs", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("REPEL PROMPT", "AVISO REPELENTE", "RAPPEL REPOUSSE", "AVVISO REPELL.", "AVISO REPELENTE"), "repel_prompt", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("INFINITE TMS", "MT INFINITAS", "CT INFINIES", "MT INFINITE", "MTS INFINITAS"), "infinite_tms", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("RUN INDOORS", "CORRER DENTRO", "COURSE INTÉR.", "CORRI DENTRO", "CORRER DENTRO"), "run_indoors", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
     /* Moves physical or special by their own category, as from Gen IV on
      * (pokemon.c, MoveSplitEnabled). */
-    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PHYS/SPEC SPLIT", "FÍSICO / ESPECIAL", "PHYS./SPÉC.", "FIS./SPEC."), "move_split", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_ENHANCEMENTS, CTR_TEXT("PHYS/SPEC SPLIT", "FÍSICO / ESPECIAL", "PHYS./SPÉC.", "FIS./SPEC.", "FÍS./ESP."), "move_split", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
 #if CTR_CHEATS_MENU
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("WILD ENCOUNTERS", "ENC. SALVAJES", "RENCONTRES", "INCONTRI"), "encounter_rate", 5, 0, sEncounterRate, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("SHINY ODDS", "PROB. VARIOCOLOR", "CHROMATIQUES", "PROB. SHINY"), "shiny_odds", 6, 0, sShinyOdds, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("WILD ENCOUNTERS", "ENC. SALVAJES", "RENCONTRES", "INCONTRI", "ENCONTROS SELV."), "encounter_rate", 5, 0, sEncounterRate, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("SHINY ODDS", "PROB. VARIOCOLOR", "CHROMATIQUES", "PROB. SHINY", "CHANCE SHINY"), "shiny_odds", 6, 0, sShinyOdds, NULL, NULL, NULL},
     /* Only wild Pokémon with depth planes, to try the 3D battle anywhere
      * (CtrStereoMonGame_WildSpecies). */
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("3D WILD ONLY", "SOLO SALVAJES 3D", "SAUVAGES 3D", "SOLO SELV. 3D"), "wild_3d", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL, PlanesShown},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("ALWAYS CATCH", "CAPTURA SEGURA", "CAPTURE SÛRE", "CATTURA SICURA"), "always_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("INSTANT VICTORY", "VICTORIA INSTANT.", "VICTOIRE IMM.", "VITT. IMM."), "instant_victory", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("FAST EGGS", "HUEVOS RÁPIDOS", "OEUFS RAPIDES", "UOVA VELOCI"), "fast_eggs", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("INFINITE MONEY", "DINERO INFINITO", "ARGENT INFINI", "SOLDI INFINITI"), "infinite_money", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("HOENN DEX FULL", "DEX HOENN LLENA", "DEX HOENN PLEIN", "DEX HOENN PIENO"), "dex_hoenn", 0, 0, sDexDone, CompleteHoennDex, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("NATIONAL DEX ON", "DEX NACIONAL ACT.", "DEX NAT. ACTIF", "DEX NAZ. ATTIVO"), "dex_national_on", 0, 0, sDexDone, UnlockNationalDex, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("NATIONAL DEX FULL", "DEX NACIONAL LLENA", "DEX NAT. PLEIN", "DEX NAZ. PIENO"), "dex_national", 0, 0, sDexDone, CompleteNationalDex, NULL, NULL},
-    {CTR_EXTRAS_CHEATS, CTR_TEXT("GIVE ITEMS", "DAR OBJETOS", "DONNER OBJETS", "DAI OGGETTI"), "give_open", 0, 0, sGiveOpenText, GiveOpen, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE ITEMS", "DAR OBJETOS", "DONNER OBJETS", "DAI OGGETTI"), "give_back", 0, 0, sGiveBackText, GiveBack, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("POCKET", "BOLSILLO", "POCHE", "TASCA"), "give_pocket", 5, 0, sGivePockets, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("ITEM", "OBJETO", "OBJET", "OGGETTO"), "give_item", 0, 0, NULL, NULL, GiveItemStep, GiveItemText},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("HOW MANY", "CANTIDAD", "QUANTITÉ", "QUANTI"), "give_count", 5, 0, sGiveCounts, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE", "DAR", "DONNER", "DAI"), "give_now", 0, 0, sGiveText, GiveItemsNow, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("3D WILD ONLY", "SOLO SALVAJES 3D", "SAUVAGES 3D", "SOLO SELV. 3D", "SO SELV. 3D"), "wild_3d", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL, PlanesShown},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("ALWAYS CATCH", "CAPTURA SEGURA", "CAPTURE SÛRE", "CATTURA SICURA", "CAPTURA GARANTIDA"), "always_catch", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("INSTANT VICTORY", "VICTORIA INSTANT.", "VICTOIRE IMM.", "VITT. IMM.", "VITÓRIA IMEDIATA"), "instant_victory", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("FAST EGGS", "HUEVOS RÁPIDOS", "OEUFS RAPIDES", "UOVA VELOCI", "OVOS RÁPIDOS"), "fast_eggs", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("INFINITE MONEY", "DINERO INFINITO", "ARGENT INFINI", "SOLDI INFINITI", "DINHEIRO INFINITO"), "infinite_money", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("HOENN DEX FULL", "DEX HOENN LLENA", "DEX HOENN PLEIN", "DEX HOENN PIENO", "DEX HOENN COMPL."), "dex_hoenn", 0, 0, sDexDone, CompleteHoennDex, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("NATIONAL DEX ON", "DEX NACIONAL ACT.", "DEX NAT. ACTIF", "DEX NAZ. ATTIVO", "ATIVAR DEX NAC."), "dex_national_on", 0, 0, sDexDone, UnlockNationalDex, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("NATIONAL DEX FULL", "DEX NACIONAL LLENA", "DEX NAT. PLEIN", "DEX NAZ. PIENO", "DEX NAC. COMPLETA"), "dex_national", 0, 0, sDexDone, CompleteNationalDex, NULL, NULL},
+    {CTR_EXTRAS_CHEATS, CTR_TEXT("GIVE ITEMS", "DAR OBJETOS", "DONNER OBJETS", "DAI OGGETTI", "DAR ITENS"), "give_open", 0, 0, sGiveOpenText, GiveOpen, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE ITEMS", "DAR OBJETOS", "DONNER OBJETS", "DAI OGGETTI", "DAR ITENS"), "give_back", 0, 0, sGiveBackText, GiveBack, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("POCKET", "BOLSILLO", "POCHE", "TASCA", "BOLSO"), "give_pocket", 5, 0, sGivePockets, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("ITEM", "OBJETO", "OBJET", "OGGETTO", "ITEM"), "give_item", 0, 0, NULL, NULL, GiveItemStep, GiveItemText},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("HOW MANY", "CANTIDAD", "QUANTITÉ", "QUANTI", "QUANTIDADE"), "give_count", 5, 0, sGiveCounts, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_CHEATS, 1), CTR_TEXT("GIVE", "DAR", "DONNER", "DAI", "DAR"), "give_now", 0, 0, sGiveText, GiveItemsNow, NULL, NULL},
 #endif
     /* The clock (3ds_daynight.c): outdoor light by the hour, its speed, the
      * wild Pokémon of the hour (3ds_encounters.c) and the bottom screen's
      * clock. ENHANCEMENTS is full, twelve cells a screen: its second. */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("DAY / NIGHT", "DÍA / NOCHE", "JOUR / NUIT", "GIORNO / NOTTE"), "day_night", 2, 0, sDayNight, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("CLOCK SPEED", "VELOC. RELOJ", "VITESSE HORLOGE", "VELOC. OROLOGIO"), "clock_speed", CTR_DAYNIGHT_SPEED_COUNT, 0, sClockSpeeds, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("WILD POKEMON", "POKéMON SALV.", "POKÉMON SAUV.", "POKéMON SELV."), "timed_encounters", 2, 0, sTimedEncounters, NULL, NULL, NULL},
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SHOW CLOCK", "VER RELOJ", "VOIR HORLOGE", "MOSTRA OROLOGIO"), "show_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("DAY / NIGHT", "DÍA / NOCHE", "JOUR / NUIT", "GIORNO / NOTTE", "DIA / NOITE"), "day_night", 2, 0, sDayNight, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("CLOCK SPEED", "VELOC. RELOJ", "VITESSE HORLOGE", "VELOC. OROLOGIO", "VELOC. RELÓGIO"), "clock_speed", CTR_DAYNIGHT_SPEED_COUNT, 0, sClockSpeeds, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SYNC CLOCK", "SINCR. RELOJ", "SYNCHRO HORLOGE", "SINCR. OROLOGIO", "SINCR. RELÓGIO"), "clock_sync", 0, 0, sClockSync, SyncClock, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("WILD POKEMON", "POKéMON SALV.", "POKÉMON SAUV.", "POKéMON SELV.", "POKéMON SELV."), "timed_encounters", 2, 0, sTimedEncounters, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SHOW CLOCK", "VER RELOJ", "VOIR HORLOGE", "MOSTRA OROLOGIO", "MOSTRAR RELÓGIO"), "show_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
     /* Sharing the plane editor's edits (3ds_online.c): the third tab, only
      * to load what is new and to send what is done (voting is in the
      * editor's Pokédex). The status takes the first row whole (with the
      * pictures the last sync brought; 3ds_bottom_ui.c); gaps keep the
      * cells in two short columns. */
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("LOAD NEW ONES", "BAJAR NUEVOS", "CHARGER NOUV.", "SCARICA NUOVI"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("SEE AND VOTE", "VER Y VOTAR", "VOIR, VOTER", "VEDI E VOTA"), "online_new", 0, 0, NULL, OnlineOpenNew, NULL, OnlineNewText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO", "STATUS"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("LOAD NEW ONES", "BAJAR NUEVOS", "CHARGER NOUV.", "SCARICA NUOVI", "LOAD NEW ONES"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("SEE AND VOTE", "VER Y VOTAR", "VOIR, VOTER", "VEDI E VOTA", "SEE AND VOTE"), "online_new", 0, 0, NULL, OnlineOpenNew, NULL, OnlineNewText},
     /* The server: poke.cloudnoud.nl unless another is typed (3ds_online.c). */
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("SERVER", "SERVIDOR", "SERVEUR", "SERVER"), "online_server", 0, 0, NULL, OnlineServer, NULL, OnlineServerText},
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("STANDARD SERVER", "SERVIDOR NORMAL", "SERVEUR NORMAL", "SERVER NORMALE"), "online_standard", 0, 0, NULL, OnlineStandard, NULL, OnlineStandardText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("SERVER", "SERVIDOR", "SERVEUR", "SERVER", "SERVER"), "online_server", 0, 0, NULL, OnlineServer, NULL, OnlineServerText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("STANDARD SERVER", "SERVIDOR NORMAL", "SERVEUR NORMAL", "SERVER NORMALE", "STANDARD SERVER"), "online_standard", 0, 0, NULL, OnlineStandard, NULL, OnlineStandardText},
     /* The server checked as tools/tlsprobe does; the status row shows how. */
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("TEST SERVER", "PROBAR SERVIDOR", "TESTER SERVEUR", "PROVA SERVER"), "online_test", 0, 0, NULL, OnlineTest, NULL, OnlineTestText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("TEST SERVER", "PROBAR SERVIDOR", "TESTER SERVEUR", "PROVA SERVER", "TEST SERVER"), "online_test", 0, 0, NULL, OnlineTest, NULL, OnlineTestText},
     {CTR_EXTRAS_ONLINE, "", CTR_EXTRAS_GAP_KEY, 0, 0, NULL, NULL, NULL, NULL},
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("YOUR NAME", "TU NOMBRE", "TON NOM", "IL TUO NOME"), "online_name", 0, 0, NULL, OnlineName, NULL, OnlineNameText},
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("UNLINK", "DESENLAZAR", "DÉLIER", "SCOLLEGA"), "online_unlink", 0, 0, NULL, OnlineUnlink, NULL, OnlineUnlinkText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("YOUR NAME", "TU NOMBRE", "TON NOM", "IL TUO NOME", "YOUR NAME"), "online_name", 0, 0, NULL, OnlineName, NULL, OnlineNameText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("UPLOAD ALL EDITS", "SUBIR EDICIONES", "ENVOYER TOUT", "INVIA TUTTO", "UPLOAD ALL EDITS"), "online_upload", 0, 0, NULL, OnlineUploadAll, NULL, OnlineSendText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("LINK CONSOLE", "ENLAZAR CONSOLA", "LIER CONSOLE", "COLLEGA CONSOLE", "LINK CONSOLE"), "online_link", 0, 0, NULL, OnlineLink, NULL, OnlineLinkText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("UNLINK", "DESENLAZAR", "DÉLIER", "SCOLLEGA", "UNLINK"), "online_unlink", 0, 0, NULL, OnlineUnlink, NULL, OnlineUnlinkText},
     /* The lead Pokémon walking behind the player, on HGSS's sprites from the
      * data pack (src/follower_mon.c). */
-    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("FOLLOWER", "ACOMPAÑANTE", "COMPAGNON", "COMPAGNO"), "follower", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    /* The party menu, the bag, the trainer card and the Pokédex as the game
+     * draws them, in a window of the bottom screen, instead of the bottom
+     * screen's own (3ds_bottom_game.inc). */
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("CLASSIC MENUS", "MENÚS CLÁSICOS", "MENUS CLASSIQ.", "MENU CLASSICI", "MENUS CLÁSSICOS"), "classic_menus", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("FOLLOWER", "ACOMPAÑANTE", "COMPAGNON", "COMPAGNO", "COMPANHEIRO"), "follower", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+#include "3ds_nuzlocke_extras.inc"
+#include "3ds_randomizer_extras.inc"
+    #include "3ds_field_qol_extras.inc"
     {0},
 };
 

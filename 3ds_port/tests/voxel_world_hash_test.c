@@ -1,6 +1,9 @@
 /* Include the real world implementation so fixtures can arrange overlapping
  * instances and compare its batched hash with its scalar raw-block reader. */
 #include <assert.h>
+#include <stdint.h>
+/* field_camera.h declares it for the 3DS build only (PLATFORM_3DS). */
+uint32_t GetMapClosedEdges(void);
 #include "../src/voxel/voxel_world.c"
 
 struct MapHeader gMapHeader;
@@ -51,6 +54,7 @@ int VoxelTree_GroundMetatile(const void *secondaryTileset, int metatileId)
 bool VoxelRelief_IsDrawn(const VoxelMapInstance *inst) { (void)inst; return false; }
 const u16 *MapGridGetCameraBorderAt(int x, int y, u8 *index)
 { (void)x; (void)y; *index = 0; return NULL; }
+u32 GetMapClosedEdges(void) { return 0; }
 
 static void Check(int x0, int y0, int x1, int y1)
 {

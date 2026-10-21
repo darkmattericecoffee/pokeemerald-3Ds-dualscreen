@@ -426,6 +426,9 @@ static u8 *ReadPayload(u32 idx)
 /* Under sLock. */
 static void Publish(u32 idx, u8 *buffer)
 {
+    /* Graphics with English words, redrawn for a translated build. Here,
+     * where the demand read, the warm-up worker and the prefetch all pass. */
+    Port_TransformAsset(GetAssetPathByIndex(idx), buffer, sEntries[idx].size);
     sPayloads[idx].data = buffer;
     sPayloads[idx].size = sEntries[idx].size;
     sPayloads[idx].stamp = sStamp;
@@ -997,6 +1000,30 @@ static const void *ResolveLoaded(s32 idx, u32 offset, const void *fallback)
         return fallback;
     }
     return data + offset;
+}
+
+/*
+ * A graphic the game has just decompressed (LZ77UnCompWram/Vram, bios.c),
+ * named by the asset its compressed data came from without the ".lz": the
+ * Portuguese build redraws the English words in it (3ds_icons_ptbr.c).
+ */
+void Port_TransformDecompressed(const void *source, void *data, unsigned size)
+{
+    char plain[128];
+    const char *path;
+    size_t n;
+    u32 offset = 0;
+    s32 idx = FindAssetIndexForPointer((u32)source, &offset);
+
+    if (idx < 0 || offset != 0 || data == NULL)
+        return;
+    path = GetAssetPathByIndex((u32)idx);
+    n = strlen(path);
+    if (n <= 3 || n - 3 >= sizeof(plain) || strcmp(path + n - 3, ".lz") != 0)
+        return;
+    memcpy(plain, path, n - 3);
+    plain[n - 3] = '\0';
+    Port_TransformAsset(plain, data, size);
 }
 
 const void *Port_ResolveAssetPointer(const void *ptr)

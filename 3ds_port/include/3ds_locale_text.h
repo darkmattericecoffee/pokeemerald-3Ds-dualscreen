@@ -70,6 +70,12 @@ static inline uint8_t CtrLocale_Glyph(uint32_t c)
     case 0xdc: return 0xF3;
     case 0xa1: return 0x52;
     case 0xbf: return 0x51;
+    /* Ã Õ ã õ: the codes the Portuguese build gives them (patch 0057) and
+     * draws in every font (3ds_compat.c). */
+    case 0xc3: return 0x2F;
+    case 0xd5: return 0x30;
+    case 0xe3: return 0x31;
+    case 0xf5: return 0x32;
     default: return 0xAC;
     }
 }

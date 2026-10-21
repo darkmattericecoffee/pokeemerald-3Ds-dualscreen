@@ -69,6 +69,8 @@ FULL_DATA_OBJS += build/root/3ds_song_blob.o
 BACKEND_SRCS := src/3ds_assets.c src/3ds_map_loader.c src/3ds_compat.c
 BACKEND_SRCS += src/3ds_game_full.c src/3ds_game_bridge.c src/3ds_script_loader.c
 BACKEND_SRCS += src/3ds_bottom_ui.c
+# The Pokédex on the top screen: which Pokémon, its picture and terrain.
+BACKEND_SRCS += src/3ds_dex_top_game.c
 # The battle's info boxes at the screen's resolution (3ds_battle_hud.h).
 BACKEND_SRCS += src/3ds_battle_hud.c
 build/bridge/3ds_bottom_ui.o: FULLCFLAGS += -DCTR_APP_VERSION='"$(APP_VERSION)"'
@@ -78,10 +80,15 @@ BACKEND_SRCS += src/3ds_extras.c
 BACKEND_SRCS += src/3ds_stereo_mon_game.c
 # The plane editor, the viewer's bottom screen (include/3ds_stereo_mon.h).
 BACKEND_SRCS += src/3ds_stereo_edit.c
+# The optional Nuzlocke tracker's game side: save hooks and its OPTIONS cells
+# (include/3ds_nuzlocke.h, include/3ds_nuzlocke_ui.h).
+BACKEND_SRCS += src/3ds_nuzlocke_game.c
 # Local wireless play: the emulated Wireless Adapter the game's link code
 # talks to (its radio is src/3ds_local.c).
 BACKEND_SRCS += src/3ds_rfu_adapter.c
 BACKEND_SRCS += src/3ds_encounter_tables.c
+# The seeded species randomizer, off by default (include/3ds_randomizer.h).
+BACKEND_SRCS += src/3ds_randomizer.c src/3ds_randomizer_core.c
 # The frame profiler times the engine's own routines through linker wrappers.
 BACKEND_SRCS += src/3ds_prof_wrap.c
 PROF_WRAPPED := RunTasks AnimateSprites BuildOamBuffer ProcessDma3Requests \
@@ -121,7 +128,8 @@ VOXEL_GAME_SRCS := src/voxel/voxel_world.c src/voxel/voxel_camera.c \
 	src/voxel/voxel_atlas.c src/voxel/voxel_mesh_builder.c src/voxel/voxel_entities.c \
 	src/voxel/voxel_regions.c src/voxel/voxel_tree.c src/voxel/voxel_sign.c \
 	src/voxel/voxel_building.c src/voxel/voxel_relief.c \
-	src/voxel/voxel_arena.c src/voxel/voxel_grade.c src/voxel/voxel_battle.c
+	src/voxel/voxel_arena.c src/voxel/voxel_grade.c src/voxel/voxel_battle.c \
+	src/voxel/voxel_sprite_slots.c src/voxel/voxel_swoop.c
 ifeq ($(VOXEL_LIGHTING),1)
 VOXEL_GAME_SRCS += src/voxel/voxel_lighting.c
 endif
@@ -137,6 +145,8 @@ endif
 ROMFS_SHADER_OUTS += romfs/stage/leaves.bin
 # The bottom screen's battle menus: the port's own art (scripts/gen_battle_art.py).
 ROMFS_SHADER_OUTS += romfs/bottom/battle.bin
+# The bottom screen's menu backdrop: the port's own art (scripts/gen_menu_art.py).
+ROMFS_SHADER_OUTS += romfs/bottom/menu.bin
 # The battle's info boxes and text box: the port's own art (scripts/gen_battle_hud.py).
 ROMFS_SHADER_OUTS += romfs/battle/hud.bin
 # The stereoscopic Pokémon planes (scripts/gen_stereo_mons.py), from the
@@ -252,6 +262,11 @@ build/root/src/trade.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
 build/root/src/party_menu.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CENTRED_PARTY \
 	-include $(abspath compat/ctr_gba_centred.h)
 build/root/src/party_menu.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
+# The trainer card, laid out for the GBA screen: with the classic menus the
+# field's is in the bottom screen's window, a link partner's centred on top.
+build/root/src/trainer_card.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CENTRED_CARD \
+	-include $(abspath compat/ctr_gba_centred.h)
+build/root/src/trainer_card.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
 # The Pokédex as the game draws it, left of the column: its list, search,
 # entries, area, cry and size screens. pokedex.c installs their VBlank
 # callbacks.
@@ -527,6 +542,10 @@ romfs/bottom/battle.bin: scripts/gen_battle_art.py
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_battle_art.py --output $@
 
+romfs/bottom/menu.bin: scripts/gen_menu_art.py scripts/gen_battle_art.py
+	@mkdir -p $(@D)
+	"$(PYTHON)" scripts/gen_menu_art.py --output $@
+
 romfs/battle/hud.bin: scripts/gen_battle_hud.py
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_battle_hud.py --output $@
@@ -740,6 +759,13 @@ verify-voxel-interior-lint:
 	"$(PYTHON)" -B tests/voxel_interior_parts_test.py
 	"$(PYTHON)" -B tests/voxel_building_crop_test.py
 
+# The hand marks over the terraces (voxel_terraces.py "7. hand marks", the
+# editor's mountain page): the piece a level gives, the runs, the ledges.
+.PHONY: verify-voxel-terrace-marks
+verify: verify-voxel-terrace-marks
+verify-voxel-terrace-marks:
+	"$(PYTHON)" -B tests/voxel_terrace_marks_test.py
+
 .PHONY: verify-pokedex-capture verify-voxel-dewford
 verify: verify-pokedex-capture verify-voxel-dewford
 verify-pokedex-capture:
@@ -756,3 +782,12 @@ all: build/voxel_check.report
 build/voxel_check.report: romfs/voxel/buildings.bin romfs/voxel/relief.bin romfs/voxel/regions.bin 		romfs/voxel/signposts.bin scripts/voxel_engine_view.py tests/voxel_scene_dump.c 		$(wildcard src/voxel/voxel_*.c) $(wildcard src/voxel/voxel_*.h)
 	@mkdir -p $(@D)
 	@"$(PYTHON)" scripts/voxel_engine_view.py check > $@ 2>&1 		&& echo "voxel check: ok" 		|| { echo "voxel check: WARNING, see $@"; grep -E "DROPS|OVER|failed" $@ || true; }
+
+.PHONY: verify-voxel-sprite-slots
+verify: verify-voxel-sprite-slots
+verify-voxel-sprite-slots: build/voxel_sprite_slots_test.exe
+	./build/voxel_sprite_slots_test.exe
+
+build/voxel_sprite_slots_test.exe: tests/voxel_sprite_slots_test.c src/voxel/voxel_sprite_slots.c src/voxel/voxel_sprite_slots.h
+	@mkdir -p $(@D)
+	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Isrc/voxel tests/voxel_sprite_slots_test.c src/voxel/voxel_sprite_slots.c -o $@

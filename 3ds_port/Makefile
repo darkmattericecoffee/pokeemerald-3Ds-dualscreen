@@ -27,11 +27,11 @@ LIBS := -lctru -lm
 TARGET := emerald3ds
 # The editor's own release (the game's is APP_VERSION): in the Homebrew
 # Launcher's title and description, so testers see which build they run.
-EDITOR_VERSION := 0.6
+EDITOR_VERSION := 0.7
 APP_TITLE := Pokémon Emerald 3D Editor v$(EDITOR_VERSION)
 # File names of the release executable (no spaces).
 APP_FILE := Emerald3DS
-APP_DESCRIPTION := Editor v$(EDITOR_VERSION) (2026-10-20) by darkmatter: stray pixels ringed and fixed
+APP_DESCRIPTION := Editor v$(EDITOR_VERSION) (2026-10-21) by darkmatter: on the latest dev (swoop, PT-BR, Nuzlocke)
 APP_AUTHOR := Zallax
 # The release this build is, shown under the title screen (3ds_bottom_ui.c);
 # tools/build_release.py refuses a --version that differs.
@@ -47,7 +47,7 @@ HOSTCC ?= gcc
 ROOT := ..
 SCRIPTS := ../tools/port_common
 EXESUFFIX := $(if $(filter Windows_NT,$(OS)),.exe,)
-SOURCES := src/main_3ds.c src/3ds_log.c src/3ds_platform.c src/3ds_input.c src/3ds_input_decode.c src/3ds_fs.c src/3ds_audio.c
+SOURCES := src/main_3ds.c src/3ds_log.c src/3ds_platform.c src/3ds_input.c src/3ds_input_decode.c src/3ds_fs.c src/3ds_audio.c src/3ds_icons_ptbr.c
 SOURCES += src/3ds_data.c src/3ds_pak.c src/3ds_settings.c src/3ds_prof.c src/3ds_gpumem.c src/3ds_scenario.c
 SOURCES += src/3ds_video.c src/3ds_video_decode.c src/3ds_bottom_screen.c
 # The stereoscopic Pokémon viewer (include/3ds_stereo_mon.h).
@@ -58,10 +58,14 @@ SOURCES += src/3ds_online.c src/3ds_online_crypto.c
 ifdef ONLINE_SERVER
 CPPFLAGS += -DCTR_ONLINE_SERVER=\"$(ONLINE_SERVER)\"
 endif
+# The Pokédex on the top screen (include/3ds_dex_top.h).
+SOURCES += src/3ds_dex_top.c
 # Local wireless play (include/3ds_local.h).
 SOURCES += src/3ds_local.c
 SOURCES += src/3ds_daynight.c
 SOURCES += src/3ds_clock_store.c
+# The optional Nuzlocke tracker's state and save-bound record (3ds_nuzlocke_core.h).
+SOURCES += src/3ds_nuzlocke_core.c src/3ds_nuzlocke_store.c
 SOURCES += src/3ds_encounters.c
 # The part of the overworld on screen, for the map objects.
 SOURCES += src/3ds_field_view.c
@@ -121,8 +125,18 @@ endif
 ifdef TEST_EDIT
 GAMEFLAGS += -DCTR_TEST_EDIT=$(TEST_EDIT)
 endif
+# TEST_SWOOP=frame (Azahar aid for the swoop between the voxel world and the
+# 2D field, 3ds_game_full.c): from that frame on the field, the 3D option off
+# and on again, then a warp indoors and back out; with FRAME_DUMP=1 and
+# DUMP_SWOOP=1 every frame the swoop plays is written to frames.raw.
+ifdef TEST_SWOOP
+GAMEFLAGS += -DCTR_TEST_SWOOP=$(TEST_SWOOP)
+endif
 ifdef FRAME_DUMP
 CPPFLAGS += -DCTR_FRAME_DUMP=1
+ifdef DUMP_SWOOP
+CPPFLAGS += -DCTR_DUMP_SWOOP=1
+endif
 ifdef DUMP_BATTLE
 CPPFLAGS += -DCTR_DUMP_BATTLE=1 -DCTR_DUMP_FROM=$(or $(DUMP_FROM),0) -DCTR_DUMP_STEP=$(or $(DUMP_STEP),30)
 endif
@@ -137,6 +151,18 @@ endif
 endif
 CPPFLAGS += -DCTR_SHOW_FPS=$(SHOW_FPS)
 GAMEFLAGS += -DCTR_SHOW_FPS=$(SHOW_FPS)
+# The port's own interface: en follows the game's language, pt_br shows it in
+# Brazilian Portuguese over the English game (include/3ds_locale.h).
+PORT_LANG ?= en
+ifeq ($(PORT_LANG),pt_br)
+CTR_LANG_PT_BR := 1
+else ifeq ($(PORT_LANG),en)
+CTR_LANG_PT_BR := 0
+else
+$(error PORT_LANG must be en or pt_br)
+endif
+CPPFLAGS += -DCTR_LANG_PT_BR=$(CTR_LANG_PT_BR)
+GAMEFLAGS += -DCTR_LANG_PT_BR=$(CTR_LANG_PT_BR)
 CPPFLAGS += -DCTR_DATA_BACKEND=$(DATA_BACKEND)
 # Legacy code has existing warnings; platform code remains -Werror.
 GAMECFLAGS := $(filter-out -Werror,$(CFLAGS)) -fsigned-char -fno-strict-aliasing
@@ -307,10 +333,28 @@ build/input_test.exe: tests/input_test.c src/3ds_input_decode.c include/3ds_inpu
 verify: verify-video
 verify: verify-daynight
 verify: verify-clock-store
+verify: verify-nuzlocke
 verify: verify-night-windows
 verify: verify-night-lamps
 verify: verify-encounters
-verify: verify-field-view
+verify: verify-field-view verify-field-fade-hold verify-voxel-overlay-depth
+
+.PHONY: verify-field-fade-hold verify-voxel-overlay-depth
+verify-field-fade-hold:
+	"$(PYTHON)" tests/field_fade_hold_test.py --cc "$(HOSTCC)"
+
+verify-voxel-overlay-depth:
+	"$(PYTHON)" tests/voxel_overlay_depth_test.py --cc "$(HOSTCC)"
+
+.PHONY: verify-logo-ptbr
+verify: verify-logo-ptbr
+verify-logo-ptbr:
+	"$(PYTHON)" tests/logo_ptbr_test.py --cc "$(HOSTCC)"
+
+.PHONY: verify-rng-seeding
+verify: verify-rng-seeding
+verify-rng-seeding:
+	"$(PYTHON)" tests/rng_seeding_test.py --cc "$(HOSTCC)"
 .PHONY: verify-field-view
 verify-field-view: build/field_view_test$(EXESUFFIX)
 	./build/field_view_test$(EXESUFFIX)
@@ -342,6 +386,7 @@ verify-night-windows:
 
 verify-daynight: build/daynight_test.exe
 	./build/daynight_test.exe
+	"$(PYTHON)" tests/clock_sync_settings_test.py --cc "$(HOSTCC)"
 
 .PHONY: verify-clock-store
 verify-clock-store: build/clock_store_test$(EXESUFFIX)
@@ -350,6 +395,14 @@ verify-clock-store: build/clock_store_test$(EXESUFFIX)
 build/clock_store_test$(EXESUFFIX): tests/clock_store_test.c src/3ds_clock_store.c src/3ds_daynight.c src/3ds_pak.c include/3ds_clock_store.h include/3ds_daynight.h
 	@mkdir -p build
 	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Drename=CtrTestRename -Iinclude tests/clock_store_test.c src/3ds_clock_store.c src/3ds_daynight.c src/3ds_pak.c -lm -o $@
+
+.PHONY: verify-nuzlocke
+verify-nuzlocke: build/nuzlocke_test$(EXESUFFIX)
+	./build/nuzlocke_test$(EXESUFFIX)
+
+build/nuzlocke_test$(EXESUFFIX): tests/nuzlocke_test.c src/3ds_nuzlocke_core.c src/3ds_nuzlocke_store.c include/3ds_nuzlocke_core.h include/3ds_nuzlocke_store.h
+	@mkdir -p build
+	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Drename=CtrTestRename -Iinclude tests/nuzlocke_test.c src/3ds_nuzlocke_core.c src/3ds_nuzlocke_store.c -o $@
 
 build/daynight_test.exe: tests/daynight_test.c src/3ds_daynight.c include/3ds_daynight.h include/3ds_platform.h
 	@mkdir -p build
@@ -362,6 +415,21 @@ verify-video: build/video_decode_test.exe
 build/video_decode_test.exe: tests/video_decode_test.c src/3ds_video_decode.c include/3ds_video.h
 	@mkdir -p build
 	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Iinclude tests/video_decode_test.c src/3ds_video_decode.c -o $@
+
+verify: verify-randomizer
+.PHONY: verify-randomizer
+verify-randomizer: build/randomizer_test$(EXESUFFIX)
+	./build/randomizer_test$(EXESUFFIX)
+
+# Hash guards and edit positions must match the complete patched English tree.
+verify: verify-randomizer-locales
+.PHONY: verify-randomizer-locales
+verify-randomizer-locales:
+	$(PYTHON) tests/randomizer_locale_test.py --tree $(ROOT)
+
+build/randomizer_test$(EXESUFFIX): tests/randomizer_test.c src/3ds_randomizer_core.c include/3ds_randomizer.h
+	@mkdir -p build
+	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Iinclude tests/randomizer_test.c src/3ds_randomizer_core.c -o $@
 
 verify: verify-pak
 .PHONY: verify-pak

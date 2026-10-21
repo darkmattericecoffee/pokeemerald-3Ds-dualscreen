@@ -559,7 +559,11 @@ void CtrStereoMonGame_Frame(void)
     }
     else
         sOpenEditor = FALSE;
-    if (!gallery)
+    /* The game's Pokédex on the top screen is dev's 3ds_dex_top.c now; the
+     * viewer's own hologram of it stays off (VIEWER_DEX), so the two never
+     * draw at once. X on the Pokédex still opens the gallery above. */
+#define VIEWER_DEX 0
+    if (!gallery && VIEWER_DEX)
     {
         u16 dex = CtrPokedex_InfoDexNum();
 

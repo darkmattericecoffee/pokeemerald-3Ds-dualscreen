@@ -1182,7 +1182,10 @@ bool VoxelBuildings_EmitSome(VoxelBuilder *builder, const VoxelMapInstance *inst
                                              inst->originY + p[i].y + m->h - 1);
         /* A static model is drawn from its own mesh: the chunk only notes
          * where (in its own frame, as VoxelBuilder_Tri would have put it). */
-        if (m->isStatic && builder->statics != NULL && cursor->part == 0)
+        /* (not one on a map's eased rows: only its vertices are drawn
+         * longer with the ground, VoxelRelief_Stretch) */
+        if (m->isStatic && builder->statics != NULL && cursor->part == 0
+         && !(builder->stretchAdd > 0.0f && wz + builder->shift + (float)m->h > builder->stretchFrom))
         {
             if (cursor->vertex == 0 && builder->staticCount < builder->staticCapacity)
             {
@@ -1192,7 +1195,7 @@ bool VoxelBuildings_EmitSome(VoxelBuilder *builder, const VoxelMapInstance *inst
                 s->lit = builder->lighting;
                 s->x = wx - builder->originX;
                 s->y = builder->lift + builder->base;
-                s->z = wz + builder->shift - builder->originZ;
+                s->z = VoxelBuilder_StretchZ(builder, wz + builder->shift) - builder->originZ;
                 s->w = (float)m->w;
                 s->d = (float)m->h;
                 s->top = m->top;

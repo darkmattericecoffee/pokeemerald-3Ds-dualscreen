@@ -5,11 +5,15 @@
  * Layout (little endian):
  *   "VXL4", u16 layouts, u16 side (5)
  *   layouts x 14: u16 layout id, u16 cells, u16 width (bit 15: level, its
- *                 heights lift it straight up with no depth), u16 height (bit 15:
+ *                 heights lift it straight up with no depth; bit 14: wide, its
+ *                 cells' heights are s16 pixels; bits 10-13: the south
+ *                 seam's ease, 8 px a unit, see EaseAt), u16 height (bit 15:
  *                 drawn; bit 14: heights in units of 2 pixels; bits 10-13:
  *                 the belt's courses, see VoxelRelief_Belt), u32 offset,
  *                 s16 base (pixels: the level the whole map stands at)
- *   cells x (2 + 25): u8 x, u8 y, int8 heights[25] (row major, over the base)
+ *   cells x (2 + 25): u8 x, u8 y, int8 heights[25] (row major, over the base);
+ *   on a wide map x (2 + 50): u8 x, u8 y, s16 heights[25] - a mountain more
+ *   than a signed byte of 2-pixel units tall (16 levels) over its base
  *
  * then the cut tiles (see VoxelRelief_Cut): u16 variants, u16 cells;
  *   variants x 36: u16 layout drawing the tileset, u16 metatile, u16 rows[16]
@@ -22,7 +26,8 @@
  *                  u8 flags, `sides` bits 8-15 to VoxelRelief_Cut (1: all its
  *                  background is the plain ground behind it - written, no
  *                  longer read; 2: VOXEL_RELIEF_GOES_ON; 4:
- *                  VOXEL_RELIEF_BLOCK_WALLS; 8: VOXEL_RELIEF_THIN_DECK)
+ *                  VOXEL_RELIEF_BLOCK_WALLS; 8: VOXEL_RELIEF_THIN_DECK;
+ *                  32: VOXEL_RELIEF_GOES_ON_FACE)
  *   and last u32 the table's offset, "CUTS".
  *
  * A point's depth is its height ((u, h, v + h)), so the file does not carry
@@ -47,6 +52,7 @@
 #endif
 #define GRID (VOXEL_RELIEF_SIDE * VOXEL_RELIEF_SIDE)
 #define CELL_BYTES (2 + GRID)
+#define WIDE_CELL_BYTES (2 + 2 * GRID)
 #define ROW_BYTES 14
 
 /*
@@ -61,13 +67,18 @@ typedef struct
     bool drawn;            /* the relief is all of this map's terrain */
     bool level;            /* heights with no depth: lifted straight up */
     uint8_t belt;          /* courses the border stands, as drawn (0: as ever) */
+    uint8_t ease;          /* the south seam's ease, 8 px a unit (EaseAt) */
+    uint8_t easeRows;      /* the last rows it is spread over */
     const uint8_t *cells;  /* into sBlob: x, y and the stored heights */
+    uint8_t stride;        /* bytes a cell: CELL_BYTES, or WIDE_CELL_BYTES */
     int16_t *heights;      /* GRID per cell, pixels */
     /* A drawn map's surface where it stands, for the sun to be stopped by:
      * its height (pixels) every lattice step of world X and Z, not of the
      * drawing's rows - a point of the drawing lies as far south as it is
-     * high, so the table runs SURFACE_SPAN cells past the map's south edge. */
-    int8_t *surface;       /* in units of 2 pixels */
+     * high, so the table runs past the map's south edge as many cells as its
+     * highest point is tall (SURFACE_SPAN at least). */
+    int8_t *surface;       /* in units of surfaceUnit pixels */
+    uint8_t surfaceUnit;   /* 2, or 4 where 2 do not reach its top */
     uint16_t surfaceW, surfaceH;
     float top;             /* its highest point, tiles */
 } ReliefLayout;
@@ -92,6 +103,15 @@ typedef struct
 static FindMemo sFindMemo[FIND_MEMO_SIDE * FIND_MEMO_SIDE];
 
 static int Find(const ReliefLayout *l, const VoxelMapInstance *inst, int x, int y);
+
+/* The rows a south seam's ease is spread over (VoxelRelief_Stretch): six a
+ * level, at most half the map; voxel_relief_fixes.py ease_rows. */
+static unsigned EaseRows(const ReliefLayout *l)
+{
+    unsigned rows = (6u * 8u * l->ease + 15u) / 16u;
+
+    return rows < l->height / 2u ? rows : l->height / 2u;
+}
 static bool BuildSurface(ReliefLayout *l);
 
 static uint8_t *sBlob;
@@ -186,17 +206,21 @@ bool VoxelRelief_Init(void)
         l->width = (uint16_t)(U16(row + 4) & 0x03FF);
         l->level = (U16(row + 4) & 0x8000) != 0;
         unsigned unit = (U16(row + 6) & 0x4000) ? 2 : 1;
+        bool wide = (U16(row + 4) & 0x4000) != 0;
 
         l->height = (uint16_t)(U16(row + 6) & 0x03FF);
         l->drawn = (U16(row + 6) & 0x8000) != 0;
         l->belt = (uint8_t)((U16(row + 6) >> 10) & 0x0F);
+        l->ease = (uint8_t)((U16(row + 4) >> 10) & 0x0F);
+        l->easeRows = EaseRows(l);
         l->cells = sBlob + offset;
         l->count = (uint16_t)cells;
-        if (offset > (uint32_t)size || (uint32_t)cells * CELL_BYTES > (uint32_t)size - offset)
+        l->stride = wide ? WIDE_CELL_BYTES : CELL_BYTES;
+        if (offset > (uint32_t)size || (uint32_t)cells * l->stride > (uint32_t)size - offset)
             goto fail;
         for (unsigned k = 1; k < cells; ++k)
         {
-            const uint8_t *a = l->cells + (k - 1) * CELL_BYTES, *c = a + CELL_BYTES;
+            const uint8_t *a = l->cells + (k - 1) * l->stride, *c = a + l->stride;
             if (a[1] > c[1] || (a[1] == c[1] && a[0] >= c[0]))
                 goto fail;  /* not in row order: the search would miss cells */
         }
@@ -205,8 +229,9 @@ bool VoxelRelief_Init(void)
             goto fail;
         for (unsigned k = 0; k < cells; ++k)
             for (unsigned g = 0; g < GRID; ++g)
-                l->heights[k * GRID + g] =
-                    (int16_t)((int8_t)l->cells[k * CELL_BYTES + 2 + g] * (int)unit);
+                l->heights[k * GRID + g] = wide
+                    ? (int16_t)U16(l->cells + k * WIDE_CELL_BYTES + 2 + 2 * g)
+                    : (int16_t)((int8_t)l->cells[k * CELL_BYTES + 2 + g] * (int)unit);
     }
     fclose(file);
     for (unsigned i = 0; i < sLayoutCount; ++i)
@@ -348,6 +373,21 @@ void VoxelRelief_CutDiagonals(const uint8_t *rows, VoxelCutDiagonals *out)
     }
 }
 
+/* Does the polygon of sides `c` (through the outer corners of the rock's
+ * pixels) take in part of pixel (i, j)? */
+static bool CutTakes(const int c[8], int i, int j)
+{
+    for (int k = 0; k < 8; ++k)
+    {
+        int a = kCutDir[k][0], b = kCutDir[k][1];
+        int least = a * (a > 0 ? i : i + 1) + b * (b > 0 ? j : j + 1);
+
+        if (least >= c[k] + (a > 0) + (b > 0))
+            return false;
+    }
+    return true;
+}
+
 void VoxelRelief_CutClear(const uint8_t *rows, uint16_t clear[16])
 {
     VoxelCutDiagonals d;
@@ -359,23 +399,33 @@ void VoxelRelief_CutClear(const uint8_t *rows, uint16_t clear[16])
     if (d.count == 0)
         return;
     CutHull(rows, c);
+    /* a horizontal or vertical side a pixel long, where a 45-degree side
+     * ends at the tile's edge, is no side: the staircase's last step (a
+     * half of the tile cut corner to corner has its rock a pixel short of
+     * the far corner). Cut there, the tile's corner pixel was left clear,
+     * a notch at the end of the diagonal the relief itself (cut along its
+     * 45-degree sides only) does not have */
+    for (int k = 0; k < 4; ++k)
+    {
+        int gained = 0;
+
+        if (c[k] >= (kCutDir[k][0] + kCutDir[k][1] > 0 ? 15 : 0))
+            continue;
+        ++c[k];
+        for (int j = 0; j < 16 && gained <= 1; ++j)
+            for (int i = 0; i < 16; ++i)
+                if (((clear[j] >> i) & 1u) && kCutDir[k][0] * i + kCutDir[k][1] * j == c[k]
+                 && CutTakes(c, i, j))
+                    ++gained;
+        if (gained != 1)
+            --c[k];
+    }
     for (int j = 0; j < 16; ++j)
         for (int i = 0; i < 16; ++i)
         {
-            bool in = true;
-
-            if (!((clear[j] >> i) & 1u))
-                continue;
             /* a background pixel the polygon (its sides through the outer
              * corners of the rock's pixels) takes in part of: drawn */
-            for (int k = 0; k < 8 && in; ++k)
-            {
-                int a = kCutDir[k][0], b = kCutDir[k][1];
-                int least = a * (a > 0 ? i : i + 1) + b * (b > 0 ? j : j + 1);
-
-                in = least < c[k] + (a > 0) + (b > 0);
-            }
-            if (in)
+            if (((clear[j] >> i) & 1u) && CutTakes(c, i, j))
                 clear[j] &= (uint16_t)~(1u << i);
         }
 }
@@ -493,6 +543,44 @@ const int16_t *VoxelRelief_Depth(const VoxelMapInstance *inst, int x, int y)
     return l->level ? kNone : l->heights + (unsigned)k * GRID;
 }
 
+/*
+ * A point stands as far south as it is high over its own map's base, so a map
+ * whose south edge is ground under its base meets the map south of it at one
+ * height but rows short of it: Route 111's, two levels under the plateau it
+ * stands on, two rows north of Mauville's. The generator writes those rows,
+ * the ease (voxel_relief_fixes.py seam_eases), and the map's last rows are
+ * drawn that much longer in the world - everything on them, ground, rock,
+ * trees and walkers alike - so its edge meets the next map's with nothing
+ * between them and no step to walk over.
+ */
+bool VoxelRelief_Stretch(const VoxelMapInstance *inst, float *from, float *to, float *add)
+{
+    const ReliefLayout *l = LayoutOf(inst);
+    float a;
+
+    if (l == NULL || l->ease == 0 || l->level || l->easeRows == 0)
+        return false;
+    a = 8.0f * l->ease / 16.0f;
+    if (to != NULL)
+        *to = (float)(inst->originY + l->height) - a;
+    if (from != NULL)
+        *from = (float)(inst->originY + l->height) - a - (float)l->easeRows;
+    if (add != NULL)
+        *add = a;
+    return true;
+}
+
+float VoxelRelief_StretchZ(const VoxelMapInstance *inst, float z)
+{
+    float from, to, add;
+
+    if (!VoxelRelief_Stretch(inst, &from, &to, &add) || z <= from)
+        return z;
+    if (z >= to)
+        return z + add;
+    return from + (z - from) * (to - from + add) / (to - from);
+}
+
 static int Find(const ReliefLayout *l, const VoxelMapInstance *inst, int x, int y)
 {
     unsigned lo = 0, hi, key;
@@ -517,7 +605,7 @@ static int Find(const ReliefLayout *l, const VoxelMapInstance *inst, int x, int 
     while (lo < hi)
     {
         unsigned mid = (lo + hi) / 2;
-        const uint8_t *c = l->cells + mid * CELL_BYTES;
+        const uint8_t *c = l->cells + mid * l->stride;
         unsigned at = ((unsigned)c[1] << 8) | c[0];
 
         if (at == key)
@@ -578,7 +666,11 @@ float VoxelRelief_LiftAt(float worldX, float worldZ)
 float VoxelRelief_ShiftAt(float worldX, float worldZ)
 {
     int x = FloorI(worldX), y = FloorI(worldZ);
-    return Sample(VoxelRelief_Depth(VoxelWorld_GetInstanceAt(x, y), x, y), worldX, worldZ);
+    const VoxelMapInstance *inst = VoxelWorld_GetInstanceAt(x, y);
+    float shift = Sample(VoxelRelief_Depth(inst, x, y), worldX, worldZ);
+
+    /* where it is drawn: on a map's eased rows, as its ground is */
+    return VoxelRelief_StretchZ(inst, worldZ + shift) - worldZ;
 }
 
 static float Sample(const int16_t *g, float worldX, float worldZ)
@@ -627,9 +719,18 @@ static void Point(const ReliefLayout *l, unsigned i, unsigned j, int *h, int *d)
 static bool BuildSurface(ReliefLayout *l)
 {
     const unsigned n = VOXEL_RELIEF_SIDE - 1, step = 16 / n;
-    unsigned w = l->width * n + 1u, rows = (l->height + SURFACE_SPAN) * n + 1u;
-    int top = 0;
+    unsigned w = l->width * n + 1u, rows, span = SURFACE_SPAN;
+    int top = 0, most = 0;
 
+    /* The highest point stands as many cells south of its row as it is tall,
+     * and a byte of 2-pixel units holds 16 levels of it. */
+    for (unsigned g = 0; g < (unsigned)l->count * GRID; ++g)
+        if (abs(l->heights[g]) > most)
+            most = abs(l->heights[g]);
+    if (!l->level && (unsigned)(most + 15) / 16u + 1u > span)
+        span = (unsigned)(most + 15) / 16u + 1u;
+    l->surfaceUnit = most > 254 ? 4 : 2;
+    rows = (l->height + span) * n + 1u;
     l->surface = calloc((size_t)w * rows, 1);
     if (l->surface == NULL)
         return false;
@@ -655,7 +756,10 @@ static bool BuildSurface(ReliefLayout *l)
 
                 if (t < 0.0f) t = 0.0f;
                 v = (int)(h0 + (h1 - h0) * t + 0.5f);
-                l->surface[k * w + i] = (int8_t)(v >= 0 ? (v + 1) / 2 : -((1 - v) / 2));
+                {
+                    int u = l->surfaceUnit;
+                    l->surface[k * w + i] = (int8_t)(v >= 0 ? (v + u / 2) / u : -((u / 2 - v) / u));
+                }
                 if (v > top) top = v;
             }
             h0 = h1;
@@ -670,7 +774,7 @@ static float SurfacePoint(const ReliefLayout *l, int i, int k)
 {
     if (i < 0 || k < 0 || i >= l->surfaceW || k >= l->surfaceH)
         return 0.0f;
-    return 2.0f * l->surface[k * l->surfaceW + i];
+    return (float)l->surfaceUnit * l->surface[k * l->surfaceW + i];
 }
 
 float VoxelRelief_SurfaceAt(float worldX, float worldZ)

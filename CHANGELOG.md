@@ -58,12 +58,37 @@
   frame). OPTIONS' SETTINGS tab has a second screen for it: 3D WORLD
   (AUTO by console, ON, OFF) and 3D DEPTH (25% to 200% of the slider's
   depth). Build with `VOXEL_STEREO=1` or `=0` to change what AUTO does.
+- Soft reset is now L+R+START+SELECT, as in the 3DS games, instead of the
+  GBA's A+B+START+SELECT.
+
+- Pokédex on the top screen: while the Pokédex is open on the bottom
+  screen, the top shows the device itself - the red shell, lens and lights,
+  a screen window - with the Pokémon of the info page, or under the list's
+  cursor, at 2x over the battle terrain of the place it is met (tall grass,
+  cave, water, pond, mountain; by type for one never met wild). With the 3D
+  slider up the Pokémon stands in front of the screen and the terrain
+  behind it. Its patch is 0058-pokedex-top-screen.
+
 - The camera can stop at the edge of a map: on the edges chosen map by map
   (for now Routes 103 to 107 and Rustboro City), in 2D and in voxel, the
   picture no longer shows the border tiled past the edge that the wider screen
   used to bring into view; only the player walks on. Where another map joins
   part of such an edge, the camera follows the player in front of it. Every
   other map keeps the camera on the player as before.
+
+- Brazilian Portuguese, by @carlosmozart (pull request #60): the whole game in
+  Portuguese over your own English ROM, as a build option (`tools/bootstrap.py
+  --make --port-lang pt_br`, docs/PORTUGUESE.md): every text of the game from
+  `tools/locales/pt_br` with Brazil's official names, the port's interface,
+  ã/õ in every font, and the graphics with words redrawn by the port from your
+  own files (icons, summary titles, POKéDEX and POKéNAV menus, contest titles,
+  the title logo). Translation by Carlos Mozart (AllGenWiki). Its patches are
+  0057-0066.
+
+- Portuguese title logo: VERSÃO over ESMERALDA, ESMERALDA as the Spanish
+  game's logo draws it, on its arc, and VERSÃO in the place and style of its
+  EDICIÓN (`tools/logo_ptbr.py` previews it, `make verify-logo-ptbr` checks
+  that the port draws it).
 
 ## 0.4.0 — 2026-10-16
 

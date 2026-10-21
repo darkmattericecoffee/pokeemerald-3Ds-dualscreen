@@ -228,6 +228,9 @@ enum
     /* The Berry Blender: its bowl, an affine layer, kept to the picture. */
     CTR_CENTRED_BLENDER,
     CTR_CENTRED_POKEDEX_CAUGHT,
+    /* The trainer card from the field (the classic menus): in the bottom
+     * screen's window as the PokéNav. */
+    CTR_CENTRED_CARD,
     CTR_CENTRED_SCREENS
 };
 void CtrVideo_SetCentred(unsigned screen);
@@ -246,17 +249,27 @@ void CtrVideo_SetLineWindow(const uint16_t *values, unsigned lines, bool both);
  * coordinates (the sprites' frame) and its radius in pixels. Off with false.
  */
 void CtrVideo_SetFieldLight(bool on, int x, int y, int radius);
-/* Whether the last frame drew a game screen into the bottom screen: the
- * PokéNav or the bag into its left area, or one over all of it. */
+/* Where a game screen's 240x160 picture sits on the bottom screen, 1:1: the
+ * window 3ds_bottom_ui.c frames. Everything else there is its canvas. */
+#define CTR_BOTTOM_WIN_X 40
+#define CTR_BOTTOM_WIN_Y 40
+/* Whether the last frame drew a game screen into the bottom screen's window:
+ * the PokéNav, the bag, the party menu, the Pokédex, the boxes. */
 bool CtrVideo_BottomInUse(void);
-/* Whether it drew the whole bottom screen: the PC's boxes, a summary, the bag
- * opened from anywhere but the field. */
+/* The bottom screen draws the game's screen itself (3ds_bottom_ui.c's native
+ * views): its picture is not composed, and the top screen stays held. */
+void CtrVideo_SetBottomNative(bool native);
+/* Whether the field's Pokédex, bag and party menu are drawn natively (the
+ * classic menus off): their pictures are never composed then. */
+void CtrVideo_SetNativeMenus(bool on);
+/* The bottom screen's canvas just put on the screen: its header and dock over
+ * the game window's columns are drawn from it (3ds_video.c, StripUpload). */
+void CtrVideo_BottomStrips(const uint16_t *canvas);
+/* Whether that screen is one that has the bottom screen to itself, with no
+ * section dock round it: the PC's boxes, a summary, the bag or the party
+ * menu opened from anywhere but the field. */
 bool CtrVideo_BottomWhole(void);
-/*
- * The PokéNav's line of the picture a tap on line y of the bottom screen
- * lands on: its header stays on the top edge, its help bar on the bottom
- * edge and its body in between (3ds_video.c, NavBand). -1 between them.
- */
+/* The picture's line a tap on line y of the bottom screen lands on, -1 off it. */
 int CtrVideo_BottomPictureY(int y);
 /*
  * Whether the frames that follow are the battle scene: the 240x160 picture 1:1

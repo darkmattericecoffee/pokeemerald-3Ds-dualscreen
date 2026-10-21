@@ -36,6 +36,14 @@ void CtrVoxel_NotifyTilesetAnimWrite(unsigned firstTile, unsigned tileCount);
  * eye of the stereo pair (0 left, 1 right; see CtrVoxel_SetStereo). Never
  * opens or closes a frame. */
 void CtrVoxel_Draw(C3D_RenderTarget *target, int eye);
+/* The swoop to and from the 2D field (voxel_swoop.c): how far the camera
+ * stands towards its top-down pose this frame, 0..1, and the world's height
+ * (1 as built, 0 flattened onto the map: the pop-up book), and whether the
+ * sprite cards and their cast shadows are drawn at all. Before Update. */
+void CtrVoxel_SetSwoop(float t, float height, bool cards, bool shadows);
+/* How far the swoop has taken the world's light to neutral, 0..1 (the
+ * grade, haze and bloom gone with it): 3ds_video.c eases its blur the same way. */
+float CtrVoxel_SwoopNeutral(void);
 /* The GBA brightness effect (BLDY) of the frame about to be drawn, as the
  * compositor reads it: on the backgrounds and on the sprites, towards white
  * or black. The palette fade is read by the voxel module itself. */
@@ -61,6 +69,11 @@ const C3D_Tex *CtrVoxel_Gloom(float *x, float *y, float *size, float *amount);
  * eye saw it.
  */
 void CtrVoxel_SetStereo(float slider); /* 0..2: above 1 is deeper than the slider's full travel */
+/* The horizontal shift, in whole pixels of the logical surface, that puts
+ * the game's text windows and prompts over the world in front of the nearest
+ * world the last Draw's eye can see (3ds_video.c, ComposeVoxelOverlay):
+ * 0 from the middle camera or with the slider down. */
+float CtrVoxel_OverlayParallax(void);
 
 typedef struct
 {

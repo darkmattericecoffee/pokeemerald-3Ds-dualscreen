@@ -74,10 +74,54 @@ int VoxelTree_GroundMetatile(const void *secondaryTileset, int metatileId)
     }
 }
 
+/*
+ * The trunk's ground. Where the cell's relief is level, one plate at its
+ * height. On a piece of slope one level tall (a band, a face, a corner: a
+ * wood on a mountain's rock, Route 112's trees on the crags' bands) the
+ * relief itself, the trunk's drawing laid on it: a plate at the centre's
+ * height stood off the slope round it, half a level over its foot and
+ * under its top, the void seen either side. The tree stands at the
+ * centre's height either way. Anything taller is still a plate (Route
+ * 120's wood, its cells rising two levels along their south edge: drawn,
+ * more of the void showed past them). Past the last map, no relief.
+ */
+static bool OneLevelSlope(const int16_t *g)
+{
+    int lo, hi;
+
+    if (g == NULL)
+        return false;
+    lo = hi = g[0];
+    for (unsigned i = 1; i < VOXEL_RELIEF_SIDE * VOXEL_RELIEF_SIDE; ++i)
+    {
+        lo = g[i] < lo ? g[i] : lo;
+        hi = g[i] > hi ? g[i] : hi;
+    }
+    return hi - lo == 16;
+}
+
+static void EmitGround(VoxelBuilder *builder, const VoxelMapInstance *inst, int x, int y,
+                       float u0, float v0, float u1, float v1)
+{
+    float lift = builder->lift, shift = builder->shift;
+
+    if (inst == NULL || !OneLevelSlope(VoxelRelief_Cell(inst, x, y)))
+    {
+        VoxelMesh_Top(builder, (float)x, (float)y, 0.0f, 0.0f, u0, v0, u1, v1, 1.0f);
+        return;
+    }
+    builder->lift = 0.0f;
+    builder->shift = 0.0f;
+    VoxelMesh_ReliefGround(builder, inst, x, y, u0, v0, u1, v1);
+    builder->lift = lift;
+    builder->shift = shift;
+}
+
 /* The small crown is 16:32: width 1, length 2 tiles, at the same 50 degrees
  * and sunk the same way as the large one, standing on its one-cell trunk.
  * Dewford's own small tree has its art at 64,0, the General one at 32,32. */
-static void EmitSmallCell(VoxelBuilder *builder, int x, int y, bool dewford, bool rock)
+static void EmitSmallCell(VoxelBuilder *builder, const VoxelMapInstance *inst, int x, int y,
+                          bool dewford, bool rock)
 {
     int cx = dewford ? 64 : 32, cy = dewford ? 0 : 32;
     int tx = cx + 16, ty = cy;
@@ -93,8 +137,7 @@ static void EmitSmallCell(VoxelBuilder *builder, int x, int y, bool dewford, boo
      * 0.15, so its crown stands over the shadow drawn on its sand. */
     float baseZ = wz + (dewford ? 0.975f : 0.825f);
 
-    VoxelMesh_Top(builder, wx, wz, 0.0f, 0.0f,
-                  TEX_U(tx), TEX_V(ty), TEX_U(tx + 16), TEX_V(ty + 16), 1.0f);
+    EmitGround(builder, inst, x, y, TEX_U(tx), TEX_V(ty), TEX_U(tx + 16), TEX_V(ty + 16));
     builder->rounded = true;
     VoxelBuilder_Quad(builder,
         &(VoxelVertex){wx,        baseHeight + rise, baseZ - run, TEX_U(cx),      TEX_V(cy),      1.0f},
@@ -133,7 +176,8 @@ static void EmitCrownCard(VoxelBuilder *builder, int x, int y, int col, int row)
     builder->rounded = false;
 }
 
-static void EmitCell(VoxelBuilder *builder, int x, int y, int part, int metatileId, bool rock)
+static void EmitCell(VoxelBuilder *builder, const VoxelMapInstance *inst, int x, int y, int part,
+                     int metatileId, bool rock)
 {
     int col = part & 1, row = part >> 1;
     float u0 = (32.0f + col * 16.0f) / VOXEL_TREE_TEXTURE_DIM;
@@ -143,10 +187,10 @@ static void EmitCell(VoxelBuilder *builder, int x, int y, int part, int metatile
 
     if (part == VOXEL_TREE_SMALL)
     {
-        EmitSmallCell(builder, x, y, metatileId >= SECONDARY_ID, rock);
+        EmitSmallCell(builder, inst, x, y, metatileId >= SECONDARY_ID, rock);
         return;
     }
-    VoxelMesh_Top(builder, (float)x, (float)y, 0.0f, 0.0f, u0, v0, u1, v1, 1.0f);
+    EmitGround(builder, inst, x, y, u0, v0, u1, v1);
     EmitCrownCard(builder, x, y, col, row);
 }
 
@@ -195,7 +239,7 @@ void VoxelTree_EmitInstance(VoxelBuilder *builder, const VoxelMapInstance *inst,
 
                 builder->lift = VoxelRelief_CellLift(inst, x, y);
                 builder->shift = VoxelRelief_CellShift(inst, x, y);
-                EmitCell(builder, x, y, part, metatileId,
+                EmitCell(builder, inst, x, y, part, metatileId,
                          behind == VOXEL_ROLE_CLIFF || behind == VOXEL_ROLE_SHELF);
                 /* At the tree's own lift, so both rows meet. */
                 EmitMissingRow(builder, inst, x, y, part);
@@ -220,6 +264,6 @@ void VoxelTree_EmitBorder(VoxelBuilder *builder, int x0, int y0, int x1, int y1)
             metatileId = VoxelWorld_BorderMetatile(x, y);
             part = VoxelTree_Part(current->secondaryTileset, metatileId);
             if (part >= 0)
-                EmitCell(builder, x, y, part, metatileId, false);
+                EmitCell(builder, NULL, x, y, part, metatileId, false);
         }
 }

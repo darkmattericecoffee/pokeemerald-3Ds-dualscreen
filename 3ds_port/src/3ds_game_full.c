@@ -31,6 +31,7 @@
 #include "rtc.h"
 #include "constants/map_types.h"
 #include "sprite.h"
+#include "palette.h"
 #include "pokemon.h"
 #include "random.h"
 #include "constants/party_menu.h"
@@ -71,6 +72,11 @@
 #include "script_pokemon_util.h"
 #endif
 #include "librfu.h"
+#ifdef CTR_TEST_SWOOP
+#include "field_screen_effect.h"
+#include "script.h"
+#include "constants/maps.h"
+#endif
 #include "port_platform.h"
 #include "port_log.h"
 #include "port_prof.h"
@@ -82,6 +88,7 @@
 #include "3ds_audio.h"
 #include "3ds_bottom.h"
 #include "3ds_stereo_mon.h"
+#include "3ds_dex_top.h"
 #include "3ds_sprite_ids.h"
 #include "3ds_stereo_mon.h"
 
@@ -100,6 +107,11 @@ void CtrEmu_EndVBlank(void);
 
 static u32 sFrames;
 static bool sStarted;
+/* The field's fade in held behind the voxel world's black (HoldFieldFade),
+ * and for how many presented frames of that black. A soft reset clears it. */
+static bool sFadeHeld;
+static u32 sFadeHeldFrames;
+static u32 sFadeLastVideoFrame;
 
 /*
  * The CGB channels are generated in software beside the sample mixer, and they
@@ -115,11 +127,12 @@ static void StartCgbChannels(void)
 }
 
 /*
- * Soft reset: A+B+START+SELECT, and the game's own DoSoftReset (after the save
- * is cleared, a failed save, the clock reset and the like). The GBA clears its
- * RAM and starts the game again. Here the game's variables (its .data and .bss,
- * gathered by emerald3ds.ld.in) are put back as they were when AgbMain first
- * started, the emulated hardware is cleared, and AgbMain is entered again. Not
+ * Soft reset: L+R+START+SELECT (CTR_SOFT_RESET_KEYS), and the game's own
+ * DoSoftReset (after the save is cleared, a failed save, the clock reset and
+ * the like). The GBA clears its RAM and starts the game again. Here the game's
+ * variables (its .data and .bss, gathered by emerald3ds.ld.in) are put back as
+ * they were when AgbMain first started, the emulated hardware is cleared, and
+ * AgbMain is entered again. Not
  * put back: the game's platform/ layer (emulated hardware, the flash with the
  * save), the port's state and the data the port loaded before AgbMain.
  */
@@ -149,14 +162,14 @@ static void KeepGameAtStart(void)
 
 /*
  * The game reads the keys the frame boundary scanned, and a reset comes before
- * the next boundary: with A+B+START+SELECT still held, AgbMain would reset
+ * the next boundary: with L+R+START+SELECT still held, AgbMain would reset
  * again at once, for ever, and nothing would scan the keys (nor answer HOME).
  * The GBA reads them live and resets until they are let go; here the reset
  * waits, frame by frame, until they are.
  */
 static void WaitForResetKeysUp(void)
 {
-    const u16 keys = A_BUTTON | B_BUTTON | START_BUTTON | SELECT_BUTTON;
+    const u16 keys = CTR_SOFT_RESET_KEYS;
 
     while ((Platform_GetKeyInput() & keys) == keys)
     {
@@ -192,6 +205,10 @@ void CtrGame_SoftReset(void)
     CtrAudio_LockSound();
     memcpy(__ctr_game_data, sGameAtStart, GameDataBytes());
     memcpy(__ctr_game_bss, sGameAtStart + GameDataBytes(), GameBssBytes());
+    /* The fade starts again with the game: nothing of the last one is held. */
+    sFadeHeld = false;
+    sFadeHeldFrames = 0;
+    sFadeLastVideoFrame = CtrVideo_GetStats()->frames;
     CtrEmu_Reset();
     StartCgbChannels();
     CtrAudio_UnlockSound();
@@ -381,20 +398,32 @@ void CtrCentredTrade_SetVBlankCallback(IntrCallback callback)
                                                                            : CTR_CENTRED_TRADE);
 }
 
-/* The bag from the field goes left of the column, from anywhere else over the
+bool8 CtrBag_InWindow(void);
+
+/* The bag from the field or its party menu goes in the game screen's window
+ * (or is drawn natively, 3ds_bottom_game.inc), from anywhere else over the
  * whole bottom screen. */
 void CtrCentredBag_SetVBlankCallback(IntrCallback callback)
 {
-    SetCentredCallback(callback, gBagPosition.location == ITEMMENULOCATION_FIELD ? CTR_CENTRED_BAG
-                                                                                  : CTR_CENTRED_BAG_WHOLE);
+    SetCentredCallback(callback, CtrBag_InWindow() ? CTR_CENTRED_BAG : CTR_CENTRED_BAG_WHOLE);
 }
 
-/* The party menu from the field goes left of the column, from a battle, a
- * contest or a facility over the whole bottom screen. */
+/* The party menu from the field goes in the game screen's window (or is drawn
+ * natively), from a battle, a contest or a facility over the whole bottom
+ * screen. */
 void CtrCentredParty_SetVBlankCallback(IntrCallback callback)
 {
     SetCentredCallback(callback, !gMain.inBattle && gPartyMenu.menuType == PARTY_MENU_TYPE_FIELD
                                      ? CTR_CENTRED_PARTY : CTR_CENTRED_PARTY_WHOLE);
+}
+
+/* trainer_card.c: the field's card in the bottom screen's window, a link
+ * partner's centred on the top screen. */
+bool8 CtrTrainerCard_FieldOpen(void);
+
+void CtrCentredCard_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, CtrTrainerCard_FieldOpen() ? CTR_CENTRED_CARD : CTR_CENTRED_PLAIN);
 }
 
 IntrCallback CtrPokedex_VBlankCallback(void);
@@ -699,6 +728,33 @@ bool CtrGame_LocalTimeSeconds(unsigned *seconds)
 bool CtrGame_FieldPoison(void)
 {
     return FldEffPoison_IsActive() != 0;
+}
+
+/* Called at AgbMain entry (cold boot and soft reset), and by the portable
+ * new-game hook. The emulated GBA timer is not a running timer.
+ * Scenarios retain their historical seed path so existing recordings replay.
+ * This is a gameplay seed, not a cryptographic random number or a shiny boost.
+ * A zero result and collisions are valid in the original 16-bit seed space. */
+u16 Port_RngSeed(u16 fallback)
+{
+    uint64_t seed;
+
+    if (CtrScenario_Active())
+        return fallback;
+    seed = CtrPlatform_Ticks() ^ ((uint64_t)CtrPlatform_WallSeconds() + UINT64_C(0x9e3779b97f4a7c15));
+    /* SplitMix64's finalizer folds high tick/time bits into the low seed bits. */
+    seed = (seed ^ (seed >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    seed = (seed ^ (seed >> 27)) * UINT64_C(0x94d049bb133111eb);
+    seed ^= seed >> 31;
+    return (u16)(seed ^ (seed >> 16) ^ (seed >> 32) ^ (seed >> 48));
+}
+
+/* PORTABLE generates both trainer-ID halves from Random(). Reseed immediately
+ * before that reachable path, but leave the existing scenario stream untouched. */
+void Port_ReseedForNewGame(void)
+{
+    if (!CtrScenario_Active())
+        SeedRng(Port_RngSeed(0));
 }
 
 /* AgbMain never returns, so a reset request restarts the process state here. */
@@ -1171,6 +1227,70 @@ static void MeasureAid(void)
 }
 #endif
 
+/*
+ * After a door or a warp the voxel field is black while it builds the new
+ * map (3ds_video.c, CTR_ROUTE_BLANK; ctr_voxel.c, the warm-up), which can
+ * outlast the game's fade in from black - and the exit through a door
+ * (field_screen_effect.c, Task_ExitDoor) waits for that fade alone: the door
+ * had opened, the player stepped out and the door closed behind the black
+ * before the first picture. While the frame just shown was that black, the
+ * fade in waits with it: palette.c asks Port_HoldPaletteFade at its delay
+ * gate, between two whole steps, and a held step is a delay frame. (Not
+ * gPaletteFade.bufferTransferDisabled: under PORT_BRIDGE UpdatePaletteFade
+ * does not wait for the last step's transfer, so that switch froze PLTT and
+ * left the fade - and the door - running.) The game is not stopped - the
+ * music, the tasks, the scripts run on; only what waits for the fade waits
+ * longer, and the world, once there, fades in from black as in 2D.
+ *
+ * Nothing the hold stops can keep it on: the black ends with the warm-up
+ * (ctr_voxel.c, VOXEL_WARMUP_FRAMES, 180, set again only by another cut),
+ * which builds the world whatever the fade does; FIELD_FADE_HOLD_MAX lets go
+ * after that many presented frames, and is not started again before that
+ * black is over. Hidden logical frames do not advance the warm-up or this
+ * bound: fast-forward and real-time catch-up keep the fade held between
+ * pictures. A fade out, a fast or hardware fade and a weather fade (rain:
+ * field_weather.c, which does not use gPaletteFade) are not held.
+ */
+#define FIELD_FADE_HOLD_MAX 240u
+
+static bool FieldFadeHold(bool blankField, bool fadingIn, u32 heldFrames)
+{
+    return blankField && fadingIn && heldFrames < FIELD_FADE_HOLD_MAX;
+}
+
+bool8 Port_HoldPaletteFade(void)
+{
+    return sFadeHeld && gPaletteFade.active && gPaletteFade.yDec;
+}
+
+static void HoldFieldFade(void)
+{
+    const CtrVideoStats *video = CtrVideo_GetStats();
+    bool presented = video->frames != sFadeLastVideoFrame;
+    sFadeLastVideoFrame = video->frames;
+    bool blank = video->mode == CTR_MODE_FIELD_VOXEL && video->route == CTR_ROUTE_BLANK
+              && CtrGame_IsOverworld();
+    bool hold = FieldFadeHold(blank, gPaletteFade.active && gPaletteFade.yDec, sFadeHeldFrames);
+
+    if (hold)
+    {
+        if (!sFadeHeld)
+            CtrLog_Write(CTR_LOG_VIDEO, "field fade in held for the voxel world (frame %lu)",
+                         (unsigned long)sFrames);
+        sFadeHeld = true;
+        if (presented)
+            ++sFadeHeldFrames;
+        return;
+    }
+    if (sFadeHeld)
+        CtrLog_Write(CTR_LOG_VIDEO, "field fade in let go after %lu presented frames%s", (unsigned long)sFadeHeldFrames,
+                     sFadeHeldFrames >= FIELD_FADE_HOLD_MAX ? " (the bound)" : "");
+    sFadeHeld = false;
+    /* Counted per black: the bound is not started again until it is over. */
+    if (!blank)
+        sFadeHeldFrames = 0;
+}
+
 void CtrGame_WaitFrame(void)
 {
     static MainCallback lastCallback;
@@ -1185,6 +1305,8 @@ void CtrGame_WaitFrame(void)
     CtrSprites_Track();
     CtrCycle_Frame();
     CtrPlatform_EndFrame();
+    /* What the frame just shown was decides the game's next fade step. */
+    HoldFieldFade();
     if (sFrames < 4)
     {
         CtrPlatform_ReportMemory("after present");
@@ -1225,6 +1347,48 @@ void CtrGame_WaitFrame(void)
         {
             opened = true;
             CtrStereoMonGame_OpenEditor();
+        }
+    }
+#endif
+#ifdef CTR_TEST_SWOOP
+    /* Azahar aid (-DCTR_TEST_SWOOP=frame): the swoop between the voxel world
+     * and the 2D field, every way it starts - the 3D option off, then on
+     * again, then a warp into a house and one back out. */
+    {
+        static unsigned step;
+        static u32 at;
+
+        if (step < 11 && sFrames >= CTR_TEST_SWOOP && gMain.callback2 == CB2_Overworld
+            && !ArePlayerFieldControlsLocked() && sFrames - at >= 150)
+        {
+            at = sFrames;
+            switch (step++)
+            {
+            case 0: /* out of doors first, wherever the save stands */
+                SetWarpDestination(MAP_GROUP(MAP_LITTLEROOT_TOWN), MAP_NUM(MAP_LITTLEROOT_TOWN), WARP_ID_NONE, 5, 9);
+                DoWarp();
+                break;
+            /* The option toggled as the player does it: OPTIONS on the bottom
+             * screen, then its VOXEL 3D row tapped, off and on; in the middle
+             * of Littleroot at 90%, at its west edge at 100%, in Oldale. */
+            case 1: CtrBottom_TestSwoop(0); break;
+            case 2: case 5: case 8: CtrBottom_TestSwoop(1); break;
+            case 3: case 6: case 9: CtrBottom_TestSwoop(1); break;
+            case 4:
+                CtrSettings_ApplyLine("voxel_zoom=100");
+                SetWarpDestination(MAP_GROUP(MAP_LITTLEROOT_TOWN), MAP_NUM(MAP_LITTLEROOT_TOWN), WARP_ID_NONE, 1, 9);
+                DoWarp();
+                break;
+            case 7:
+                SetWarpDestination(MAP_GROUP(MAP_OLDALE_TOWN), MAP_NUM(MAP_OLDALE_TOWN), WARP_ID_NONE, 8, 10);
+                DoWarp();
+                break;
+            case 10:
+                SetWarpDestination(MAP_GROUP(MAP_LITTLEROOT_TOWN_BRENDANS_HOUSE_1F),
+                                   MAP_NUM(MAP_LITTLEROOT_TOWN_BRENDANS_HOUSE_1F), WARP_ID_NONE, 4, 8);
+                DoWarp();
+                break;
+            }
         }
     }
 #endif
@@ -1305,6 +1469,7 @@ void CtrGame_WaitFrame(void)
             CtrStereoMonGame_Frame();
             PORT_PROF_END(stmon, PORT_PROF_STMON);
         }
+        CtrDexTopGame_Frame();
         CtrPlatform_NoteBottom(CtrPlatform_TickMs(CtrPlatform_Ticks() - start));
     }
     /* The plane editor open on the field: the game waits here, as through

@@ -40,6 +40,8 @@ typedef uint16_t u16;
 #define BOTTOM_WIDTH 320
 #define CTR_VIEW_X 80
 #define CTR_VIEW_Y 40
+#define CTR_BOTTOM_WIN_X 40
+#define CTR_BOTTOM_WIN_Y 40
 #define VIEW_LEFT (-80)
 #define VIEW_RIGHT 320
 #define VIEW_TOP (-40)
@@ -58,7 +60,6 @@ static unsigned sCentredScreen;
 static bool sCentred = true, sStage, sBattle, sFieldBanner, sScissored, textured;
 static int sClipX0, sClipX1, sClipY0, sClipY1, sSpanShiftX, sSpanShiftY, sLayerShift;
 static unsigned sLayerExclude, sLineMask;
-static void *sNavBand;
 static uint16_t registers[48], lineRegisters[CTR_LINE_REGS], tilemaps[2][1024];
 static const uint16_t *sRegLine;
 static struct { const uint16_t *regs; } sMemory = {registers};
@@ -148,11 +149,9 @@ static void C2D_DrawImageAt(C2D_Image image, float screenX, float screenY, float
             Pixel((int)screenX + column, (int)screenY + row, Sample(image.tex->bg, sourceX, sourceY));
         }
 }
-static void DrawNavBackmost(unsigned bg, bool texture) { (void)bg; (void)texture; abort(); }
 static void DrawStageBg(unsigned bg) { (void)bg; abort(); }
 static void DrawBattleText(unsigned bg) { (void)bg; abort(); }
 static void DrawBattleBgSplit(unsigned bg) { (void)bg; abort(); }
-static void DrawSectionBackdrop(int marginX, unsigned bg) { (void)marginX; (void)bg; abort(); }
 static void DrawLayerRect(unsigned bg, int x0, int x1, int y0, int y1,
                           float sx, float sy, float dx, float dy, bool fade, int top, int bottom);
 static void Compose(void);
@@ -176,7 +175,7 @@ static bool EmptyWalkHolds(const EmptyWalk *previous, const EmptyWalk *current) 
         "static unsigned TextBackgrounds(", "static unsigned LineBackgrounds(",
         "static void DrawLayerRect(unsigned bg, int x0, int x1, int y0, int y1,\n                          float sx, float sy, float dx, float dy, bool fade, int top, int bottom)\n{",
         "static bool BottomWhole(", "static bool BottomScreen(",
-        "static void StorageComposePart(", "static void StorageCompose(",
+        "static void StorageComposePart(", "static void WindowCompose(",
     ):
         source += function(video, signature)
     source += r'''
@@ -201,7 +200,7 @@ static void CheckRendering(unsigned scrollX, unsigned scrollY, bool useTexture, 
     assert(BottomWhole(sCentredScreen) && BottomScreen(sCentredScreen));
     const CentredFill *fill = CentredFillOf(sCentredScreen);
     assert(CentredLayers(fill) == (1u << 3) && fill->tile && !fill->wrap && !fill->backmost);
-    StorageCompose(40);
+    WindowCompose();
     assert(backdropQueries == 0);
     for (int row = 0; row < 240; ++row)
         for (int column = 0; column < 320; ++column) {

@@ -118,10 +118,17 @@ class Scene:
         # relief with the depth of a drawn map (a point at height h drawn h
         # rows north), a map leveled whole (bit 15) straight up too
         import voxel_relief_fixes as vrf
-        t = vrf.parse(open(vl.RELIEF, "rb").read())["layouts"].get(vrf.layout_index(layout))
+        whole = vrf.parse(open(vl.RELIEF, "rb").read())
+        t = whole["layouts"].get(vrf.layout_index(layout))
         self.base = t["base"] / 16.0 if t else 0.0
         self.depth = bool(t and t["flags"] & vrf.DRAWN and not t["level"])
-        self.standing = self._standing(t["cells"] if t else {}, keep)
+        # (a cut tile's rock is where its drawing has it: an edge its
+        # background takes stands over nothing)
+        cut = {}
+        for (li, x, y), rec in whole["cuts"].items():
+            if li == vrf.layout_index(layout) and rec[0] < len(whole["variants"]):
+                cut[(x, y)] = whole["variants"][rec[0]][2]
+        self.standing = self._standing(t["cells"] if t else {}, keep, cut)
         # the cells drawn as rock that falls - a band, a face, a corner of
         # the two - read as the terraces read them (voxel_terraces.Cells):
         # their relief lying flat is the drawing's rock laid on the ground
@@ -257,17 +264,32 @@ class Scene:
 
     def _skirts(self):
         top = {}
+        # the lowest point of each column's north edge, as drawn: a point
+        # at height h stands h - base rows south, so the lowest is the
+        # northernmost
+        north = {}
         for verts, kind in zip(self.tris, self.kind):
             if kind != "terrain":
                 continue
             for (x, y, z, u, v) in verts:
                 top[self.cell_of([(x, y, z)])] = max(y, top.get(self.cell_of([(x, y, z)]), -1e9))
+                row = z - (y - self.base) if self.depth else z
+                if abs(row) < 1e-3:
+                    col = min(self.w - 1, int(math.floor(x)))
+                    north[col] = min(y, north.get(col, 1e9))
         bottom = self._bottom - 1.0
         w, h = self.w, self.h
         for x in range(w):
             for y, side in ((0, 0.0), (h - 1, 1.0)):
                 g = top.get((x, y), self.base)
                 z = y + side + ((g - self.base) if self.depth else 0.0)
+                if side == 0.0 and self.depth and x in north:
+                    # the north wall behind the edge's lowest point, a hair
+                    # north of it: hung where the cell's top is it stood in
+                    # the plane of a face along the edge (the face's pixels
+                    # fought it: speckles, Lavaridge's north rock) and in
+                    # front of an edge falling west or east (a dark wedge)
+                    z = north[x] - self.base - 0.01
                 self._quad((x, g, z), (x + 1, g, z), (x + 1, bottom, z), (x, bottom, z))
         for y in range(h):
             for x, side in ((0, 0.0), (w - 1, 1.0)):
@@ -296,7 +318,7 @@ class Scene:
                 f.write(struct.pack("<15f", *[c for p in verts for c in p]))
                 f.write(struct.pack("<iB3xi", k, cls, cell))
 
-    def _standing(self, lattice, keep):
+    def _standing(self, lattice, keep, cut):
         """The cells whose rock falls (a face south, a band west or east)
         from a top edge standing over the ground behind it: a face is the
         front of the terrace on it, never a wall with lower ground behind -
@@ -311,6 +333,7 @@ class Scene:
             if not (0 < x < self.w - 1 and 0 < y < self.h - 1) or (x, y) in keep:
                 continue
             exposed = 0
+            rows = cut.get((x, y))
             for back, fall in (((x, y - 1), [(i, 20 + i, 20 + i) for i in range(5)]),       # south
                                ((x + 1, y), [(5 * j + 4, 5 * j, 5 * j) for j in range(5)]),  # west
                                ((x - 1, y), [(5 * j, 5 * j + 4, 5 * j + 4) for j in range(5)])):  # east
@@ -319,7 +342,8 @@ class Scene:
                 b = at(*back)
                 # (top, foot, the edge behind the top: the next cell's own)
                 exposed += sum(1 for hi, lo, _ in fall
-                               if g[hi] - g[lo] > EXPOSED and g[hi] - b[lo] > EXPOSED)
+                               if g[hi] - g[lo] > EXPOSED and g[hi] - b[lo] > EXPOSED
+                               and not (rows and rows[min(15, 4 * (hi // 5))] >> min(15, 4 * (hi % 5)) & 1))
             if exposed >= 2:
                 out.add((x, y))
         return out

@@ -11,6 +11,24 @@
 
 #define VOXEL_DEG_TO_RAD (3.14159265358979323846f / 180.0f)
 #define VOXEL_FOLLOW 0.15f
+/* The follow camera's vertical field of view. */
+#define VOXEL_CAMERA_FOV 35.0f
+
+/* ── The swoop's end pose (VoxelCamera_Swoop; its pitch is in the header) ── */
+/* The field of view stays the follow camera's; at the top the projection
+ * itself goes orthographic (ctr_voxel.c, CameraMatrices), as the GBA's art
+ * is, and the eye stands where the perspective ground framing is already the
+ * 2D field's, so the two agree at every step of the blend. */
+/* Half the 2D field's height in tiles: 240 px over 16 px a tile, halved. */
+#define VOXEL_SWOOP_HALF_TILES 7.5f
+/* Where the 2D field's middle lies from the camera's usual target: half a
+ * tile right less the target's own half (VOXEL_TILE_MIDDLE) and a tile down (the tile's centre, then the picture's middle is
+ * 8 px below the player's tile: FIELD_VIEW_OFFSET_Y 32 against (240-160)/2). */
+/* Measured against the 2D frame in Azahar (2026-10-17): the voxel picture
+ * sat 10 px high and 2 px left of it, hence not the 0.5 and 1.0 the tile
+ * arithmetic says. */
+#define VOXEL_SWOOP_SHIFT_X -0.125f /* 0.375 less the half tile the target has (VOXEL_TILE_MIDDLE) */
+#define VOXEL_SWOOP_SHIFT_Z 0.4f
 /* The picture's width over its height (CTR_GAME_WIDTH, CTR_GAME_HEIGHT). */
 #define VOXEL_ASPECT (400.0f / 240.0f)
 /*
@@ -40,8 +58,10 @@ void VoxelCamera_Init(VoxelCamera *cam)
     cam->pitch = 40.0f;
     cam->yaw = 0.0f;
     cam->distance = 9.0f;
-    cam->fov = 35.0f;
+    cam->fov = VOXEL_CAMERA_FOV;
     cam->ground = 0.0f;
+    cam->swoopX = cam->swoopZ = 0.0f;
+    cam->lay = 0.0f;
 }
 
 void VoxelCamera_SetGround(VoxelCamera *cam, float ground, int snap)
@@ -135,6 +155,7 @@ static void Aim(const VoxelCamera *cam, float playerWorldX, float playerWorldZ, 
 
 void VoxelCamera_Snap(VoxelCamera *cam, float playerWorldX, float playerWorldZ)
 {
+    cam->swoopX = cam->swoopZ = 0.0f;
     AdaptDistance(cam);
     Aim(cam, playerWorldX, playerWorldZ, &cam->targetX, &cam->targetZ);
     Place(cam);
@@ -144,6 +165,9 @@ void VoxelCamera_Update(VoxelCamera *cam, float playerWorldX, float playerWorldZ
 {
     float x, z;
 
+    cam->targetX -= cam->swoopX;
+    cam->targetZ -= cam->swoopZ;
+    cam->swoopX = cam->swoopZ = 0.0f;
     AdaptDistance(cam);
     Aim(cam, playerWorldX, playerWorldZ, &x, &z);
     cam->targetX += (x - cam->targetX) * VOXEL_FOLLOW;
@@ -158,6 +182,39 @@ void VoxelCamera_Shift(VoxelCamera *cam, float dx, float dz)
     Place(cam);
 }
 
+void VoxelCamera_Swoop(VoxelCamera *cam, float t)
+{
+    /* Both poses as the eye's distance from the target along the line of
+     * sight, so the dolly is one length eased, whatever the pitch does. */
+    float pitch0 = cam->pitch, fov0 = VOXEL_CAMERA_FOV;
+    float length0 = cam->distance / cosf(pitch0 * VOXEL_DEG_TO_RAD);
+    /* The eye's distance at which the perspective ground framing is the 2D
+     * field's: half its height of ground, seen at the pitch, fills half the
+     * field of view. */
+    float length1 = VOXEL_SWOOP_HALF_TILES * sinf(VOXEL_SWOOP_PITCH * VOXEL_DEG_TO_RAD)
+                  / tanf(fov0 * 0.5f * VOXEL_DEG_TO_RAD);
+    float pitch, length;
+
+    if (t <= 0.0f)
+    {
+        cam->fov = fov0;
+        cam->lay = 0.0f;
+        return;
+    }
+    if (t > 1.0f) t = 1.0f;
+    cam->lay = t;
+    pitch = pitch0 + (VOXEL_SWOOP_PITCH - pitch0) * t;
+    length = length0 + (length1 - length0) * t;
+    cam->fov = fov0;
+    cam->pitch = pitch;
+    cam->distance = length * cosf(pitch * VOXEL_DEG_TO_RAD);
+    cam->swoopX = VOXEL_SWOOP_SHIFT_X * t;
+    cam->swoopZ = VOXEL_SWOOP_SHIFT_Z * t;
+    cam->targetX += cam->swoopX;
+    cam->targetZ += cam->swoopZ;
+    Place(cam);
+}
+
 void VoxelCamera_Frame(VoxelCamera *cam, float targetX, float targetZ, float ground,
                        float pitch, float distance)
 {
@@ -166,5 +223,6 @@ void VoxelCamera_Frame(VoxelCamera *cam, float targetX, float targetZ, float gro
     cam->ground = ground;
     cam->pitch = pitch;
     cam->distance = distance;
+    cam->lay = 0.0f;
     Place(cam);
 }

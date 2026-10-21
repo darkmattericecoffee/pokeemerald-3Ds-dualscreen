@@ -25,6 +25,10 @@ typedef struct
     int16_t x, z;
     float top;        /* over the base */
     float base;       /* the base of the map the cell is on (VoxelRelief_Base) */
+    /* On a drawn map, how far south and how high what stands on the cell is
+     * drawn (VoxelRelief_CellShift): a tree on ground two levels under the
+     * base stands two rows north of its cell and two levels down. */
+    float shift;
     uint32_t generation;
     int8_t crownPart; /* VoxelTree_Part when the cell is a crown, else -1 */
     bool surface;     /* a drawn map's relief: tested as a height field */
@@ -106,6 +110,9 @@ static LightBlock sBlocks[BLOCK_CACHE_SIZE];
  * whose entries it would otherwise evict.
  */
 #define REACH_BLOCKS 2
+/* How far a block's ceiling looks north and south for what is drawn into it
+ * from another cell (ObjectAt): a tree four levels up a drawn mountain. */
+#define SHIFT_ROWS 4
 static LightBlock sReach[BLOCK_CACHE_SIZE];
 /* Read for a ray with more than this left to climb to the map's bound. */
 #define BLOCK_CLIMB 1.0f
@@ -118,6 +125,73 @@ static int Tile(float n)
 {
     int i = (int)n;
     return n < (float)i ? i - 1 : i;
+}
+
+/*
+ * A map's eased rows (VoxelRelief_Stretch) are drawn longer than its cells
+ * stand: the rays run where things are drawn - a point on the eased ground,
+ * on the map south of it - and what may stop them is looked up where it
+ * stands, each point taken back through the stretch of the map drawn there.
+ * Else the casters of Route 111's last rows shaded Mauville from two rows
+ * north of where they are drawn: a cut along the seam, shadows of nothing.
+ */
+typedef struct
+{
+    float x0, x1, from, to, add;
+} LightStretch;
+static LightStretch sStretches[MAX_VOXEL_MAP_INSTANCES];
+static unsigned sStretchCount, sStretchMaps = ~0u;
+
+static void ReadStretches(void)
+{
+    sStretchCount = 0;
+    sStretchMaps = VoxelWorld_InstanceCount();
+    for (unsigned i = 0; i < sStretchMaps && i < MAX_VOXEL_MAP_INSTANCES; ++i)
+    {
+        const VoxelMapInstance *inst = VoxelWorld_Instance(i);
+        LightStretch *s = &sStretches[sStretchCount];
+
+        if (inst != NULL && VoxelRelief_Stretch(inst, &s->from, &s->to, &s->add))
+        {
+            s->x0 = (float)inst->originX;
+            s->x1 = (float)(inst->originX + inst->width);
+            ++sStretchCount;
+        }
+    }
+}
+
+/* Where what is drawn at (x, z) stands. */
+static float Standing(float x, float z)
+{
+    if (sStretchMaps != VoxelWorld_InstanceCount())
+        ReadStretches();
+    for (unsigned i = 0; i < sStretchCount; ++i)
+    {
+        const LightStretch *s = &sStretches[i];
+
+        if (x >= s->x0 && x < s->x1 && z > s->from && z < s->to + s->add)
+            return s->from + (z - s->from) * (s->to - s->from) / (s->to - s->from + s->add);
+    }
+    return z;
+}
+
+/* Does a ray from (x, z) cross a map's eased rows? */
+static bool RayStretched(float x, float z)
+{
+    float endX = x - VOXEL_SUN_DX * VOXEL_LIGHT_REACH;
+    float endZ = z - VOXEL_SUN_DZ * VOXEL_LIGHT_REACH;
+
+    if (sStretchMaps != VoxelWorld_InstanceCount())
+        ReadStretches();
+    for (unsigned i = 0; i < sStretchCount; ++i)
+    {
+        const LightStretch *s = &sStretches[i];
+
+        if (fmaxf(x, endX) + 1.0f > s->x0 && fminf(x, endX) - 1.0f < s->x1
+         && fmaxf(z, endZ) + 1.0f > s->from && fminf(z, endZ) - 1.0f < s->to + s->add)
+            return true;
+    }
+    return false;
 }
 
 static float CasterCeiling(void)
@@ -144,6 +218,7 @@ static float CasterCeiling(void)
 
 static void MapCeilings(void)
 {
+    ReadStretches();
     sMapCeilings = 0;
     for (unsigned i = 0; i < VoxelWorld_InstanceCount() && i < MAX_VOXEL_MAP_INSTANCES; ++i)
     {
@@ -255,8 +330,11 @@ static const LightCell *Cell(int x, int z)
     cell->mask = NULL;
     inst = VoxelWorld_GetInstanceAt(x, z);
     cell->base = VoxelRelief_Base(inst);
+    cell->shift = 0.0f;
     if (inst == NULL || inst->indoor)
         return cell;
+    if (VoxelRelief_IsDrawn(inst))
+        cell->shift = VoxelRelief_CellShift(inst, x, z);
     metatile = VoxelWorld_GetMetatileId(x, z);
     if (VoxelWorld_UsesTreeSprites(inst))
     {
@@ -317,6 +395,7 @@ static float BlockCeiling(int bx, int bz)
     int x0 = bx * (1 << BLOCK_SHIFT), z0 = bz * (1 << BLOCK_SHIFT);
     int x1 = x0 + (1 << BLOCK_SHIFT), z1 = z0 + (1 << BLOCK_SHIFT);
     bool onMap = false;
+    int margin = 0;
 
     if (block->generation == sGeneration && block->bx == bx && block->bz == bz)
         return block->ceiling;
@@ -329,15 +408,30 @@ static float BlockCeiling(int bx, int bz)
         onMap = inst != NULL && inst->originX < x1 && inst->originX + inst->width > x0
              && inst->originY < z1 && inst->originY + inst->height > z0;
     }
-    for (int z = z0; onMap && z < z1; ++z)
+    /* (and on a drawn map the rows round it: what stands on its cells is
+     * drawn as far south as it is lifted, ObjectAt) */
+    for (unsigned i = 0; i < VoxelWorld_InstanceCount() && onMap && margin == 0; ++i)
+    {
+        const VoxelMapInstance *inst = VoxelWorld_Instance(i);
+
+        if (inst != NULL && VoxelRelief_IsDrawn(inst) && inst->originX < x1
+         && inst->originX + inst->width > x0 && inst->originY < z1 + SHIFT_ROWS
+         && inst->originY + inst->height > z0 - SHIFT_ROWS)
+            margin = SHIFT_ROWS;
+    }
+    for (int z = z0 - margin; onMap && z < z1 + margin; ++z)
         for (int x = x0; x < x1; ++x)
         {
             const LightCell *cell = Cell(x, z);
+            float lift = cell->surface ? 0.0f : cell->shift;
+            int at = cell->surface ? z : Tile((float)z + 0.5f + lift);
 
             /* CellOccludes: nothing under its top, and nothing at all from a
              * cell whose top is not above its base (a surface's always is). */
-            if (cell->top > 0.0f && cell->top + cell->base + BLOCK_MARGIN > ceiling)
-                ceiling = cell->top + cell->base + BLOCK_MARGIN;
+            if (at < z0 || at >= z1)
+                continue;
+            if (cell->top > 0.0f && cell->top + cell->base + lift + BLOCK_MARGIN > ceiling)
+                ceiling = cell->top + cell->base + lift + BLOCK_MARGIN;
         }
     block->generation = sGeneration;
     block->bx = (int16_t)bx;
@@ -445,9 +539,35 @@ static bool CellOccludes(const LightCell *cell, float x, float y, float z)
     return true;
 }
 
+/*
+ * Is the world point (x, y, z) inside a caster? A drawn map's relief stands in
+ * the world as it is; a tree, a model or a sign on one of its cells is drawn
+ * as far south and as high as the cell is lifted (VoxelRelief_CellShift), and
+ * is looked for there - else a wood on Route 111's low ground, two levels
+ * under its base, cast its shadows two rows south of its trees, onto open
+ * paths. `seen` gets the cell the point is in, for the march.
+ */
+static bool ObjectAt(int tx, float x, float y, float z, const LightCell **seen)
+{
+    const LightCell *cell = Cell(tx, Tile(z)), *o;
+
+    *seen = cell;
+    if (cell->shift == 0.0f)
+        return CellOccludes(cell, x, y, z);
+    if (cell->surface && CellOccludes(cell, x, y, z))
+        return true;
+    o = Cell(tx, Tile(z - cell->shift));
+    if (o->surface || o->shift == 0.0f)
+        return false;
+    return CellOccludes(o, x, y - o->shift, z - o->shift);
+}
+
 static bool Occludes(float x, float y, float z)
 {
-    return CellOccludes(Cell(Tile(x), Tile(z)), x, y, z);
+    const LightCell *cell;
+
+    z = Standing(x, z);
+    return ObjectAt(Tile(x), x, y, z, &cell);
 }
 
 /*
@@ -486,12 +606,14 @@ static bool Lit(float x, float y, float z)
     /* The blocks' bound is only valid for the maps it was read from: with
      * maps put on screen since the last reset, the map bound alone. */
     bool blocks;
+    bool stretched;
 
     if (gVoxelSun.strength == 0.0f)
         return true;
     if (sGeneration == 0)
         VoxelLighting_Reset();
     ceiling = RayCeiling(x, z);
+    stretched = RayStretched(x, z);
     blocks = VoxelWorld_InstanceCount() == sMapCeilings;
     for (int step = 1; step <= VOXEL_LIGHT_REACH * 4;)
     {
@@ -502,6 +624,8 @@ static bool Lit(float x, float y, float z)
         RayPoint(x, y, z, step, &rx, &ry, &rz);
         if (ry >= ceiling)
             break;
+        if (stretched)
+            rz = Standing(rx, rz);
         tx = Tile(rx);
         tz = Tile(rz);
         /* The blocks' bound, read once, at the first point the map bound
@@ -522,15 +646,18 @@ static bool Lit(float x, float y, float z)
             if (ry >= ceiling)
                 break;
         }
-        cell = Cell(tx, tz);
         ++sSteps;
-        if (CellOccludes(cell, rx, ry, rz))
+        if (ObjectAt(tx, rx, ry, rz, &cell))
             return false;
         ++step;
 #ifdef VOXEL_LIGHTING_TESTS
         if (gVoxelLightingStepEveryPoint)
             continue;
 #endif
+        /* (the cells' edges are where they stand, not along the ray; nor
+         * where what stands on them is drawn) */
+        if (stretched || cell->shift != 0.0f)
+            continue;
         if ((cell->crownPart >= 0 || cell->surface || cell->sign || cell->mask != NULL)
          && cell->top + cell->base > ry)
             continue;  /* not a box: point by point while it is above the ray */
@@ -568,7 +695,7 @@ static float Contact(float x, float y, float z)
 {
     unsigned covered = 0;
 
-    if (y - Cell(Tile(x), Tile(z))->base > 0.41f)
+    if (y - Cell(Tile(x), Tile(Standing(x, z)))->base > 0.41f)
         return 1.0f;
     covered += Occludes(x - 0.28f, y + 0.3f, z);
     covered += Occludes(x + 0.28f, y + 0.3f, z);
@@ -647,7 +774,7 @@ static float CachedContact(float x, float y, float z)
 {
     /* Contact's own first test: too cheap to cache, and caching it would
      * only evict samples whose rays were cast. */
-    if (y - Cell(Tile(x), Tile(z))->base > 0.41f)
+    if (y - Cell(Tile(x), Tile(Standing(x, z)))->base > 0.41f)
         return 1.0f;
     return FindSample(x, y, z)->contact;
 }
@@ -757,7 +884,8 @@ static void WorldPoint(const VoxelBuilder *builder, const VoxelVertex *v,
 {
     *x = v->x;
     *y = v->y + builder->lift + builder->base;
-    *z = v->z + builder->shift;
+    /* where it is drawn (VoxelBuilder_StretchZ): the rays start there */
+    *z = VoxelBuilder_StretchZ(builder, v->z + builder->shift);
 }
 
 /* ── Faces ──────────────────────────────────────────────────────────────── */

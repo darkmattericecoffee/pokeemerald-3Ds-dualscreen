@@ -56,6 +56,7 @@ ENGINE_PATTERNS = [
     "gamedata/*.rel",
     "voxel/trees.rgba5551",
     "bottom/battle.bin",
+    "bottom/menu.bin",
     "battle/hud.bin",
     "stereo/*",
 ]

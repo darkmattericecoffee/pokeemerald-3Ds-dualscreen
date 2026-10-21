@@ -105,7 +105,15 @@ boxes' scrolling pattern around it); a tap on them acts in the game directly
 from a battle, a shop or the PC it takes the whole screen, its stripes carried
 on around it, and taps act on it directly too. So is the Pokédex
 (`pokedex.c`), left of the column, the tile behind each of its screens carried
-out to its edges. In battle the column gives way
+out to its edges. While it is open the top screen shows the device itself
+(`3ds_dex_top.c`): the red shell, lens and lights around a screen window
+with the Pokémon of the info page, or under the list's cursor, at 2x over
+the battle terrain of the place it is met. The game side
+(`3ds_dex_top_game.c`, patch 0058's `CtrPokedex_InfoDexNum`) decodes the
+front picture and the terrain from the game's own tables into plain buffers;
+the native side writes them into its two textures inside the frame, after
+`C3D_FrameBegin` has waited for the GPU, and gives the textures back when the
+Pokédex closes. In battle the column gives way
 to the action and move menus.
 
 ## Voxel overworld

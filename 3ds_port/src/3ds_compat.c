@@ -18,6 +18,7 @@
 #include "3ds_platform.h"
 #include "3ds_audio.h"
 #include "gba/flash_internal.h"
+#include "characters.h"
 
 /*
  * global.h redirects these four GBA registers to RAM under the bridge; this is
@@ -206,6 +207,95 @@ static struct
     { gFontNormalLatinGlyphs,      "graphics/fonts/normal.latfont",       NULL, 0 },
 };
 
+extern const u8 gFontSmallNarrowLatinGlyphWidths[];
+extern const u8 gFontSmallLatinGlyphWidths[];
+extern const u8 gFontNarrowLatinGlyphWidths[];
+extern const u8 gFontShortLatinGlyphWidths[];
+extern const u8 gFontNormalLatinGlyphWidths[];
+
+static const u8 *const sLatinFontWidths[] = {
+    gFontSmallNarrowLatinGlyphWidths, gFontSmallLatinGlyphWidths, gFontNarrowLatinGlyphWidths,
+    gFontShortLatinGlyphWidths, gFontNormalLatinGlyphWidths,
+};
+
+/*
+ * A glyph is 16x16 pixels of 2 bits in four 8x8 tiles (top left, top right,
+ * bottom left, bottom right), a row of a tile in two bytes: pixels 0-3 in the
+ * second, 4-7 in the first, the leftmost in the high bits (gbagfx font.c).
+ * Values 1 and 2 are the ink and its shadow, 3 the background.
+ */
+#define GLYPH_BYTES 0x40
+
+static u8 *GlyphByte(u8 *glyph, int x, int y)
+{
+    return glyph + ((y / 8) * 2 + x / 8) * 16 + (y % 8) * 2 + ((x % 8) < 4);
+}
+
+static u8 GlyphPixel(const u8 *glyph, int x, int y)
+{
+    return (*GlyphByte((u8 *)glyph, x, y) >> (6 - 2 * (x % 4))) & 3;
+}
+
+static void SetGlyphPixel(u8 *glyph, int x, int y, u8 value)
+{
+    u8 *byte = GlyphByte(glyph, x, y);
+    int shift = 6 - 2 * (x % 4);
+
+    *byte = (*byte & ~(3 << shift)) | (value << shift);
+}
+
+static bool GlyphRowInked(const u8 *glyph, int y)
+{
+    for (int x = 0; x < 16; x++)
+    {
+        u8 value = GlyphPixel(glyph, x, y);
+
+        if (value == 1 || value == 2)
+            return true;
+    }
+    return false;
+}
+
+/*
+ * The fonts have no ã, õ, Ã or Õ (0x2F-0x32, patch 0057). Each is drawn from
+ * the player's own font when it loads: the letter, with the tilde of ñ (or Ñ)
+ * over it. The tilde is the rows that ñ inks and n leaves blank, centred on
+ * the letter's width.
+ */
+static void ComposeTildeLetters(u8 *font, u32 size, const u8 *widths)
+{
+    static const struct { u8 slot, letter, tilde, plain; } sLetters[] = {
+        { CHAR_A_TILDE, CHAR_A, CHAR_N_TILDE, CHAR_N },
+        { CHAR_O_TILDE, CHAR_O, CHAR_N_TILDE, CHAR_N },
+        { CHAR_a_TILDE, CHAR_a, CHAR_n_TILDE, CHAR_n },
+        { CHAR_o_TILDE, CHAR_o, CHAR_n_TILDE, CHAR_n },
+    };
+
+    if (size < (u32)(CHAR_z + 1) * GLYPH_BYTES)
+        return;
+    for (unsigned i = 0; i < ARRAY_COUNT(sLetters); i++)
+    {
+        u8 *glyph = font + sLetters[i].slot * GLYPH_BYTES;
+        const u8 *tilde = font + sLetters[i].tilde * GLYPH_BYTES;
+        const u8 *plain = font + sLetters[i].plain * GLYPH_BYTES;
+        int shift = ((int)widths[sLetters[i].letter] - (int)widths[sLetters[i].tilde]) / 2;
+
+        memcpy(glyph, font + sLetters[i].letter * GLYPH_BYTES, GLYPH_BYTES);
+        for (int y = 0; y < 16; y++)
+        {
+            if (GlyphRowInked(plain, y) || !GlyphRowInked(tilde, y))
+                continue;
+            for (int x = 0; x < 16; x++)
+            {
+                u8 value = GlyphPixel(tilde, x, y);
+
+                if ((value == 1 || value == 2) && x + shift >= 0 && x + shift < 16)
+                    SetGlyphPixel(glyph, x + shift, y, value);
+            }
+        }
+    }
+}
+
 static bool LoadLatinFont(unsigned index)
 {
     FILE *file;
@@ -237,6 +327,7 @@ static bool LoadLatinFont(unsigned index)
     }
     fclose(file);
     sLatinFonts[index].size = (u32)size;
+    ComposeTildeLetters(sLatinFonts[index].raw, sLatinFonts[index].size, sLatinFontWidths[index]);
     return true;
 }
 
@@ -253,6 +344,24 @@ const void *Port_ResolveFontPointer(const void *ptr)
         return sLatinFonts[i].raw;
     }
     return ptr;
+}
+
+/*
+ * A glyph of one of the latin fonts (0 small narrow, 1 small, 2 narrow,
+ * 3 short, 4 normal), loaded from the pack with the tilde letters: 16x16
+ * pixels of 2 bits as GlyphPixel reads them, 1 the ink and 2 its shadow.
+ * For the port's own drawing of the Portuguese graphics (3ds_icons_ptbr.c).
+ */
+const unsigned char *Port_LatinGlyph(unsigned font, unsigned char code, int *width)
+{
+    if (font >= ARRAY_COUNT(sLatinFonts) || !LoadLatinFont(font)
+     || (u32)(code + 1) * GLYPH_BYTES > sLatinFonts[font].size)
+    {
+        *width = 0;
+        return NULL;
+    }
+    *width = sLatinFontWidths[font][code];
+    return sLatinFonts[font].raw + code * GLYPH_BYTES;
 }
 
 void Port_PreloadLatinFonts(void)

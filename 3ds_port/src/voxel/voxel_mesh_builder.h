@@ -67,6 +67,10 @@ typedef struct
     /* The base of the map being built (VoxelRelief_Base): everything emitted
      * is raised by it, straight up. */
     float base;
+    /* Its south seam's ease (VoxelRelief_Stretch): world z from stretchFrom
+     * to stretchTo drawn longer, past it moved stretchAdd south. stretchAdd
+     * zero: none. */
+    float stretchFrom, stretchTo, stretchAdd;
     bool lighting; /* opt-in for outdoor chunks and border receivers */
     bool artShaded; /* relief: its drawing is its own; lit like any face */
     bool lightingRefine; /* ground subdivision; disabled for the fixed-size belt */
@@ -87,6 +91,10 @@ void VoxelBuilder_Init(VoxelBuilder *builder, VoxelVertex *storage, unsigned cap
 void VoxelBuilder_SetAtlas(VoxelBuilder *builder, const struct VoxelAtlasMap *atlas);
 /* World tile the emitted coordinates are measured from. Zero is world space. */
 void VoxelBuilder_SetOrigin(VoxelBuilder *builder, int originX, int originZ);
+/* The map being built's ease, if it has one (VoxelRelief_Stretch). */
+void VoxelBuilder_SetStretch(VoxelBuilder *builder, const VoxelMapInstance *inst);
+/* A world z (after the shift) where the builder's map draws it. */
+float VoxelBuilder_StretchZ(const VoxelBuilder *builder, float z);
 void VoxelBuilder_Tri(VoxelBuilder *builder, const VoxelVertex *a,
                       const VoxelVertex *b, const VoxelVertex *c);
 /* A B C / A C D, the winding the reference quads already use. */
@@ -118,6 +126,9 @@ void VoxelMesh_BeginWindow(int x0, int y0, int x1, int y1);
  */
 void VoxelMesh_Top(VoxelBuilder *b, float wx, float wz, float h, float inset,
                    float u0, float v0, float u1, float v1, float shade);
+/* The cell's relief drawn with u0..v1 (a tree's trunk on a slope). */
+void VoxelMesh_ReliefGround(VoxelBuilder *b, const VoxelMapInstance *inst, int x, int y,
+                            float u0, float v0, float u1, float v1);
 void VoxelMesh_South(VoxelBuilder *b, float wx, float wz, float yBottom, float yTop,
                      float inset, float u0, float v0, float u1, float v1);
 void VoxelMesh_North(VoxelBuilder *b, float wx, float wz, float yBottom, float yTop,

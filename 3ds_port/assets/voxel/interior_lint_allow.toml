@@ -18,6 +18,38 @@ under = "its cupboard doors are drawn in the planks' own colours, inside its out
 [allow.lab_canisters]
 under = "their lower bands are drawn in the floor's shade grey, inside their outline: they are the canisters, not the floor under them"
 
+[allow.dept_store_1f_planter_s]
+under = "its box is drawn in the floor's own oranges, inside its outline: it is the planter, not the floor under it"
+
+[allow.dept_store_1f_planter_n]
+under = "its box is drawn in the floor's own oranges, inside its outline: it is the planter, not the floor under it"
+
+[allow.dept_store_rooftop_planter_s]
+under = "its box's rim and foot are drawn in the roof's greys, inside its outline: it is the planter, not the floor under it"
+
+[allow.dept_store_rooftop_planter_n]
+under = "its box's rim and foot are drawn in the roof's greys, inside its outline: it is the planter, not the floor under it"
+
+[allow.dept_store_rooftop_rail_n]
+stripes = "its sides are its bars, grey between the roof's light grey: a railing's make, not a barcode"
+foreign = "its ends show the bars and the roof between them as its front does (through): the roof seen through a railing, not a fin"
+
+[allow.dept_store_rooftop_rail_w]
+foreign = "a railing running down the roof's side is drawn as its top line alone: its long sides carry the back railing's bars (ROOF_BARS), as Rustboro's railings' flanks carry the row's"
+
+[allow.dept_store_rooftop_rail_e]
+foreign = "a railing running down the roof's side is drawn as its top line alone: its long sides carry the back railing's bars (ROOF_BARS), as Rustboro's railings' flanks carry the row's"
+
+[allow.dept_store_rooftop_rail_ne_s]
+foreign = "a railing running down the roof's side is drawn as its top line alone: its long sides carry the back railing's bars (ROOF_BARS), as Rustboro's railings' flanks carry the row's"
+
+[allow.dept_store_rooftop_rail_ne_e]
+stripes = "its sides are its bars, grey between the roof's light grey: a railing's make, not a barcode"
+foreign = "its ends show the bars and the roof between them as its front does (through): the roof seen through a railing, not a fin"
+
+[allow.dept_store_3f_counter]
+backdrop = "the two computers' shadows on its top are drawn in the green the floor shades with: its top, not the room round it"
+
 [allow.pc2f_counter]
 copied = "its side is its front's bands - the top's lip, the dark line under it, the lilac band, the panel - which run round its ends as along its front: the counter's make, not a drawer's edge"
 
@@ -39,3 +71,24 @@ card_bg = "its pot is drawn in the floor's greys, inside its outline: the pot, n
 
 [allow.flower_shop_room_table_e_white]
 card_bg = "its pot is drawn in the floor's greys, inside its outline: the pot, not the floor behind the plant"
+
+[allow.museum_1f_counter_w]
+under = "the counter is drawn in the floor's own creams: its front's foot is the counter's, inside its outline"
+
+[allow.museum_1f_counter_e]
+under = "the counter is drawn in the floor's own creams: its front's foot is the counter's, inside its outline"
+
+[allow.museum_1f_case]
+under = "the case is drawn in the floor's own creams: its front's foot is the case's, inside its outline"
+
+[allow.museum_1f_statue_h]
+bleed = "the figure and its pedestal are one stone, drawn in the same greens: the figure's own, not the pedestal's top"
+
+[allow.museum_2f_statue_e]
+bleed = "the figure and its pedestal are one stone, drawn in the same greens: the figure's own, not the pedestal's top"
+
+[allow.lanettes_house_desks_e]
+stripes = "a desk a single row deep: its only rows to dress its sides with are its top's edge, the keyboards' white and grey over a checker of two yellows (its front's edge carries its legs' lines, and is all but black)"
+
+[allow.day_care_pc]
+stripes = "the Centers' computer, drawn alike: its only columns to dress its sides with are its casing's edge, the screen's white over grey down it"

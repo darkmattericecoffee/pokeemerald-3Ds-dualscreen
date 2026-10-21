@@ -72,8 +72,11 @@ SIDE = 5
 DRAWN = 0x8000
 UNIT2 = 0x4000
 LEVEL = 0x8000          # of the width: heights with no depth, lifted straight up as a base is
+WIDE = 0x4000           # of the width: the cells' heights are s16 pixels (a mountain past 16 levels)
 BELT_SHIFT = 10         # bits 10-13 of the height: the belt's courses
 BELT_MAX = 15
+EASE_SHIFT = 10         # bits 10-13 of the width: the south seam's ease, 8 px a unit (seam_eases)
+EASE_MAX = 15
 HEIGHT_MASK = 0x03FF
 NO_VARIANT = 0xFFFF
 NONE16 = 0xFFFF
@@ -97,12 +100,15 @@ def parse(blob):
     for i in range(count):
         lid, n, w, hh, off, base = struct.unpack_from("<HHHHIh", blob, 8 + 14 * i)
         unit = 2 if hh & UNIT2 else 1
+        wide = bool(w & WIDE)
+        stride, fmt = (52, "<25h") if wide else (27, "<25b")
         cells = {}
         for k in range(n):
-            x, y = blob[off + 27 * k], blob[off + 27 * k + 1]
-            cells[(x, y)] = [v * unit for v in struct.unpack_from("<25b", blob, off + 27 * k + 2)]
+            x, y = blob[off + stride * k], blob[off + stride * k + 1]
+            cells[(x, y)] = [v * (1 if wide else unit) for v in struct.unpack_from(fmt, blob, off + stride * k + 2)]
         layouts[lid] = {"w": w & HEIGHT_MASK, "h": hh & HEIGHT_MASK, "flags": hh & (DRAWN | UNIT2),
                         "base": base, "belt": (hh >> BELT_SHIFT) & BELT_MAX,
+                        "ease": (w >> EASE_SHIFT) & EASE_MAX,
                         "level": bool(w & LEVEL), "cells": cells}
     variants, cuts = [], {}
     if blob[-4:] == b"CUTS":
@@ -141,11 +147,23 @@ def cut_clear(rows):
     if not any(c[k] < a * (c[3] if a > 0 else -c[2]) + b * (c[1] if b > 0 else -c[0])
                for k, (a, b) in enumerate(_CUT_DIR) if k >= 4):
         return clear                # no 45-degree side
+    def takes(i, j):
+        return all(a * (i if a > 0 else i + 1) + b * (j if b > 0 else j + 1) < ck + (a > 0) + (b > 0)
+                   for (a, b), ck in zip(_CUT_DIR, c))
+    # a horizontal or vertical side a pixel long, where a 45-degree side ends
+    # at the tile's edge, is no side (VoxelRelief_CutClear): the staircase's
+    # last step, which left the tile's corner pixel clear
+    for k, (a, b) in enumerate(_CUT_DIR[:4]):
+        if c[k] >= (15 if a + b > 0 else 0):
+            continue
+        c[k] += 1
+        gained = sum(1 for j in range(16) for i in range(16)
+                     if (clear[j] >> i) & 1 and a * i + b * j == c[k] and takes(i, j))
+        if gained != 1:
+            c[k] -= 1
     for j in range(16):
         for i in range(16):
-            if (clear[j] >> i) & 1 and all(
-                    a * (i if a > 0 else i + 1) + b * (j if b > 0 else j + 1) < ck + (a > 0) + (b > 0)
-                    for (a, b), ck in zip(_CUT_DIR, c)):
+            if (clear[j] >> i) & 1 and takes(i, j):
                 clear[j] &= ~(1 << i)
     return clear
 
@@ -170,10 +188,68 @@ def cut_fringe(rows, clear):
     return out
 
 
+_LINKS = []
+
+
+def ease_rows(ease, height):
+    """The rows a south seam's ease (units of 8 px) is spread over: six a
+    level, at most half the map (voxel_relief.c EaseRows)."""
+    return min(height // 2, (6 * 8 * ease + 15) // 16)
+
+
+def seam_eases(relief):
+    """{layout index: ease, units of 8 px}. A point stands as far south as it
+    is high over its own map's base (u, h, v + h), so a map whose south edge
+    is ground under its base - Route 111's, two levels under the plateau it
+    stands on - meets the map south of it at one height but rows short of
+    it. The ease is those rows, spread over the map's last rows (EaseRows):
+    each a little longer, its drawing and all on it, and the edges meet with
+    nothing between them (voxel_relief.c VoxelRelief_Depth). The commonest
+    shortfall along the seams where the heights meet; none past a level map
+    (no depth) or under 8 px."""
+    if not _LINKS:
+        import gen_voxel_relief
+        _LINKS.extend(gen_voxel_relief.map_links())
+    tally = {}
+    for a, b, direction, offset in _LINKS:
+        if direction != "down":
+            continue
+        ia, ib = layout_index(a), layout_index(b)
+        ta = relief["layouts"].get(ia)
+        if ta is None or ta.get("level"):
+            continue
+        tb = relief["layouts"].get(ib)
+        ea, eb = layout_entry(a), layout_entry(b)
+        for x in range(max(0, offset), min(ea["width"], offset + eb["width"])):
+            ga = ta["cells"].get((x, ea["height"] - 1))
+            gb = tb["cells"].get((x - offset, 0)) if tb else None
+            ha, hb = (ga[22] if ga else 0), (gb[2] if gb else 0)
+            if abs(ta["base"] + ha - ((tb["base"] if tb else 0) + hb)) > 1:
+                continue        # a step: the skirt closes it
+            db = 0 if tb is None or tb.get("level") else hb
+            c = tally.setdefault(ia, {})
+            c[db - ha] = c.get(db - ha, 0) + 1
+    out = {}
+    for ia, c in tally.items():
+        gap, n = max(c.items(), key=lambda kv: kv[1])
+        if gap >= 8 and 2 * n >= sum(c.values()):
+            out[ia] = min(EASE_MAX, gap // 8)
+    return out
+
+
 def pack(relief):
+    eases = seam_eases(relief)
     tables = []
     for lid in sorted(relief["layouts"]):
         t = relief["layouts"][lid]
+        t["ease"] = eases.get(lid, 0)
+        if t["ease"]:
+            # every cell of the eased rows carries its depth: the engine's
+            # plain ground (no cell) has none
+            rows = ease_rows(t["ease"], t["h"])
+            for y in range(t["h"] - rows, t["h"]):
+                for x in range(t["w"]):
+                    t["cells"].setdefault((x, y), [0] * 25)
         if not t["cells"] and not t["base"] and not t.get("belt"):
             continue
         flags = t["flags"]
@@ -181,18 +257,31 @@ def pack(relief):
         if values and not flags & UNIT2 and (max(values) > 127 or min(values) < -128):
             flags |= UNIT2
         unit = 2 if flags & UNIT2 else 1
-        tables.append((lid, t, flags, unit))
+        # past a signed byte of 2-pixel units (16 levels over the base): every
+        # height in pixels, two bytes each - only the maps that need it
+        wide = bool(values) and (max(values) > 254 or min(values) < -256)
+        if wide:
+            flags &= ~UNIT2
+            unit = 1
+        tables.append((lid, t, flags, unit, wide))
     head = MAGIC + struct.pack("<HH", len(tables), SIDE)
     offset = len(head) + 14 * len(tables)
     idx, body = bytearray(), bytearray()
-    for lid, t, flags, unit in tables:
+    for lid, t, flags, unit, wide in tables:
         cells = sorted(t["cells"].items(), key=lambda kv: (kv[0][1], kv[0][0]))
-        idx += struct.pack("<HHHHIh", lid, len(cells), t["w"] | (LEVEL if t.get("level") else 0),
+        idx += struct.pack("<HHHHIh", lid, len(cells),
+                           t["w"] | (LEVEL if t.get("level") else 0) | (WIDE if wide else 0)
+                           | (t.get("ease", 0) << EASE_SHIFT),
                            t["h"] | flags | (t.get("belt", 0) << BELT_SHIFT),
                            offset + len(body), int(t["base"]))
         lossy = 0
         for (x, y), g in cells:
             body += struct.pack("<BB", x, y)
+            if wide:
+                stored = [max(-32768, min(32767, int(round(v)))) for v in g]
+                lossy += sum(1 for s, v in zip(stored, g) if s != v)
+                body += struct.pack("<25h", *stored)
+                continue
             stored = [max(-128, min(127, int(round(v / unit)))) for v in g]
             lossy += sum(1 for s, v in zip(stored, g) if s * unit != v)
             body += struct.pack("<25b", *stored)
