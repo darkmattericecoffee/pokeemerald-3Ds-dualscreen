@@ -473,6 +473,29 @@ void CtrStereoMon_Press(unsigned keys)
 /* Which Pokémon have edit files (CtrStereoMon_EditScan). */
 static uint8_t sEditMarks[(CTR_STEREO_MON_MAX_COUNT + 7) / 8];
 static bool sEditScanned;
+static uint8_t *MarkOf(uint16_t id, unsigned *bit, bool final);
+/* The first three letters of each edit file's signer, by the mark's index
+ * (fronts by id, backs by their file index): the Pokédex's tags. */
+static char sEditWho[2][CTR_STEREO_MON_MAX_COUNT][4];
+
+static void SetWho(uint16_t id, const char *author)
+{
+    unsigned bit, side = (id & 0xC000) == 0 ? 0 : 1;
+
+    if (MarkOf(id, &bit, false) == NULL || bit >= CTR_STEREO_MON_MAX_COUNT) return;
+    memset(sEditWho[side][bit], 0, 4);
+    for (unsigned k = 0; k < 3 && author && author[k] && author[k] != ' '; ++k) sEditWho[side][bit][k] = author[k];
+}
+
+bool CtrStereoMon_EditAuthor3(uint16_t id, char *out)
+{
+    unsigned bit, side = (id & 0xC000) == 0 ? 0 : 1;
+
+    out[0] = 0;
+    if (MarkOf(id, &bit, false) == NULL || bit >= CTR_STEREO_MON_MAX_COUNT) return false;
+    memcpy(out, sEditWho[side][bit], 4);
+    return out[0] != 0;
+}
 
 /* The Pokémon's file, opened without the data layer's logging: most
  * Pokémon have none. */
@@ -676,6 +699,9 @@ static bool LoadEdit(uint16_t id)
         ReadMeta(f, frames, &sMeta);
         fclose(f);
     }
+    SetMark(id, true);
+    SetMarkOf(id, true, sMeta.finalized);
+    SetWho(id, sMeta.author);
     CtrLog_Write(CTR_LOG_VIDEO, "stereo: id %04x edited planes from the SD card (%u planes, %u frames, r%u by %s%s)", id,
                  planes, frames, sMeta.revision, sMeta.author[0] ? sMeta.author : "?", sMeta.finalized ? ", final" : "");
     return true;
@@ -1033,6 +1059,7 @@ bool CtrStereoMon_SaveEdit(void)
             sMeta.revision = revision;
             sMeta.saved = saved;
             snprintf(sMeta.author, sizeof(sMeta.author), "%s", CtrStereoMon_Author());
+            SetWho(sId, sMeta.author);
             snprintf(sMeta.base, sizeof(sMeta.base), "%s", base);
             sMeta.baseRevision = baseRevision;
         }
@@ -1081,9 +1108,17 @@ void CtrStereoMon_EditScan(void)
     DIR *d = opendir(EDIT_DIR);
     struct dirent *e;
 
+    /* Once per boot: every file is opened for its trailer, seconds on a
+     * full card; saves, resets and reloads keep the marks up after. */
+    if (sEditScanned)
+    {
+        if (d) closedir(d);
+        return;
+    }
     memset(sEditMarks, 0, sizeof(sEditMarks));
     memset(sBackMarks, 0, sizeof(sBackMarks));
     memset(sFinalMarks, 0, sizeof(sFinalMarks));
+    memset(sEditWho, 0, sizeof(sEditWho));
     sEditScanned = true;
     if (d == NULL) return;
     while ((e = readdir(d)) != NULL)
@@ -1102,11 +1137,14 @@ void CtrStereoMon_EditScan(void)
             FILE *f;
 
             SetMark(id, true);
-            /* Its trailer, for the finished mark. */
+            /* Its trailer, for the finished mark and the signer. */
             f = OpenEdit(id, "bin", "rb");
             if (f == NULL) continue;
-            if (fread(header, 1, sizeof(header), f) == sizeof(header) && ReadMeta(f, header[11], &meta) && meta.finalized)
-                SetMarkOf(id, true, true);
+            if (fread(header, 1, sizeof(header), f) == sizeof(header) && ReadMeta(f, header[11], &meta))
+            {
+                if (meta.finalized) SetMarkOf(id, true, true);
+                SetWho(id, meta.author);
+            }
             fclose(f);
         }
     }

@@ -331,6 +331,9 @@ bool CtrStereoMon_ResetEdit(void);
 /* Which Pokémon have edit files: scanned once (Scan) and then answered from
  * memory, for the chooser's marks. */
 void CtrStereoMon_EditScan(void);
+/* Who signed an id's edit file: its first three letters into `out` (4 bytes),
+ * from the scan (and kept up by saves and reloads); false without a file. */
+bool CtrStereoMon_EditAuthor3(uint16_t id, char *out);
 bool CtrStereoMon_HasEdit(uint16_t id);
 /* The card's edit files changed behind the viewer's back (a sync,
  * 3ds_online.c): scanned again, the battle's planes forgotten, the gallery's

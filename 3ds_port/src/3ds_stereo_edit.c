@@ -219,9 +219,9 @@ static const char *const sOpacityNames[] = {"MAX", "60", "30", "15"};
  * Pokémon, and the top screen's VIEW LAYERS uses them too. */
 static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
-enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS, S_CONFIRM_FORK, S_CONFIRM_PROPAGATE };
+enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS, S_CONFIRM_FORK, S_CONFIRM_PROPAGATE, S_CONFIRM_MERGE };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
-enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_MERGE, O_PROPAGATE, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
+enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_PROPAGATE, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -309,7 +309,8 @@ static struct
     unsigned chooseCursor;
     /* The chooser: the entry the editor had when it opened, and the one the
      * top screen shows now (the cursor's, as it moves). */
-    unsigned chooseOpened, previewIndex;
+    unsigned chooseOpened, previewIndex, previewWant;
+    uint32_t previewSince;
     bool iconsMissing;
     /* SHOW_ALL, SHOW_EDITED, or SHOW_NEW: what the last sync brought. */
     uint8_t show;
@@ -1455,6 +1456,8 @@ static void TouchFork(const CtrInput *in);
 static void DrawFork(void);
 static void TouchPropagate(const CtrInput *in);
 static void DrawPropagate(void);
+static void TouchMerge(const CtrInput *in);
+static void DrawMerge(void);
 /* The next open shows the new pictures (CtrStereoEdit_PreferNew). */
 static bool sPreferNew, sPreferDex;
 
@@ -1480,6 +1483,8 @@ void CtrStereoEdit_Open(bool fromGallery)
     sE.fromGallery = fromGallery;
     sE.dirtyDraw = true;
     sE.reloads = CtrStereoMon_ReloadCount();
+    /* The card's edit files are scanned once per boot (every file is opened
+     * for its trailer: seconds on a full card); saves keep the marks up. */
     CtrStereoMon_EditScan();
     Bind();
     if (sPreferDex)
@@ -1666,6 +1671,16 @@ static void PreviewChosen(void)
     if (sE.screen != S_CHOOSE || sListCount == 0) return;
     index = sList[sE.chooseCursor];
     if (index == sE.previewIndex) return;
+    /* Only once the cursor rests a few frames: each preview reads the
+     * picture off the card and composes its planes (a tenth of a second
+     * on the console), too much for every step of a scroll. */
+    if (index != sE.previewWant)
+    {
+        sE.previewWant = index;
+        sE.previewSince = sE.tick;
+        return;
+    }
+    if (sE.tick - sE.previewSince < 8) return;
     sE.previewIndex = index;
     sE.pl = NULL;
     sE.id = 0;
@@ -1857,7 +1872,7 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
         return;
     }
     if (sE.screen == S_OPTIONS || sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL || sE.screen == S_CONFIRM_FORK
-        || sE.screen == S_CONFIRM_PROPAGATE)
+        || sE.screen == S_CONFIRM_PROPAGATE || sE.screen == S_CONFIRM_MERGE)
     {
         if (down & (CTR_KEY_B | CTR_KEY_START)) sE.screen = S_EDIT;
         return;
@@ -1903,6 +1918,17 @@ static void SliderAt(int x, int y)
     if (sE.slider == SLIDER_ZOOM) SetZoom(SliderValue(x, ZOOM_X0, ZOOM_X1, ZOOMS), CAN_W / 2, H / 2);
     else if (sE.slider == SLIDER_SIZE) *(sE.tool == T_ERASE ? &sE.eraseSize : &sE.size) = (uint8_t)(1 + SliderValue(x, SIZE_X0, SIZE_X1, SIZES));
     sE.dirtyDraw = true;
+}
+
+/* The merge-down button: a small plate at the top right of the selected
+ * plane's row, not on the farthest plane (nothing under it). */
+#define MERGE_BTN_W 14
+#define MERGE_BTN_H 11
+static bool MergeButtonAt(int x, int y)
+{
+    int r = PLANES - 1 - (int)sE.layer, by = ROW_Y0 + r * ROW_STEP + 2, bx = ROW_X + ROW_SIDE - MERGE_BTN_W - 2;
+
+    return sE.layer > 0 && x >= bx && x < bx + MERGE_BTN_W && y >= by && y < by + MERGE_BTN_H;
 }
 
 static int RowAt(int y)
@@ -2165,6 +2191,12 @@ static void TouchEdit(const CtrInput *in)
             {
                 sE.pressed = P_RIGHT + B_OPACITY;
                 RightAct(B_OPACITY);
+            }
+            else if (y < ROWS_END && MergeButtonAt(x, y))
+            {
+                /* The selected plane's little arrow: merge it down, after asking. */
+                sE.screen = S_CONFIRM_MERGE;
+                sE.dirtyDraw = true;
             }
             else if (y < ROWS_END)
             {
@@ -2504,10 +2536,6 @@ static void OptionAct(int row, bool rightHalf)
     case O_STRAYS:
         sE.screen = S_EDIT;
         FixStrays();
-        break;
-    case O_MERGE:
-        sE.screen = S_EDIT;
-        MergeDown();
         break;
     case O_PROPAGATE:
         sE.screen = S_EDIT;
@@ -3557,6 +3585,24 @@ static void TouchFork(const CtrInput *in)
     sE.dirtyDraw = true;
 }
 
+/* The plane's arrow: MERGE DOWN or CANCEL. */
+static void TouchMerge(const CtrInput *in)
+{
+    if (!in->touchDown) return;
+    if (in->touchY >= CF_Y + 52 && in->touchY < CF_Y + 80)
+    {
+        if (in->touchX >= CF_X + 16 && in->touchX < CF_X + 96)
+        {
+            sE.screen = S_EDIT;
+            MergeDown();
+        }
+        else if (in->touchX >= CF_X + 104 && in->touchX < CF_X + 184) sE.screen = S_EDIT;
+    }
+    else if (in->touchY < CF_Y || in->touchY >= CF_Y + CF_H || in->touchX < CF_X || in->touchX >= CF_X + CF_W)
+        sE.screen = S_EDIT;
+    sE.dirtyDraw = true;
+}
+
 /* FRAME 2 IS UNTOUCHED: carry frame 1's planes over, or not. */
 static void TouchPropagate(const CtrInput *in)
 {
@@ -4286,6 +4332,17 @@ static void DrawRight(void)
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, label, ROW_X + ROW_FRAME + 5, y + ROW_FRAME,
                                   light ? CTR_DRAW_DARK : CTR_DRAW_WHITE);
         if (grabbed) CtrBottomDraw_Fill(ROW_X + ROW_FRAME, y + ROW_FRAME, THUMB, 4, Rgb(31, 50, 10));
+        if (cur && plane > 0)
+        {
+            /* The merge-down button: a white plate, a dark arrow down and right. */
+            int bx = ROW_X + ROW_SIDE - MERGE_BTN_W - 2, by = y + 2;
+
+            CtrBottomDraw_Fill(bx, by, MERGE_BTN_W, MERGE_BTN_H, Rgb(31, 63, 31));
+            CtrBottomDraw_Fill(bx + 1, by + 1, MERGE_BTN_W - 2, MERGE_BTN_H - 2, Rgb(28, 58, 29));
+            for (int i = 0; i < 6; ++i) Px(bx + 3 + i, by + 2 + i, INK_DARK);
+            CtrBottomDraw_Fill(bx + 6, by + 7, 3, 1, INK_DARK);
+            CtrBottomDraw_Fill(bx + 8, by + 5, 1, 3, INK_DARK);
+        }
         if (sE.grabRow >= 0 && sE.grabTarget == r && !grabbed)
             CtrBottomDraw_Fill(ROW_X - 2, sE.grabTarget > sE.grabRow ? y + ROW_SIDE - 1 : y - 3, ROW_SIDE + 4, 3, Rgb(31, 50, 10));
     }
@@ -4335,6 +4392,20 @@ static void DrawFork(void)
     CtrBottomDraw_Plate(CF_X + 104, CF_Y + 52, 80, 24, 1, false);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "MAKE NEW", CF_X + 56, CF_Y + 57, CTR_DRAW_DARK);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "COPY AND EDIT", CF_X + 144, CF_Y + 57, CTR_DRAW_WHITE);
+}
+
+static void DrawMerge(void)
+{
+    char line[48];
+
+    CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, CF_H / 8, false);
+    snprintf(line, sizeof(line), "MERGE PLANE %u DOWN INTO PLANE %u?", PLANES - sE.layer, PLANES - sE.layer + 1);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, CF_X + CF_W / 2, CF_Y + 10, CTR_DRAW_DARK);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "ON THIS FRAME. UNDO TAKES IT BACK.", CF_X + CF_W / 2, CF_Y + 26, CTR_DRAW_BLUE);
+    CtrBottomDraw_Plate(CF_X + 16, CF_Y + 52, 80, 24, 1, false);
+    CtrBottomDraw_Plate(CF_X + 104, CF_Y + 52, 80, 24, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "MERGE DOWN", CF_X + 56, CF_Y + 57, CTR_DRAW_WHITE);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "CANCEL", CF_X + 144, CF_Y + 57, CTR_DRAW_DARK);
 }
 
 static void DrawPropagate(void)
@@ -4618,7 +4689,7 @@ static void StripLabels(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "MERGE PLANE DOWN", "PROPAGATE PLANES", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "PROPAGATE PLANES", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -4633,8 +4704,6 @@ static void DrawOptions(void)
         if (row == O_STRAYS && sStrayCount) snprintf(value, sizeof(value), "%u", sStrayCount);
         if (row == O_PROPAGATE && sE.frames > 1) snprintf(value, sizeof(value), "F%u TO F%u", sE.frame + 1, (sE.frame + 1) % sE.frames + 1);
         else if (row == O_PROPAGATE) snprintf(value, sizeof(value), "ONE FRAME");
-        if (row == O_MERGE && sE.layer > 0) snprintf(value, sizeof(value), "%u INTO %u", PLANES - sE.layer, PLANES - sE.layer + 1);
-        else if (row == O_MERGE) snprintf(value, sizeof(value), "FARTHEST");
         else if (row == O_STRAYS) snprintf(value, sizeof(value), "NONE");
         if (row == O_MUSIC && CtrExtras_Find(CTR_EDITOR_MUSIC_KEY))
         {
@@ -4729,10 +4798,24 @@ static void DrawChooser(void)
              * globe once it is FINAL; else who made the server's current one. */
             if (edited)
             {
-                int w = CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, "YOU"), ax = x + 2 + (32 - w) / 2;
+                /* YOU for a file signed by this console's name, else the
+                 * signer's first letters after @ (a version copied to the
+                 * card, or another's tweaked); +n for the versions on the
+                 * server besides. */
+                char who[4], tag[16];
+                int w, ax;
+                unsigned others = nf + nb;
 
+                if (!CtrStereoMon_EditAuthor3(id, who) && other) CtrStereoMon_EditAuthor3(other, who);
+                if (!who[0] || strncmp(who, CtrStereoMon_Author(), 3) == 0) snprintf(tag, sizeof(tag), "YOU");
+                else snprintf(tag, sizeof(tag), "@%s", who);
+                /* (The font has no plus: an ampersand, "and n more".) */
+                if (others) snprintf(tag + strlen(tag), sizeof(tag) - strlen(tag), " &%u", others);
+                w = CtrBottomDraw_TextWidth(CTR_DRAW_FONT_SMALL, tag);
+                ax = x + 2 + (32 - w) / 2;
+                if (ax < x + 1) ax = x + 1;
                 FillMix(ax - 2, y + 19, w + 4, 11, Rgb(31, 63, 31), 1, 2);
-                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "YOU", ax, y + 19, CTR_DRAW_RED);
+                CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, tag, ax, y + 19, CTR_DRAW_RED);
             }
             else if (CtrOnline_CurrentAuthor(front, author, sizeof(author)) || (back && CtrOnline_CurrentAuthor(back, author, sizeof(author))))
             {
@@ -4968,6 +5051,7 @@ static void Draw(void)
         if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) DrawConfirm();
         if (sE.screen == S_CONFIRM_FORK) DrawFork();
         if (sE.screen == S_CONFIRM_PROPAGATE) DrawPropagate();
+        if (sE.screen == S_CONFIRM_MERGE) DrawMerge();
     }
     CtrBottomDraw_End();
     CtrBottom_Blit(sCanvas, 0, W);
@@ -5229,6 +5313,7 @@ bool CtrStereoEdit_BottomFrame(void)
     else if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) TouchConfirm(in);
     else if (sE.screen == S_CONFIRM_FORK) TouchFork(in);
     else if (sE.screen == S_CONFIRM_PROPAGATE) TouchPropagate(in);
+    else if (sE.screen == S_CONFIRM_MERGE) TouchMerge(in);
     else
     {
         TouchEdit(in);
