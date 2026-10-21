@@ -219,9 +219,9 @@ static const char *const sOpacityNames[] = {"MAX", "60", "30", "15"};
  * Pokémon, and the top screen's VIEW LAYERS uses them too. */
 static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
-enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS, S_CONFIRM_FORK };
+enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS, S_CONFIRM_FORK, S_CONFIRM_PROPAGATE };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
-enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_MERGE, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
+enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_MERGE, O_PROPAGATE, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -290,6 +290,10 @@ static struct
     char forkWho[17];
     /* The versions screen's BIG view: the cursor's column at 2x. */
     bool big;
+    /* The offer to carry a drawn-on frame's planes to an untouched one:
+     * made once per picture, from this frame. */
+    bool askedPropagate;
+    uint8_t propagateFrom;
     int lastTouchX, lastTouchY;
     /* A plane's row touched: picked on release, grabbed when held still. */
     bool rowTouch;
@@ -560,6 +564,7 @@ static void Changed(void)
     sE.dirtyFile = true;
     sE.changedAt = sE.tick;
     ++sE.strayStamp;
+    CtrStereoMon_SetFramesEdited(1u << sE.frame);
     CtrStereoMon_Recompose();
     CtrStereoBattle_LiveChanged();
 }
@@ -838,6 +843,121 @@ static void FindStrays(void)
     }
     CtrStereoMon_SetStrays(sE.frame, sStrayList, sE.straysOn ? sStrayListed : 0);
     if (sStrayCount != before) sE.helpDirty = true;
+}
+
+/* ── Propagation between frames ─────────────────────────────────────── */
+
+/*
+ * Frame `to` takes frame `from`'s planes, pixel by pixel, following the
+ * picture's own motion: the picture is cut into 8x8 blocks and for each
+ * the shift (up to PROP_SHIFT either way) under which most of the block's
+ * pixels (with a 4-pixel margin round it) find the same colour in the
+ * other frame; a pixel then takes the plane of the nearest pixel of its
+ * colour in the other frame around its shifted place (PROP_NEAR), or
+ * failing that around its own place (PROPAGATE_RADIUS). A pixel with no
+ * match keeps its plane. One undo takes it all back.
+ */
+/* How far the fallback looks for a pixel of the same colour, unshifted. */
+#define PROPAGATE_RADIUS 7
+#define PROP_SHIFT 6
+#define PROP_NEAR 3
+#define PROP_BLOCK 8
+#define PROP_MARGIN 4
+
+static bool PropNearest(const uint16_t *src, unsigned to, int cx, int cy, int radius, uint16_t colour, unsigned *plane)
+{
+    (void)to;
+    for (int r = 0; r <= radius; ++r)
+        for (int dy = -r; dy <= r; ++dy)
+            for (int dx = -r; dx <= r; ++dx)
+            {
+                int x = cx + dx, y = cy + dy;
+                unsigned j, p;
+
+                if ((dx != -r && dx != r && dy != -r && dy != r) || x < 0 || y < 0 || x >= DIM || y >= DIM) continue;
+                j = (unsigned)(y * DIM + x);
+                if (src[j] != colour) continue;
+                p = GetPlane(sE.propagateFrom, j);
+                if (p == NONE) continue;
+                *plane = p;
+                return true;
+            }
+    return false;
+}
+
+static void PropagateFrame(unsigned from, unsigned to)
+{
+    const uint16_t *src = sE.pic[from], *dst = sE.pic[to];
+    static int8_t shiftX[DIM / PROP_BLOCK][DIM / PROP_BLOCK], shiftY[DIM / PROP_BLOCK][DIM / PROP_BLOCK];
+    unsigned set = 0, missed = 0;
+    char line[48];
+
+    if (from == to || from >= sE.frames || to >= sE.frames || src == NULL || dst == NULL) return;
+    sE.propagateFrom = (uint8_t)from;
+    /* Each block's shift: where its pixels find their colours again. */
+    for (int by = 0; by < DIM / PROP_BLOCK; ++by)
+        for (int bx = 0; bx < DIM / PROP_BLOCK; ++bx)
+        {
+            int best = -1, bestDx = 0, bestDy = 0;
+            int x0 = bx * PROP_BLOCK - PROP_MARGIN, y0 = by * PROP_BLOCK - PROP_MARGIN;
+            int x1 = x0 + PROP_BLOCK + 2 * PROP_MARGIN, y1 = y0 + PROP_BLOCK + 2 * PROP_MARGIN;
+
+            for (int dy = -PROP_SHIFT; dy <= PROP_SHIFT; ++dy)
+                for (int dx = -PROP_SHIFT; dx <= PROP_SHIFT; ++dx)
+                {
+                    int score = 0;
+
+                    for (int y = y0; y < y1; ++y)
+                    {
+                        int sy = y - dy;
+
+                        if (y < 0 || y >= DIM || sy < 0 || sy >= DIM) continue;
+                        for (int x = x0; x < x1; ++x)
+                        {
+                            int sx = x - dx;
+
+                            if (x < 0 || x >= DIM || sx < 0 || sx >= DIM) continue;
+                            if (dst[y * DIM + x] != 0 && dst[y * DIM + x] == src[sy * DIM + sx]) ++score;
+                        }
+                    }
+                    /* Among equals the smallest shift (the loop meets it first
+                     * only by chance: compare the distance). */
+                    if (score > best || (score == best && dx * dx + dy * dy < bestDx * bestDx + bestDy * bestDy))
+                    {
+                        best = score;
+                        bestDx = dx;
+                        bestDy = dy;
+                    }
+                }
+            shiftX[by][bx] = (int8_t)bestDx;
+            shiftY[by][bx] = (int8_t)bestDy;
+        }
+    PushUndo();
+    for (unsigned i = 0; i < N; ++i)
+    {
+        int x = (int)(i % DIM), y = (int)(i / DIM);
+        unsigned plane;
+
+        if (dst[i] == 0) continue;
+        if (PropNearest(src, to, x - shiftX[y / PROP_BLOCK][x / PROP_BLOCK], y - shiftY[y / PROP_BLOCK][x / PROP_BLOCK],
+                        PROP_NEAR, dst[i], &plane)
+            || PropNearest(src, to, x, y, PROPAGATE_RADIUS, dst[i], &plane))
+        {
+            if (GetPlane(to, i) != plane)
+            {
+                PutPlane(to, i, plane);
+                ++set;
+            }
+        }
+        else ++missed;
+    }
+    CtrStereoMon_SetFramesEdited(1u << to);
+    CtrStereoMon_LogEdit("propagate");
+    Changed();
+    sE.helpDirty = true;
+    if (missed) snprintf(line, sizeof(line), "FRAME %u: %u PIXELS SET, %u UNMATCHED", to + 1, set, missed);
+    else snprintf(line, sizeof(line), "FRAME %u: %u PIXELS SET", to + 1, set);
+    Toast(line);
 }
 
 /* MERGE DOWN: the plane being edited poured into the one under it in the
@@ -1222,15 +1342,33 @@ static void PickPlane(unsigned plane)
 }
 
 /* The other frame, when there is one. */
+static void OfferPropagate(unsigned from);
+
 static void OtherFrame(void)
 {
     char line[24];
+    unsigned from = sE.frame;
 
     if (sE.frames < 2) return;
     sE.frame = (sE.frame + 1) % sE.frames;
     sE.helpDirty = true;
     snprintf(line, sizeof(line), "FRAME %u OF %u", sE.frame + 1, sE.frames);
     Toast(line);
+    OfferPropagate(from);
+}
+
+/* Arrived on a frame nobody drew on from one that was: once per picture,
+ * the offer to carry the planes over (S_CONFIRM_PROPAGATE). */
+static void OfferPropagate(unsigned from)
+{
+    const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();
+
+    if (sE.askedPropagate || sE.frames < 2 || sE.screen != S_EDIT) return;
+    if (!(meta->framesEdited & (1u << from)) || (meta->framesEdited & (1u << sE.frame))) return;
+    sE.askedPropagate = true;
+    sE.propagateFrom = (uint8_t)from;
+    sE.screen = S_CONFIRM_PROPAGATE;
+    sE.dirtyDraw = true;
 }
 
 /* ── The file ───────────────────────────────────────────────────────── */
@@ -1284,6 +1422,7 @@ static bool Bind(void)
     sE.frames = frames;
     for (unsigned f = 0; f < MAX_FRAMES; ++f) sE.pic[f] = f < frames ? CtrStereoMon_Picture(f) : NULL;
     sE.frame = 0;
+    sE.askedPropagate = false;
     ++sE.strayStamp;
     sE.lassoing = sE.stroking = sE.panning = false;
     sE.dirtyFile = false;
@@ -1314,6 +1453,8 @@ static void TouchVersions(const CtrInput *in);
 static void VersionsKeys(unsigned down);
 static void TouchFork(const CtrInput *in);
 static void DrawFork(void);
+static void TouchPropagate(const CtrInput *in);
+static void DrawPropagate(void);
 /* The next open shows the new pictures (CtrStereoEdit_PreferNew). */
 static bool sPreferNew, sPreferDex;
 
@@ -1715,7 +1856,8 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
         VersionsKeys(down);
         return;
     }
-    if (sE.screen == S_OPTIONS || sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL || sE.screen == S_CONFIRM_FORK)
+    if (sE.screen == S_OPTIONS || sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL || sE.screen == S_CONFIRM_FORK
+        || sE.screen == S_CONFIRM_PROPAGATE)
     {
         if (down & (CTR_KEY_B | CTR_KEY_START)) sE.screen = S_EDIT;
         return;
@@ -1917,6 +2059,7 @@ static void SaveTap(void)
 static void FrameTap(unsigned frame)
 {
     char line[24];
+    unsigned from = sE.frame;
 
     if (frame >= sE.frames)
     {
@@ -1928,6 +2071,7 @@ static void FrameTap(unsigned frame)
     sE.helpDirty = true;
     snprintf(line, sizeof(line), "FRAME %u OF %u", sE.frame + 1, sE.frames);
     Toast(line);
+    OfferPropagate(from);
 }
 
 /* START: the picture tried in a real battle: saved, then the game side
@@ -2364,6 +2508,11 @@ static void OptionAct(int row, bool rightHalf)
     case O_MERGE:
         sE.screen = S_EDIT;
         MergeDown();
+        break;
+    case O_PROPAGATE:
+        sE.screen = S_EDIT;
+        if (sE.frames < 2) Toast("ONE FRAME ONLY");
+        else PropagateFrame(sE.frame, (sE.frame + 1) % sE.frames);
         break;
     case O_MUSIC:
         /* The left half the tune before, the right half the next; the game
@@ -3408,6 +3557,24 @@ static void TouchFork(const CtrInput *in)
     sE.dirtyDraw = true;
 }
 
+/* FRAME 2 IS UNTOUCHED: carry frame 1's planes over, or not. */
+static void TouchPropagate(const CtrInput *in)
+{
+    if (!in->touchDown) return;
+    if (in->touchY >= CF_Y + 52 && in->touchY < CF_Y + 80)
+    {
+        if (in->touchX >= CF_X + 16 && in->touchX < CF_X + 96)
+        {
+            sE.screen = S_EDIT;
+            PropagateFrame(sE.propagateFrom, sE.frame);
+        }
+        else if (in->touchX >= CF_X + 104 && in->touchX < CF_X + 184) sE.screen = S_EDIT;
+    }
+    else if (in->touchY < CF_Y || in->touchY >= CF_Y + CF_H || in->touchX < CF_X || in->touchX >= CF_X + CF_W)
+        sE.screen = S_EDIT;
+    sE.dirtyDraw = true;
+}
+
 static void TouchOptions(const CtrInput *in)
 {
     if (!in->touchDown) return;
@@ -4170,6 +4337,21 @@ static void DrawFork(void)
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "COPY AND EDIT", CF_X + 144, CF_Y + 57, CTR_DRAW_WHITE);
 }
 
+static void DrawPropagate(void)
+{
+    char line[48];
+
+    CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, CF_H / 8, false);
+    snprintf(line, sizeof(line), "FRAME %u IS UNTOUCHED.", sE.frame + 1);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, CF_X + CF_W / 2, CF_Y + 10, CTR_DRAW_DARK);
+    snprintf(line, sizeof(line), "CARRY FRAME %u'S PLANES OVER TO IT?", sE.propagateFrom + 1);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, CF_X + CF_W / 2, CF_Y + 26, CTR_DRAW_BLUE);
+    CtrBottomDraw_Plate(CF_X + 16, CF_Y + 52, 80, 24, 1, false);
+    CtrBottomDraw_Plate(CF_X + 104, CF_Y + 52, 80, 24, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "PROPAGATE", CF_X + 56, CF_Y + 57, CTR_DRAW_WHITE);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "NOT NOW", CF_X + 144, CF_Y + 57, CTR_DRAW_DARK);
+}
+
 /* A five-pointed star, 11 pixels: a favourite's, gold, else a grey outline. */
 static void DrawStar(int x, int y, bool on)
 {
@@ -4436,7 +4618,7 @@ static void StripLabels(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "MERGE PLANE DOWN", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "MERGE PLANE DOWN", "PROPAGATE PLANES", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -4449,6 +4631,8 @@ static void DrawOptions(void)
         value[0] = 0;
         if (row == O_CONTROLS) snprintf(value, sizeof(value), "%s", sE.controls ? "ON" : "OFF");
         if (row == O_STRAYS && sStrayCount) snprintf(value, sizeof(value), "%u", sStrayCount);
+        if (row == O_PROPAGATE && sE.frames > 1) snprintf(value, sizeof(value), "F%u TO F%u", sE.frame + 1, (sE.frame + 1) % sE.frames + 1);
+        else if (row == O_PROPAGATE) snprintf(value, sizeof(value), "ONE FRAME");
         if (row == O_MERGE && sE.layer > 0) snprintf(value, sizeof(value), "%u INTO %u", PLANES - sE.layer, PLANES - sE.layer + 1);
         else if (row == O_MERGE) snprintf(value, sizeof(value), "FARTHEST");
         else if (row == O_STRAYS) snprintf(value, sizeof(value), "NONE");
@@ -4783,6 +4967,7 @@ static void Draw(void)
         if (sE.screen == S_OPTIONS) DrawOptions();
         if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) DrawConfirm();
         if (sE.screen == S_CONFIRM_FORK) DrawFork();
+        if (sE.screen == S_CONFIRM_PROPAGATE) DrawPropagate();
     }
     CtrBottomDraw_End();
     CtrBottom_Blit(sCanvas, 0, W);
@@ -5043,6 +5228,7 @@ bool CtrStereoEdit_BottomFrame(void)
     else if (sE.screen == S_VERSIONS) { TouchVersions(in); VersionsFrame(); }
     else if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) TouchConfirm(in);
     else if (sE.screen == S_CONFIRM_FORK) TouchFork(in);
+    else if (sE.screen == S_CONFIRM_PROPAGATE) TouchPropagate(in);
     else
     {
         TouchEdit(in);

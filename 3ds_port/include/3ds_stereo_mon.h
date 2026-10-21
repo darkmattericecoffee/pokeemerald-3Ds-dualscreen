@@ -308,7 +308,13 @@ typedef struct
      * over, and kept through every save after. */
     char base[CTR_STEREO_EDIT_AUTHOR + 1];
     uint16_t baseRevision;
+    /* Which frames have been drawn on (bit per frame; the trailer's flag
+     * byte, bits 1 on): the editor offers to carry frame 1's planes to a
+     * frame nobody touched yet. */
+    uint8_t framesEdited;
 } CtrStereoEditMeta;
+/* A frame drawn on (CtrStereoEditMeta.framesEdited), kept with the next save. */
+void CtrStereoMon_SetFramesEdited(unsigned mask);
 /* The shown picture's: what its file says, or empty without one. */
 const CtrStereoEditMeta *CtrStereoMon_EditMeta(void);
 /* Marks the shown picture finished (or not); kept with its next save. */

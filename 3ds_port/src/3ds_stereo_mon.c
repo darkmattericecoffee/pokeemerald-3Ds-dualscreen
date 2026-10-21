@@ -541,6 +541,7 @@ static bool ReadMeta(FILE *f, unsigned frames, CtrStereoEditMeta *meta)
         || fread(t, 1, sizeof(t), f) != sizeof(t) || memcmp(t, META_MAGIC, 8) != 0)
         return false;
     meta->finalized = (t[8] & META_FINAL) != 0;
+    meta->framesEdited = (uint8_t)((t[8] >> 1) & 0x1F);
     meta->revision = (uint16_t)(t[10] | (t[11] << 8));
     meta->saved = (uint32_t)t[12] | ((uint32_t)t[13] << 8) | ((uint32_t)t[14] << 16) | ((uint32_t)t[15] << 24);
     memcpy(meta->author, t + 16, CTR_STEREO_EDIT_AUTHOR);
@@ -888,6 +889,7 @@ static void DrawMateStack(float left, float top, float scale, float shift, unsig
 }
 
 void CtrStereoMon_SetFinalized(bool finalized) { sMeta.finalized = finalized; }
+void CtrStereoMon_SetFramesEdited(unsigned mask) { sMeta.framesEdited |= (uint8_t)(mask & 0x1F); }
 
 bool CtrStereoMon_IsFinal(uint16_t id)
 {
@@ -1016,7 +1018,7 @@ bool CtrStereoMon_SaveEdit(void)
         }
 
         memcpy(t, META_MAGIC, 8);
-        t[8] = sMeta.finalized ? META_FINAL : 0;
+        t[8] = (uint8_t)((sMeta.finalized ? META_FINAL : 0) | (sMeta.framesEdited << 1));
         t[9] = (uint8_t)CtrStereoDepths_Get().spread;
         t[10] = (uint8_t)revision;
         t[11] = (uint8_t)(revision >> 8);
