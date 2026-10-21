@@ -461,6 +461,9 @@ void CtrStereoMon_Press(unsigned keys)
 #define EDIT_FRAME_BYTES (DIM * DIM / 2)
 /* The trailer after the frames (3ds_stereo_mon.h): who, when, how far. */
 #define META_MAGIC "EM3DSMD1"
+/* The second trailer, after the first, when the edit was made over someone
+ * else's version: its revision (u16 LE at 8) and author (16 bytes at 16). */
+#define META2_MAGIC "EM3DSMD2"
 #define META_BYTES 32
 #define META_FINAL 1
 /* 1970-01-01 to 2000-01-01, in seconds: the trailer's epoch. */
@@ -542,6 +545,13 @@ static bool ReadMeta(FILE *f, unsigned frames, CtrStereoEditMeta *meta)
     meta->saved = (uint32_t)t[12] | ((uint32_t)t[13] << 8) | ((uint32_t)t[14] << 16) | ((uint32_t)t[15] << 24);
     memcpy(meta->author, t + 16, CTR_STEREO_EDIT_AUTHOR);
     meta->author[CTR_STEREO_EDIT_AUTHOR] = 0;
+    /* The lineage, when the file has it. */
+    if (fread(t, 1, sizeof(t), f) == sizeof(t) && memcmp(t, META2_MAGIC, 8) == 0)
+    {
+        meta->baseRevision = (uint16_t)(t[8] | (t[9] << 8));
+        memcpy(meta->base, t + 16, CTR_STEREO_EDIT_AUTHOR);
+        meta->base[CTR_STEREO_EDIT_AUTHOR] = 0;
+    }
     return true;
 }
 
@@ -981,10 +991,29 @@ bool CtrStereoMon_SaveEdit(void)
     header[12] = DIM;
     header[14] = DIM;
     {
-        uint8_t t[META_BYTES] = {0};
+        uint8_t t[META_BYTES] = {0}, t2[META_BYTES] = {0};
         time_t now = time(NULL);
         uint32_t saved = (uint32_t)now > META_EPOCH ? (uint32_t)now - META_EPOCH : 0;
         uint16_t revision = (uint16_t)(sMeta.revision + 1);
+        char base[CTR_STEREO_EDIT_AUTHOR + 1];
+        uint16_t baseRevision = sMeta.baseRevision;
+
+        /* The lineage: the file's own, else the signer of the file being
+         * saved over when that is someone else (their version put on the
+         * card, now tweaked). */
+        snprintf(base, sizeof(base), "%s", sMeta.base);
+        if (!base[0] && sMeta.author[0] && strcmp(sMeta.author, CtrStereoMon_Author()) != 0)
+        {
+            snprintf(base, sizeof(base), "%s", sMeta.author);
+            baseRevision = sMeta.revision;
+        }
+        if (base[0])
+        {
+            memcpy(t2, META2_MAGIC, 8);
+            t2[8] = (uint8_t)baseRevision;
+            t2[9] = (uint8_t)(baseRevision >> 8);
+            memcpy(t2 + 16, base, strlen(base));
+        }
 
         memcpy(t, META_MAGIC, 8);
         t[8] = sMeta.finalized ? META_FINAL : 0;
@@ -995,12 +1024,15 @@ bool CtrStereoMon_SaveEdit(void)
         memcpy(t + 16, CtrStereoMon_Author(), strlen(CtrStereoMon_Author()));
         ok = fwrite(header, 1, sizeof(header), f) == sizeof(header)
           && fwrite(sPlanes, 1, frames * EDIT_FRAME_BYTES, f) == frames * EDIT_FRAME_BYTES
-          && fwrite(t, 1, sizeof(t), f) == sizeof(t);
+          && fwrite(t, 1, sizeof(t), f) == sizeof(t)
+          && (!base[0] || fwrite(t2, 1, sizeof(t2), f) == sizeof(t2));
         if (ok)
         {
             sMeta.revision = revision;
             sMeta.saved = saved;
             snprintf(sMeta.author, sizeof(sMeta.author), "%s", CtrStereoMon_Author());
+            snprintf(sMeta.base, sizeof(sMeta.base), "%s", base);
+            sMeta.baseRevision = baseRevision;
         }
     }
     fclose(f);

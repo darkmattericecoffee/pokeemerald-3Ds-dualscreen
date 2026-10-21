@@ -81,6 +81,9 @@ bool CtrStereoStrip_Pending(void);
 void CtrStereoStrip_DrawEye(float sign, float slider);
 /* Moves on with anything that changes what the strip shows. */
 unsigned CtrStereoStrip_Version(void);
+/* BIG: the cursor's column alone, its front and back side by side at 2x
+ * (as the Pokédex shows one's own), instead of the three-column strip. */
+void CtrStereoStrip_SetBig(bool big);
 
 /* What 3ds_stereo_mon.c lends: its plane texture (a C3D_Tex, its width;
  * NULL when there is none), lent while `lend`; the pictures (frame 0,

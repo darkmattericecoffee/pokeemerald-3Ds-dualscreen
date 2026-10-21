@@ -1263,6 +1263,9 @@ static bool ParseVersions(uint16_t id, const char *json)
         if (!JsonNumber(object, "version_id", &number)) continue;
         v->version = (uint32_t)number;
         JsonString(object, "author", v->author, sizeof(v->author));
+        v->base[0] = 0;
+        JsonString(object, "base", v->base, sizeof(v->base));
+        FontSafe(v->base);
         FontSafe(v->author);
         if (JsonNumber(object, "revision", &number)) v->revision = (uint16_t)number;
         if (JsonNumber(object, "votes", &number)) v->votes = (uint16_t)number;

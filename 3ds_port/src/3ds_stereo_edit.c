@@ -166,7 +166,7 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 /* Unsaved changes go to the SD card this long after the last one. */
 
 enum { T_BRUSH, T_ERASE, T_LASSO, T_FILL, T_PAN, T_COUNT };
-enum { B_OPACITY, B_GRID, B_COUNT };
+enum { B_OPACITY, B_GRID, B_STRAYS, B_COUNT };
 /* The pressed button's number: the tools', the right's, the bars'. */
 enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B, P_BATTLE, P_ONLINE, P_VOTE };
 /* What the top screen shows: the colours, the planes tinted, the battle. */
@@ -219,9 +219,9 @@ static const char *const sOpacityNames[] = {"MAX", "60", "30", "15"};
  * Pokémon, and the top screen's VIEW LAYERS uses them too. */
 static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
-enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS };
+enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS, S_CONFIRM_FORK };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
-enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
+enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_MERGE, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
@@ -280,6 +280,16 @@ static struct
      * picked while held; the C-stick's latch. */
     unsigned heldKeys, lFrames;
     bool lPicked, cstickMoved;
+    /* The strays' rings shown (the button over the grid's). */
+    bool straysOn;
+    /* The C-stick chose this picture: once it is in, the server is asked
+     * who did it already (S_CONFIRM_FORK), and COPY AND EDIT waits for its
+     * versions to put the current one on the card. */
+    bool cstickChoose, forkPending;
+    uint32_t forkAsked;
+    char forkWho[17];
+    /* The versions screen's BIG view: the cursor's column at 2x. */
+    bool big;
     int lastTouchX, lastTouchY;
     /* A plane's row touched: picked on release, grabbed when held still. */
     bool rowTouch;
@@ -826,8 +836,36 @@ static void FindStrays(void)
             }
         }
     }
-    CtrStereoMon_SetStrays(sE.frame, sStrayList, sStrayListed);
+    CtrStereoMon_SetStrays(sE.frame, sStrayList, sE.straysOn ? sStrayListed : 0);
     if (sStrayCount != before) sE.helpDirty = true;
+}
+
+/* MERGE DOWN: the plane being edited poured into the one under it in the
+ * list (the next farther plane), on this frame as the plane moves are;
+ * the editor then stands on that plane. */
+static void MergeDown(void)
+{
+    unsigned count = 0;
+    char line[40];
+
+    if (sE.layer == 0)
+    {
+        Toast("ALREADY THE FARTHEST PLANE");
+        return;
+    }
+    PushUndo();
+    for (unsigned i = 0; i < N; ++i)
+        if (Opaque(sE.frame, i) && GetPlane(sE.frame, i) == sE.layer)
+        {
+            PutPlane(sE.frame, i, sE.layer - 1);
+            ++count;
+        }
+    sE.layer -= 1;
+    CtrStereoMon_LogEdit("merge-down");
+    Changed();
+    sE.helpDirty = true;
+    snprintf(line, sizeof(line), "%u PIXELS INTO PLANE %u", count, PLANES - sE.layer);
+    Toast(line);
 }
 
 /* FIX: every stray goes to the plane most of the pixels around it are on. */
@@ -1274,6 +1312,8 @@ static void VersionsKeys(unsigned down);
 static void VersionsFrame(void);
 static void TouchVersions(const CtrInput *in);
 static void VersionsKeys(unsigned down);
+static void TouchFork(const CtrInput *in);
+static void DrawFork(void);
 /* The next open shows the new pictures (CtrStereoEdit_PreferNew). */
 static bool sPreferNew, sPreferDex;
 
@@ -1289,6 +1329,7 @@ void CtrStereoEdit_Open(bool fromGallery)
     sE.slider = SLIDER_NONE;
     sE.outlineOn = CtrSettings_GetInt("edit_outline", 1) != 0;
     sE.grid = (uint8_t)CtrSettings_GetInt("edit_grid", GRID_WHITE);
+    sE.straysOn = CtrSettings_GetInt("edit_strays", 1) != 0;
     if (sE.grid > GRID_BLACK) sE.grid = GRID_OFF;
     sE.view = (uint8_t)CtrSettings_GetInt("edit_view", V_COLOURS);
     sE.controls = CtrSettings_GetInt("edit_controls", 1) != 0;
@@ -1674,7 +1715,7 @@ void CtrStereoEdit_Keys(unsigned down, unsigned held)
         VersionsKeys(down);
         return;
     }
-    if (sE.screen == S_OPTIONS || sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL)
+    if (sE.screen == S_OPTIONS || sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL || sE.screen == S_CONFIRM_FORK)
     {
         if (down & (CTR_KEY_B | CTR_KEY_START)) sE.screen = S_EDIT;
         return;
@@ -1779,6 +1820,12 @@ static void RightAct(int button)
         CtrSettings_SetInt("edit_opacity", sE.opacity);
         snprintf(line, sizeof(line), "TINT STRENGTH %s", sOpacityNames[sE.opacity]);
         Toast(line);
+        break;
+    case B_STRAYS:
+        sE.straysOn = !sE.straysOn;
+        CtrSettings_SetInt("edit_strays", sE.straysOn);
+        sStrayValid = false;
+        Toast(sE.straysOn ? "STRAY PIXELS RINGED" : "STRAY PIXELS NOT RINGED");
         break;
     case B_OUTLINE:
         sE.outlineOn = !sE.outlineOn;
@@ -1922,10 +1969,12 @@ static bool BarAct(int x, int y)
 }
 
 /* The bottom right: the tint, the grid. */
+#define STRAYS_Y (GRID_Y - BAR_H - 3)
 static bool CornerAct(int x, int y)
 {
-    if (y < GRID_Y || y >= GRID_Y + BAR_H) return false;
-    if (x >= GRID_X && x < GRID_X + SAVE_W) { sE.pressed = P_RIGHT + B_GRID; RightAct(B_GRID); }
+    if (x < GRID_X || x >= GRID_X + SAVE_W) return false;
+    if (y >= GRID_Y && y < GRID_Y + BAR_H) { sE.pressed = P_RIGHT + B_GRID; RightAct(B_GRID); }
+    else if (y >= STRAYS_Y && y < STRAYS_Y + BAR_H) { sE.pressed = P_RIGHT + B_STRAYS; RightAct(B_STRAYS); }
     else return false;
     return true;
 }
@@ -2197,7 +2246,8 @@ static void VersionLines(uint16_t id, char *a, char *b, char *c)
 
             /* Numbered oldest first: the newest is the highest. */
             snprintf(a, 40, "VERSION %u OF %u", count - (unsigned)at, count);
-            snprintf(b, 40, "BY %s", v->author[0] ? v->author : "?");
+            if (v->base[0]) snprintf(b, 40, "BY %s FROM %s", v->author[0] ? v->author : "?", v->base);
+            else snprintf(b, 40, "BY %s", v->author[0] ? v->author : "?");
             snprintf(c, 40, "%u VOTE%s%s%s", v->votes, v->votes == 1 ? "" : "S", mine ? "  YOUR VOTE" : "",
                      v->current ? "  CURRENT" : "");
         }
@@ -2270,6 +2320,18 @@ static void OnlineFrame(void)
         CtrOnline_FetchVersions(id);
         busy = true;
     }
+    /* Who did what (the index, for the C-stick's question): asked once when
+     * there is none yet. */
+    {
+        unsigned age;
+
+        if (CtrOnline_IndexSerial(&age) == 0 && !busy && sE.tick - sE.indexAskedAt > 600)
+        {
+            sE.indexAskedAt = sE.tick;
+            CtrOnline_FetchIndex();
+            busy = true;
+        }
+    }
     /* The Pokédex's counts and votes, fetched again after two minutes. */
     if (sE.screen == S_CHOOSE)
     {
@@ -2298,6 +2360,10 @@ static void OptionAct(int row, bool rightHalf)
     case O_STRAYS:
         sE.screen = S_EDIT;
         FixStrays();
+        break;
+    case O_MERGE:
+        sE.screen = S_EDIT;
+        MergeDown();
         break;
     case O_MUSIC:
         /* The left half the tune before, the right half the next; the game
@@ -2373,6 +2439,7 @@ static void OptionAct(int row, bool rightHalf)
 #define VB_ROW_H 21
 #define VB_BACK_W 46
 #define VB_FOLLOW_W 92
+#define VB_BIG_W 36
 /* A touch that moves this far is a slide, not a vote. */
 #define VB_DRAG 6
 #define VB_FOCUS_FRAMES 120
@@ -3058,6 +3125,7 @@ static void VersionsFrame(void)
         }
     CtrStereoStrip_SetScroll(sE.scroll);
     CtrStereoStrip_SetCursor(sE.curCol, sE.curSide, sE.viewCount != 0);
+    CtrStereoStrip_SetBig(sE.big);
 }
 
 /* LEFT/RIGHT the cursor (the strip follows), UP/DOWN front or back, A
@@ -3241,6 +3309,12 @@ static void TouchVersions(const CtrInput *in)
     {
         if (x < 2 + VB_BACK_W) CloseVersions();
         else if (x >= W - 2 - VB_FOLLOW_W) ToggleFollow();
+        else if (x >= 4 + VB_BACK_W && x < 4 + VB_BACK_W + VB_BIG_W)
+        {
+            sE.big = !sE.big;
+            sE.labelsDirty = true;
+            Toast(sE.big ? "BIG: THE CHOSEN ONE AT 2X" : "THE STRIP AGAIN");
+        }
         else if (sE.webCount)
         {
             /* The title: the web's picks only, or every version. */
@@ -3309,6 +3383,28 @@ static void TouchConfirm(const CtrInput *in)
         }
         else if (in->touchX >= CF_X + 104 && in->touchX < CF_X + 184) sE.screen = S_EDIT;
     }
+    sE.dirtyDraw = true;
+}
+
+/* ALREADY DONE BY X: MAKE NEW (the game's planes, as now) or COPY AND EDIT
+ * (their current version to the card first, then tweak it: the upload says
+ * "from X"). */
+static void TouchFork(const CtrInput *in)
+{
+    if (!in->touchDown) return;
+    if (in->touchY >= CF_Y + 52 && in->touchY < CF_Y + 80)
+    {
+        if (in->touchX >= CF_X + 16 && in->touchX < CF_X + 96) sE.screen = S_EDIT;
+        else if (in->touchX >= CF_X + 104 && in->touchX < CF_X + 184)
+        {
+            sE.screen = S_EDIT;
+            sE.forkPending = true;
+            sE.forkAsked = sE.tick;
+            Toast("ASKING FOR THEIR VERSION...");
+        }
+    }
+    else if (in->touchY < CF_Y || in->touchY >= CF_Y + CF_H || in->touchX < CF_X || in->touchX >= CF_X + CF_W)
+        sE.screen = S_EDIT;
     sE.dirtyDraw = true;
 }
 
@@ -3492,7 +3588,7 @@ static void DrawPicture(void)
         }
     }
     /* The strays, each in a blinking ring a pixel outside its cell. */
-    if (sStrayCount)
+    if (sStrayCount && sE.straysOn)
     {
         const uint16_t ring = (sE.tick / STRAY_BLINK) & 1 ? Rgb(31, 63, 31) : Rgb(0, 0, 0);
 
@@ -3846,6 +3942,10 @@ static void DrawBar(void)
     Sprite(SPRITE_SAVE, SAVE_X + (SAVE_W - SPRITE_SIZE) / 2 - 1, BAR_Y + (BAR_H - SPRITE_SIZE) / 2);
     DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
     DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 3, sE.dirtyFile ? Rgb(31, 12, 8) : Rgb(8, 56, 10));
+    /* Over the grid's button: the strays' rings on or off (a box icon, lit
+     * when on). */
+    PlateIcon(GRID_X, STRAYS_Y, SAVE_W, BAR_H, sE.straysOn ? 1 : 0, sE.straysOn || sE.pressed == P_RIGHT + B_STRAYS, ICON_BOX,
+              false, sE.straysOn ? INK_WHITE : INK_OFF);
     /* The bottom right: the grid (off: struck through; white or black as
      * its lines are). */
     CtrBottomDraw_Plate(GRID_X, GRID_Y, SAVE_W, BAR_H, gridOn ? 1 : 0, gridOn || sE.pressed == P_RIGHT + B_GRID);
@@ -4056,6 +4156,20 @@ static void DrawConfirm(void)
                               final ? CTR_DRAW_DARK : CTR_DRAW_WHITE);
 }
 
+static void DrawFork(void)
+{
+    char line[48];
+
+    CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, CF_H / 8, false);
+    snprintf(line, sizeof(line), "ALREADY DONE BY %s", sE.forkWho);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, CF_X + CF_W / 2, CF_Y + 10, CTR_DRAW_DARK);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "START FRESH, OR COPY THEIRS AND TWEAK IT?", CF_X + CF_W / 2, CF_Y + 26, CTR_DRAW_BLUE);
+    CtrBottomDraw_Plate(CF_X + 16, CF_Y + 52, 80, 24, 0, false);
+    CtrBottomDraw_Plate(CF_X + 104, CF_Y + 52, 80, 24, 1, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "MAKE NEW", CF_X + 56, CF_Y + 57, CTR_DRAW_DARK);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "COPY AND EDIT", CF_X + 144, CF_Y + 57, CTR_DRAW_WHITE);
+}
+
 /* A five-pointed star, 11 pixels: a favourite's, gold, else a grey outline. */
 static void DrawStar(int x, int y, bool on)
 {
@@ -4175,7 +4289,11 @@ static void DrawVersions(void)
     if (!sE.sideLoaded[0] && !sE.sideLoaded[1]) snprintf(line, sizeof(line), "%s  ASKING...", name);
     else if (sE.webOnly && sE.viewCount != sE.colCount) snprintf(line, sizeof(line), "%s  WEB %u OF %u", name, sE.viewCount, sE.colCount);
     else snprintf(line, sizeof(line), "%s  %u UPLOAD%s", name, sE.colCount, sE.colCount == 1 ? "" : "S");
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, (2 + VB_BACK_W + W - 2 - VB_FOLLOW_W) / 2, 6, CTR_DRAW_DARK);
+    /* BIG: the top screen shows the cursor's column alone at 2x. */
+    CtrBottomDraw_Plate(4 + VB_BACK_W, 1, VB_BIG_W, 21, sE.big ? 1 : 0, sE.big);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "BIG", 4 + VB_BACK_W + VB_BIG_W / 2 + (sE.big ? 1 : 0), 6 + (sE.big ? 1 : 0),
+                              sE.big ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, (4 + VB_BACK_W + VB_BIG_W + W - 2 - VB_FOLLOW_W) / 2, 6, CTR_DRAW_DARK);
     /* The columns in view: three, four while one slides half out. */
     if (sE.viewCount == 0 && !VbListsIn())
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "ASKING THE SERVER...", W / 2, 100, CTR_DRAW_DARK);
@@ -4270,7 +4388,9 @@ static void StripLabels(void)
         const CtrOnlineVersion *who = f ? f : b;
 
         for (unsigned j = 0; j < 3; ++j) column[CTR_STRIP_SLOT_LABEL(s, j)] = (int)k;
-        if (who) snprintf(text[CTR_STRIP_SLOT_LABEL(s, 0)], 40, "%s", who->mine ? "BY YOU" : who->author[0] ? who->author : "?");
+        if (who && who->base[0])
+            snprintf(text[CTR_STRIP_SLOT_LABEL(s, 0)], 40, "%s FROM %s", who->mine ? "YOU" : who->author[0] ? who->author : "?", who->base);
+        else if (who) snprintf(text[CTR_STRIP_SLOT_LABEL(s, 0)], 40, "%s", who->mine ? "BY YOU" : who->author[0] ? who->author : "?");
         for (unsigned d = 0; d < 2; ++d)
         {
             const CtrOnlineVersion *v = d ? b : f;
@@ -4316,7 +4436,7 @@ static void StripLabels(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "MERGE PLANE DOWN", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -4329,6 +4449,8 @@ static void DrawOptions(void)
         value[0] = 0;
         if (row == O_CONTROLS) snprintf(value, sizeof(value), "%s", sE.controls ? "ON" : "OFF");
         if (row == O_STRAYS && sStrayCount) snprintf(value, sizeof(value), "%u", sStrayCount);
+        if (row == O_MERGE && sE.layer > 0) snprintf(value, sizeof(value), "%u INTO %u", PLANES - sE.layer, PLANES - sE.layer + 1);
+        else if (row == O_MERGE) snprintf(value, sizeof(value), "FARTHEST");
         else if (row == O_STRAYS) snprintf(value, sizeof(value), "NONE");
         if (row == O_MUSIC && CtrExtras_Find(CTR_EDITOR_MUSIC_KEY))
         {
@@ -4530,7 +4652,9 @@ static void MakeHelpSheet(void)
     else snprintf(text[CTR_HELP_FRAME], 40, "FRAME %u OF %u", sE.frame + 1, sE.frames);
     snprintf(text[CTR_HELP_PLANE], 40, "PLANE %u%s", number, number == 1 ? " FRONT" : number == PLANES ? " BACK" : "");
     snprintf(text[CTR_HELP_DEPTH], 40, "%s", views[sE.view]);
-    if (meta->revision) snprintf(text[CTR_HELP_REVISION], 40, "R%u %s", meta->revision, meta->author[0] ? meta->author : "?");
+    if (meta->revision && meta->base[0])
+        snprintf(text[CTR_HELP_REVISION], 40, "R%u %s FROM %s", meta->revision, meta->author[0] ? meta->author : "?", meta->base);
+    else if (meta->revision) snprintf(text[CTR_HELP_REVISION], 40, "R%u %s", meta->revision, meta->author[0] ? meta->author : "?");
     else text[CTR_HELP_REVISION][0] = 0;
     {
         const char *state = meta->finalized ? "FINAL" : sE.dirtyFile || CtrStereoMon_HasEdit(sE.id) ? "EDITED" : "";
@@ -4658,6 +4782,7 @@ static void Draw(void)
         DrawRight();
         if (sE.screen == S_OPTIONS) DrawOptions();
         if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) DrawConfirm();
+        if (sE.screen == S_CONFIRM_FORK) DrawFork();
     }
     CtrBottomDraw_End();
     CtrBottom_Blit(sCanvas, 0, W);
@@ -4843,6 +4968,9 @@ static void CstickMon(const CtrInput *in)
             sE.versionsAfterBind = true;
         }
         Choose(next);
+        /* Once it is in: who did this one already? (Not on the way to its
+         * versions, which show that themselves.) */
+        sE.cstickChoose = sE.pl == NULL && !sE.versionsAfterBind;
     }
 }
 
@@ -4914,6 +5042,7 @@ bool CtrStereoEdit_BottomFrame(void)
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
     else if (sE.screen == S_VERSIONS) { TouchVersions(in); VersionsFrame(); }
     else if (sE.screen == S_CONFIRM_RESET || sE.screen == S_CONFIRM_FINAL) TouchConfirm(in);
+    else if (sE.screen == S_CONFIRM_FORK) TouchFork(in);
     else
     {
         TouchEdit(in);
@@ -4938,6 +5067,47 @@ bool CtrStereoEdit_BottomFrame(void)
     /* Both sides in 3D on the versions screen and in the Pokédex. */
     CtrStereoMonGame_WantCompanion(sE.screen == S_VERSIONS || sE.screen == S_CHOOSE
                                    || (sE.screen == S_KEYBOARD && sE.kbReturn == S_CHOOSE));
+    /* The C-stick's pick is in: someone else's version is on the server and
+     * this card has no edit of its own - start fresh, or copy and tweak? */
+    if (sE.cstickChoose && sE.pl != NULL && sE.screen == S_EDIT)
+    {
+        char who[17];
+
+        sE.cstickChoose = false;
+        if (CtrOnline_Linked() && !CtrStereoMon_HasEdit(sE.id) && CtrOnline_CurrentAuthor(sE.id, who, sizeof(who))
+            && strcmp(who, CtrStereoMon_Author()) != 0)
+        {
+            snprintf(sE.forkWho, sizeof(sE.forkWho), "%s", who);
+            sE.screen = S_CONFIRM_FORK;
+            sE.dirtyDraw = true;
+        }
+    }
+    /* COPY AND EDIT: the server's current version onto the card once the
+     * picture's versions are in (OnlineFrame asks for them). */
+    if (sE.forkPending && sE.pl != NULL)
+    {
+        if (sE.versionsLoaded && sE.versions.id == sE.id)
+        {
+            uint32_t version = 0;
+
+            for (unsigned i = 0; i < sE.versions.count && !version; ++i)
+                if (sE.versions.v[i].current) version = sE.versions.v[i].version;
+            if (!version && sE.versions.count) version = sE.versions.v[0].version;
+            sE.forkPending = false;
+            if (version && CtrOnline_UseVersion(sE.id, version))
+            {
+                Toast("COPYING THEIR VERSION TO THE CARD...");
+                sE.onlineWatch = true;
+                sE.onlineSerial = CtrOnline_Serial();
+            }
+            else Toast(version ? "BUSY - TRY THE GLOBE" : "NOTHING TO COPY");
+        }
+        else if (sE.tick - sE.forkAsked > 900)
+        {
+            sE.forkPending = false;
+            Toast("THE SERVER DID NOT ANSWER");
+        }
+    }
     /* The Pokédex's globe: the versions screen once the picture is in. */
     if (sE.versionsAfterBind && sE.pl != NULL && sE.screen == S_EDIT)
     {
@@ -4959,7 +5129,7 @@ bool CtrStereoEdit_BottomFrame(void)
     /* The lasso's dashes run while it is drawn. */
     if (sE.lassoing && sE.tick % 8 == 0) sE.dirtyDraw = true;
     /* The strays' rings blink: a redraw a few times a second while any are there. */
-    if (sStrayCount && sE.screen == S_EDIT && sE.tick % STRAY_BLINK == 0) sE.dirtyDraw = true;
+    if (sStrayCount && sE.straysOn && sE.screen == S_EDIT && sE.tick % STRAY_BLINK == 0) sE.dirtyDraw = true;
     /* The chooser's icons come in one a frame. */
     if (sE.screen == S_CHOOSE && sE.iconsMissing) sE.dirtyDraw = true;
     /* The top screen's frame number follows the animation. */

@@ -844,7 +844,8 @@ def _voter(req: Request) -> int:
 
 def _versions_json(req: Request, key: str) -> dict:
     rows = req.conn.execute(
-        "SELECT v.id, v.user_id, v.revision, v.final, v.depth, v.author_tag, v.sha256, v.size, v.uploaded_at, COALESCE(u.display_name, u.name) AS uploader "
+        "SELECT v.id, v.user_id, v.revision, v.final, v.depth, v.author_tag, v.sha256, v.size, v.uploaded_at, "
+        "v.base_author, v.base_revision, COALESCE(u.display_name, u.name) AS uploader "
         "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.mon_key = ? ORDER BY v.uploaded_at DESC, v.id DESC",
         (key,)).fetchall()
     cur = req.conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
@@ -855,6 +856,7 @@ def _versions_json(req: Request, key: str) -> dict:
             "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],
                           "revision": r["revision"], "final": bool(r["final"]), "depth": editfile.sweet_spot(r["depth"]),
                           "votes": counts.get(r["id"], 0),
+                          "base": r["base_author"], "base_revision": r["base_revision"],
                           "sha256": r["sha256"], "size": r["size"], "uploaded_at": r["uploaded_at"],
                           "mine": r["user_id"] == _voter(req)} for r in rows]}
 

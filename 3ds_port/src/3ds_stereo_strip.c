@@ -57,7 +57,11 @@ static unsigned sCount;
 static CtrStripCell sCells[CTR_STRIP_MAX_COLUMNS][2];
 static float sScroll;
 static unsigned sCursorColumn, sCursorSide;
-static bool sCursorShown;
+static bool sCursorShown, sBig;
+/* The big view: the two halves side by side at this size. */
+#define BIG_SCALE 2.0f
+#define BIG_TOP 44
+#define BIG_CELL_W 200
 static uint16_t sPicture[2][DIM * DIM];
 static bool sPictureOk[2];
 static Half sHalves[CTR_STRIP_SLOTS_MAX][2];
@@ -374,41 +378,55 @@ static void Frame(float x, float y, float w, float h, float t, uint32_t colour)
     C2D_DrawRectSolid(x + w - t, y + t, 0, t, h - 2 * t, colour);
 }
 
-static void DrawHalf(unsigned column, unsigned side, float cx, float sign, float slider)
+/* One half at (cx, top), `scale` screen pixels a sprite pixel, in a cell
+ * `cellW` wide (the strip's column, or the big view's half screen). */
+static void DrawHalfAt(unsigned column, unsigned side, float cx, float top, float scale, float cellW, float sign,
+                       float slider)
 {
     const unsigned slot = column % sSlots;
     const Half *h = &sHalves[slot][side];
     const CtrStripCell *cell = &sCells[column][side];
-    const float top = side ? BACK_TOP : FRONT_TOP, lineY = top + SIZE + LINE_GAP;
+    const float size = DIM * scale, lineY = top + size + LINE_GAP;
     const bool back = side == 1;
     const uint32_t gold = C2D_Color32(255, 214, 72, 255), dim = C2D_Color32(170, 176, 192, 255);
     float right = cx;
 
     /* The cell's ground: a little lighter when voted for. */
-    if (cell->voted) C2D_DrawRectSolid(cx - COL_W / 2 + 4, top - 1, 0, COL_W - 8, SIZE + 2, C2D_Color32(74, 70, 52, 255));
+    if (cell->voted) C2D_DrawRectSolid(cx - cellW / 2 + 4, top - 1, 0, cellW - 8, size + 2, C2D_Color32(74, 70, 52, 255));
     if (cell->version == 0)
     {
-        Label(CTR_STRIP_EMPTY, cx - LabelWidth(CTR_STRIP_EMPTY) / 2.0f, top + SIZE / 2 - 7, dim);
+        Label(CTR_STRIP_EMPTY, cx - LabelWidth(CTR_STRIP_EMPTY) / 2.0f, top + size / 2 - 7, dim);
         return;
     }
     if (h->ready && h->column == (int)column && h->version == cell->version)
     {
         const float shift = StackShift(sign, slider, back);
         const float pivot = Pivot() * (GROUPS - 1), spacing = DEPTH_SPAN / (float)(GROUPS - 1);
-        const float left = cx - SIZE / 2 + PictureShift(sign, slider, back);
+        const float left = cx - size / 2 + PictureShift(sign, slider, back);
 
         for (unsigned g = 0; g < GROUPS; ++g)
             C2D_DrawImageAt((C2D_Image){sTex, &sTiles[(slot * 2 + side) * GROUPS + g]}, left + shift * (g - pivot) * spacing,
-                            top, 0, NULL, SCALE, SCALE);
+                            top, 0, NULL, scale, scale);
     }
-    else Label(CTR_STRIP_LOADING, cx - LabelWidth(CTR_STRIP_LOADING) / 2.0f, top + SIZE / 2 - 7, dim);
-    if (cell->voted) Frame(cx - COL_W / 2 + 4, top - 1, COL_W - 8, SIZE + 2, 1, gold);
+    else Label(CTR_STRIP_LOADING, cx - LabelWidth(CTR_STRIP_LOADING) / 2.0f, top + size / 2 - 7, dim);
+    if (cell->voted) Frame(cx - cellW / 2 + 4, top - 1, cellW - 8, size + 2, 1, gold);
     if (sCursorShown && column == sCursorColumn && side == sCursorSide)
-        Frame(cx - COL_W / 2 + 2, top - 3, COL_W - 4, SIZE + 6, 2, C2D_Color32(80, 230, 240, 255));
+        Frame(cx - cellW / 2 + 2, top - 3, cellW - 4, size + 6, 2, C2D_Color32(80, 230, 240, 255));
     /* Under it: its votes, FINAL after them. */
     SlotLabel(slot, 1 + side, column, cx, lineY, cell->voted ? gold : dim, &right);
     if (cell->final && sLabelColumn[CTR_STRIP_SLOT_LABEL(slot, 1 + side)] == (int)column)
         Label(CTR_STRIP_FINAL, right + 3, lineY, C2D_Color32(120, 240, 120, 255));
+}
+
+static void DrawHalf(unsigned column, unsigned side, float cx, float sign, float slider)
+{
+    DrawHalfAt(column, side, cx, side ? BACK_TOP : FRONT_TOP, SCALE, COL_W, sign, slider);
+}
+
+void CtrStereoStrip_SetBig(bool big)
+{
+    if (big != sBig) ++sVersion;
+    sBig = big;
 }
 
 void CtrStereoStrip_DrawEye(float sign, float slider)
@@ -421,6 +439,21 @@ void CtrStereoStrip_DrawEye(float sign, float slider)
     for (int gx = 8 - 24; gx < CTR_GAME_WIDTH + 24; gx += 24)
         C2D_DrawRectSolid(gx + grid, 0, 0, 1, CTR_GAME_HEIGHT, C2D_Color32(64, 68, 80, 255));
     if (!sOpen) return;
+    if (sBig && sCursorShown && sCursorColumn < sCount && sSlots)
+    {
+        /* The cursor's column alone: its front at the left, its back at the
+         * right, both at 2x, its author across the top. */
+        const unsigned c = sCursorColumn, slot = c % sSlots;
+        const float cxF = CTR_GAME_WIDTH / 4.0f, cxB = CTR_GAME_WIDTH * 3 / 4.0f;
+
+        SlotLabel(slot, 0, c, CTR_GAME_WIDTH / 2.0f, AUTHOR_Y, sCells[c][0].mine || sCells[c][1].mine ? cyan : white, NULL);
+        if (sCells[c][0].web || sCells[c][1].web)
+            Label(CTR_STRIP_WEB, CTR_GAME_WIDTH - 8 - LabelWidth(CTR_STRIP_WEB), AUTHOR_Y, C2D_Color32(255, 120, 220, 255));
+        C2D_DrawRectSolid(CTR_GAME_WIDTH / 2.0f, AUTHOR_Y + 14, 0, 1, CTR_GAME_HEIGHT - AUTHOR_Y - 16, C2D_Color32(70, 75, 88, 255));
+        DrawHalfAt(c, 0, cxF, BIG_TOP, BIG_SCALE, BIG_CELL_W, sign, slider);
+        if (sIds[1]) DrawHalfAt(c, 1, cxB, BIG_TOP, BIG_SCALE, BIG_CELL_W, sign, slider);
+        return;
+    }
     if (first < 0) first = 0;
     /* The columns in view (four while one slides half out), the ones the
      * texture holds. */

@@ -75,6 +75,7 @@ typedef struct
 {
     uint32_t version;
     char author[17];
+    char base[17];   /* whose version it was made over ("FROM X"), or empty */
     uint16_t revision, votes;
     bool final, current, favourite, onCard, mine;
     /* When it was uploaded (unix seconds). The server's "depth" is only

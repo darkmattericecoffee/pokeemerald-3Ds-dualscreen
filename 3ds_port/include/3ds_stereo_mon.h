@@ -302,6 +302,12 @@ typedef struct
     uint16_t revision;
     uint32_t saved;
     char author[CTR_STEREO_EDIT_AUTHOR + 1];
+    /* The lineage: whose version (and its revision) this edit was made
+     * over, from the file's second trailer; empty for one made from the
+     * game's planes. Set when a file signed by someone else is first saved
+     * over, and kept through every save after. */
+    char base[CTR_STEREO_EDIT_AUTHOR + 1];
+    uint16_t baseRevision;
 } CtrStereoEditMeta;
 /* The shown picture's: what its file says, or empty without one. */
 const CtrStereoEditMeta *CtrStereoMon_EditMeta(void);

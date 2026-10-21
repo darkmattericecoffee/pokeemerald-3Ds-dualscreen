@@ -25,6 +25,10 @@ from typing import List, Optional, Sequence, Tuple
 
 MAGIC = b"EM3DSED1"
 META_MAGIC = b"EM3DSMD1"
+# A second trailer after the first, written by the console when the edit was
+# made over someone else's version: the base's revision (u16 LE at 8) and
+# author (16 bytes at 16), the lineage ("from X").
+META2_MAGIC = b"EM3DSMD2"
 HEADER_BYTES = 16
 DIM = 64
 FRAME_BYTES = DIM * DIM // 2
@@ -34,7 +38,7 @@ MAX_PLANES = 15
 NONE = 15
 META_FINAL = 1
 META_EPOCH = 946684800  # 2000-01-01 in unix time
-MAX_BYTES = HEADER_BYTES + MAX_FRAMES * FRAME_BYTES + META_BYTES
+MAX_BYTES = HEADER_BYTES + MAX_FRAMES * FRAME_BYTES + 2 * META_BYTES
 
 KIND_PREFIX = {0x0000: "", 0x4000: "t", 0x8000: "b", 0xC000: "p"}
 PREFIX_KIND = {v: k for k, v in KIND_PREFIX.items()}
@@ -103,6 +107,8 @@ class Edit:
     revision: int = 0
     saved: int = 0  # unix time, 0 if unknown
     author: str = ""
+    base_author: str = ""  # the second trailer: whose version this edit was made over
+    base_revision: int = 0
 
     @property
     def sha256(self) -> str:
@@ -151,8 +157,14 @@ def parse(data: bytes, expect_key: Optional[str] = None) -> Edit:
     edit = Edit(ident=ident, key=key, planes=planes, frames=frames, data=bytes(data))
     if len(data) == body:
         return edit
-    if len(data) == body + META_BYTES:
-        t = data[body:]
+    if len(data) in (body + META_BYTES, body + 2 * META_BYTES):
+        t = data[body:body + META_BYTES]
+        t2 = data[body + META_BYTES:]
+        if t2 and t2[:8] != META2_MAGIC:
+            raise EditError("a second trailer without the EM3DSMD2 magic")
+        if t2:
+            edit.base_revision = t2[8] | (t2[9] << 8)
+            edit.base_author = t2[16:32].split(b"\0", 1)[0].decode("utf-8", "replace").strip()
         if t[:8] == META_MAGIC:
             edit.has_meta = True
             edit.final = bool(t[8] & META_FINAL)
