@@ -1083,7 +1083,7 @@ static void DoSync(Link *link)
     SentList sent;
     const char *p;
     long seq = 0;
-    unsigned got = 0, kept = 0, same = 0, items = 0;
+    unsigned got = 0, kept = 0, same = 0, items = 0, own = 0;
     bool ok = true;
     static uint16_t fetched[MAX_NEW];
 
@@ -1123,6 +1123,16 @@ static void DoSync(Link *link)
             {
                 SentPut(&sent, key, sha, (uint32_t)version);
                 ++same;
+                free(local);
+                continue;
+            }
+            /* The card's file is no server version (an edit of this card's
+             * own, not sent yet): it stays. A sync once put the server's
+             * current over nine such edits, which went to backup unseen. */
+            if (!SentHas(&sent, key, localSha))
+            {
+                ++own;
+                CtrLog_Write(CTR_LOG_FS, "online: %s: the card's own edit kept, not the server's current", key);
                 free(local);
                 continue;
             }
@@ -1176,8 +1186,8 @@ static void DoSync(Link *link)
         Unlock();
         PutNew(fetched, got < MAX_NEW ? got : MAX_NEW);
     }
-    CtrLog_Write(CTR_LOG_FS, "online: sync since %u: %u items, %u fetched, %u kept in backup, %u the same%s", link->seq,
-                 items, got, kept, same, ok ? "" : ", STOPPED");
+    CtrLog_Write(CTR_LOG_FS, "online: sync since %u: %u items, %u fetched, %u kept in backup, %u the same, %u own edits kept%s", link->seq,
+                 items, got, kept, same, own, ok ? "" : ", STOPPED");
     if (!ok) return; /* the failure's status stays, and the next sync starts from the same place */
     link->seq = (unsigned)seq;
     if (!PutLink(link)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", LINK_PATH);
