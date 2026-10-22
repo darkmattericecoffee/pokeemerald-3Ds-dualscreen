@@ -4270,10 +4270,20 @@ static void DrawBar(void)
               sRedoCount ? INK_DARK : INK_OFF);
     /* The save: green when final, its dot green once saved, red while
      * changes wait for the card. */
-    CtrBottomDraw_Plate(SAVE_X, BAR_Y, SAVE_W, BAR_H, final ? 1 : 0, final || sE.pressed == P_SAVE || sE.savePending);
-    Sprite(SPRITE_SAVE, SAVE_X + (SAVE_W - SPRITE_SIZE) / 2 - 1, BAR_Y + (BAR_H - SPRITE_SIZE) / 2);
-    DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
-    DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 3, sE.dirtyFile ? Rgb(31, 12, 8) : Rgb(8, 56, 10));
+    /* The save: a plain plate, pressed only under the stylus (FINAL reads on
+     * the top screen); its dot says where the picture stands: orange with
+     * changes not on the card, red with nothing of it saved, blue once the
+     * card's file is on the server, green saved on the card. */
+    {
+        const uint16_t dot = sE.dirtyFile ? Rgb(31, 36, 2) : !CtrStereoMon_HasEdit(sE.id) ? Rgb(31, 12, 8)
+                           : sE.cardVersion ? Rgb(6, 30, 31) : Rgb(8, 56, 10);
+
+        (void)final;
+        CtrBottomDraw_Plate(SAVE_X, BAR_Y, SAVE_W, BAR_H, 0, sE.pressed == P_SAVE || sE.savePending);
+        Sprite(SPRITE_SAVE, SAVE_X + (SAVE_W - SPRITE_SIZE) / 2 - 1, BAR_Y + (BAR_H - SPRITE_SIZE) / 2);
+        DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
+        DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 3, dot);
+    }
     /* Over the grid's button: the strays' rings on or off (a box icon, lit
      * when on). */
     PlateIcon(GRID_X, STRAYS_Y, SAVE_W, BAR_H, sE.straysOn ? 1 : 0, sE.straysOn || sE.pressed == P_RIGHT + B_STRAYS, ICON_BOX,
