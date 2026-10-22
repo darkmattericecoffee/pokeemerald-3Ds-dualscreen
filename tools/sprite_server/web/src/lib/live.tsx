@@ -54,6 +54,7 @@ export function LiveProvider({ session, children }: { session: Session; children
         case "upload":
           qc.invalidateQueries({ queryKey: keys.grid });
           qc.invalidateQueries({ queryKey: keys.mon(ev.key) });
+          qc.invalidateQueries({ queryKey: ["feed"] });
           markFresh(ev.key);
           if (ev.who !== me.display_name) {
             toast(`${ev.who} uploaded ${ev.name}`, {
@@ -67,9 +68,11 @@ export function LiveProvider({ session, children }: { session: Session; children
         case "delete":
           qc.invalidateQueries({ queryKey: keys.grid });
           qc.invalidateQueries({ queryKey: keys.mon(ev.key) });
+          qc.invalidateQueries({ queryKey: ["feed"] });
           markFresh(ev.key);
           break;
         case "name":
+          qc.invalidateQueries({ queryKey: ["feed"] });
           qc.invalidateQueries({ queryKey: keys.grid });
           qc.invalidateQueries({ queryKey: ["mon"] });
           qc.invalidateQueries({ queryKey: keys.account });
@@ -77,6 +80,7 @@ export function LiveProvider({ session, children }: { session: Session; children
           qc.invalidateQueries({ queryKey: keys.session });
           break;
         case "console":
+          qc.invalidateQueries({ queryKey: ["feed"] });
           qc.invalidateQueries({ queryKey: keys.account });
           qc.invalidateQueries({ queryKey: keys.users });
           break;

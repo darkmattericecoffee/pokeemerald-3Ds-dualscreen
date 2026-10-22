@@ -1,4 +1,4 @@
-import { Grid3x3, LogOut, Monitor, Moon, Sun, UserRound, Users } from "lucide-react";
+import { Activity, Grid3x3, LogOut, Monitor, Moon, Sun, UserRound, Users } from "lucide-react";
 import * as React from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 import { Button } from "@/components/ui/button";
@@ -64,6 +64,9 @@ export function Shell({ user }: { user: SessionUser }) {
           <nav className="ml-auto flex items-center gap-1">
             <Tab to="/" icon={Grid3x3}>
               Progress
+            </Tab>
+            <Tab to="/feed" icon={Activity}>
+              Feed
             </Tab>
             <Tab to="/account" icon={UserRound}>
               Account

@@ -5,6 +5,7 @@ Standard library only.
 """
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -79,6 +80,19 @@ CREATE TABLE IF NOT EXISTS votes (
     PRIMARY KEY (user_id, version_id)
 );
 CREATE INDEX IF NOT EXISTS votes_by_mon ON votes (mon_key, user_id);
+-- What happened, for the web app's feed: every upload, vote taken or given back, pin, unpin,
+-- delete, name change and console link, with who did it and when. Versions and users it names
+-- may be gone by now (the feed says so).
+CREATE TABLE IF NOT EXISTS activity (
+    id         INTEGER PRIMARY KEY,
+    at         INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    mon_key    TEXT,
+    version_id INTEGER,
+    detail     TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS activity_by_time ON activity (at, id);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 INSERT OR IGNORE INTO meta (k, v) VALUES ('seq', 0);
 -- Moves on with every upload, vote, pin and delete: the web pages poll it.
@@ -158,6 +172,16 @@ def init(path: str) -> None:
             cur = conn.execute("SELECT pinned FROM current WHERE mon_key = ?", (r["mon_key"],)).fetchone()
             if cur is None or not cur["pinned"]:
                 _set_best(conn, r["mon_key"])
+    # Added later: the activity feed. A database from before gets its uploads and votes once, so the
+    # feed starts with the history it has (pins and deletes from before left no trace).
+    with Tx(conn):
+        if conn.execute("SELECT 1 FROM meta WHERE k = 'activity_filled'").fetchone() is None:
+            conn.execute("INSERT INTO activity (at, kind, user_id, mon_key, version_id, detail) "
+                         "SELECT uploaded_at, 'upload', user_id, mon_key, id, "
+                         "json_object('final', final, 'revision', revision) FROM versions ORDER BY uploaded_at, id")
+            conn.execute("INSERT INTO activity (at, kind, user_id, mon_key, version_id) "
+                         "SELECT voted_at, 'vote', user_id, mon_key, version_id FROM votes ORDER BY voted_at")
+            conn.execute("INSERT INTO meta (k, v) VALUES ('activity_filled', 1)")
     conn.close()
 
 
@@ -191,6 +215,43 @@ def bump_rev(conn: sqlite3.Connection) -> None:
 def current_rev(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT v FROM meta WHERE k = 'rev'").fetchone()
     return row[0] if row else 0
+
+
+# ── Activity (the feed) ─────────────────────────────────────────────────────
+
+ACTIVITY_KINDS = ("upload", "vote", "unvote", "pin", "unpin", "delete", "name", "console")
+
+
+def log(conn: sqlite3.Connection, kind: str, user_id: Optional[int] = None, mon_key: Optional[str] = None,
+        version_id: Optional[int] = None, **detail) -> int:
+    """One line of the feed. Inside the caller's transaction when there is one."""
+    assert kind in ACTIVITY_KINDS, kind
+    return conn.execute(
+        "INSERT INTO activity (at, kind, user_id, mon_key, version_id, detail) VALUES (?, ?, ?, ?, ?, ?)",
+        (now(), kind, user_id, mon_key, version_id, json.dumps(detail, separators=(",", ":")))).lastrowid
+
+
+def activity(conn: sqlite3.Connection, before: int = 0, limit: int = 40, kinds=None) -> list:
+    """The newest `limit` lines (older than line `before` when given), newest first by time (lines
+    brought in from before the feed, and a seed's back-dated ones, are not in id order), each with who
+    did it as the site shows them and what became of the version it names: whether it still exists,
+    was replaced by its person's newer one, and is the picture's current one, plus its owner."""
+    where, args = [], []
+    if before:
+        edge = conn.execute("SELECT at FROM activity WHERE id = ?", (before,)).fetchone()
+        if edge is not None:
+            where.append("(a.at < ? OR (a.at = ? AND a.id < ?))")
+            args.extend([edge["at"], edge["at"], before])
+    if kinds:
+        where.append("a.kind IN (%s)" % ",".join("?" * len(kinds)))
+        args.extend(kinds)
+    return conn.execute(
+        "SELECT a.*, COALESCE(u.display_name, u.name) AS who, v.id AS live_id, v.replaced_by, v.final AS live_final, "
+        "v.revision AS live_revision, COALESCE(o.display_name, o.name) AS owner, c.version_id AS current_id "
+        "FROM activity a LEFT JOIN users u ON u.id = a.user_id LEFT JOIN versions v ON v.id = a.version_id "
+        "LEFT JOIN users o ON o.id = v.user_id LEFT JOIN current c ON c.mon_key = a.mon_key "
+        + ("WHERE " + " AND ".join(where) if where else "") + " ORDER BY a.at DESC, a.id DESC LIMIT ?",
+        args + [limit]).fetchall()
 
 
 # ── Users ───────────────────────────────────────────────────────────────────
@@ -372,6 +433,7 @@ def add_version(conn: sqlite3.Connection, edit, user_id: int, device_id: Optiona
         if old is not None:  # an earlier file of one's own, back again
             for m in mine:
                 _replace(conn, m, old["id"], edit.key)
+            log(conn, "upload", user_id, edit.key, old["id"], final=int(edit.final), revision=edit.revision, again=1)
             bump_rev(conn)
             cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
             if cur is None or not cur["pinned"]:
@@ -387,6 +449,8 @@ def add_version(conn: sqlite3.Connection, edit, user_id: int, device_id: Optiona
              edit.base_author, edit.base_revision)).lastrowid
         for m in mine:
             _replace(conn, m, vid, edit.key)
+        log(conn, "upload", user_id, edit.key, vid, final=int(edit.final), revision=edit.revision,
+            replaced=len(mine), base=edit.base_author)
         bump_rev(conn)
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (edit.key,)).fetchone()
         if cur is not None and cur["pinned"]:
@@ -448,11 +512,19 @@ def set_votes(conn: sqlite3.Connection, user_id: int, key: str, version_ids) -> 
             if row["id"] not in live:
                 live.append(row["id"])
         ids = live
+        before = [r["version_id"] for r in conn.execute(
+            "SELECT version_id FROM votes WHERE user_id = ? AND mon_key = ? ORDER BY voted_at, version_id", (user_id, key))]
         conn.execute("DELETE FROM votes WHERE user_id = ? AND mon_key = ?", (user_id, key))
         t = now()
         for i, v in enumerate(ids):
             conn.execute("INSERT INTO votes (user_id, mon_key, version_id, voted_at) VALUES (?, ?, ?, ?)",
                          (user_id, key, v, t + i))
+        for v in before:
+            if v not in ids:
+                log(conn, "unvote", user_id, key, v)
+        for v in ids:
+            if v not in before:
+                log(conn, "vote", user_id, key, v)
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
         if cur is None or not cur["pinned"]:
             _set_best(conn, key)
@@ -460,20 +532,24 @@ def set_votes(conn: sqlite3.Connection, user_id: int, key: str, version_ids) -> 
     return None
 
 
-def pin(conn: sqlite3.Connection, key: str, version_id: int) -> bool:
+def pin(conn: sqlite3.Connection, key: str, version_id: int, by: Optional[int] = None) -> bool:
     with Tx(conn):
         if conn.execute("SELECT 1 FROM versions WHERE id = ? AND mon_key = ? AND " + LIVE,
                         (version_id, key)).fetchone() is None:
             return False
         conn.execute("INSERT OR REPLACE INTO current (mon_key, version_id, pinned, seq) VALUES (?, ?, 1, ?)",
                      (key, version_id, next_seq(conn)))
+        log(conn, "pin", by, key, version_id)
         bump_rev(conn)
         return True
 
 
-def unpin(conn: sqlite3.Connection, key: str) -> None:
+def unpin(conn: sqlite3.Connection, key: str, by: Optional[int] = None) -> None:
     """Back to 'the most votes win, else the newest'."""
     with Tx(conn):
+        cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (key,)).fetchone()
+        if cur is not None and cur["pinned"]:
+            log(conn, "unpin", by, key, cur["version_id"])
         _set_best(conn, key)
         bump_rev(conn)
 
@@ -488,12 +564,15 @@ def _set_best(conn: sqlite3.Connection, key: str) -> None:
                      (key, best, next_seq(conn)))
 
 
-def delete_version(conn: sqlite3.Connection, version_id: int) -> Optional[str]:
+def delete_version(conn: sqlite3.Connection, version_id: int, by: Optional[int] = None) -> Optional[str]:
     """The version's key, or None if there is no such version."""
     with Tx(conn):
-        row = conn.execute("SELECT mon_key FROM versions WHERE id = ?", (version_id,)).fetchone()
+        row = conn.execute("SELECT v.mon_key, v.user_id, v.revision, COALESCE(u.display_name, u.name) AS owner "
+                           "FROM versions v JOIN users u ON u.id = v.user_id WHERE v.id = ?", (version_id,)).fetchone()
         if row is None:
             return None
+        log(conn, "delete", by, row["mon_key"], version_id, owner=row["owner"], own=int(row["user_id"] == by),
+            revision=row["revision"])
         cur = conn.execute("SELECT * FROM current WHERE mon_key = ?", (row["mon_key"],)).fetchone()
         if cur is not None and cur["version_id"] == version_id:
             conn.execute("DELETE FROM current WHERE mon_key = ?", (row["mon_key"],))

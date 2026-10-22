@@ -1,8 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError, setCsrf } from "./api";
 import { parseEdit, parsePicture } from "./editfile";
-import type { Account, FocusState, Grid, Mon, PairingCode, PictureData, Session, Users } from "./types";
+import type { Account, Feed, FeedFilter, FocusState, Grid, Mon, PairingCode, PictureData, Session, Users } from "./types";
 
 export const keys = {
   session: ["session"] as const,
@@ -13,6 +13,7 @@ export const keys = {
   account: ["account"] as const,
   users: ["users"] as const,
   focus: ["focus"] as const,
+  feed: (filter: FeedFilter) => ["feed", filter] as const,
 };
 
 export function useSession() {
@@ -54,6 +55,17 @@ export function usePicture(key: string, has: boolean) {
     enabled: has,
     staleTime: Infinity,
     gcTime: 30 * 60_000,
+  });
+}
+
+/** The activity feed, newest first, a page at a time (the next page is the lines before the last one). */
+export function useFeed(filter: FeedFilter) {
+  return useInfiniteQuery({
+    queryKey: keys.feed(filter),
+    queryFn: ({ pageParam }) =>
+      api.get<Feed>(`/api/web/feed?kind=${filter}${pageParam ? `&before=${pageParam}` : ""}`),
+    initialPageParam: 0,
+    getNextPageParam: (last) => (last.more && last.items.length ? last.items[last.items.length - 1].id : undefined),
   });
 }
 

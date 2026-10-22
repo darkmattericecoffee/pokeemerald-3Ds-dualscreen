@@ -687,6 +687,51 @@ class ServerTest(unittest.TestCase):
                     pass
                 c.close()
 
+    def test_activity_feed(self):
+        """Every upload, vote, pin and delete leaves a line the web app's feed shows, newest first."""
+        hal_web, hal = self.linked_client("hal")
+        ida_web, ida = self.linked_client("ida")
+        api = lambda method, path, cfg, obj=None: client.request(
+            method, self.base + path, cfg["token"], json.dumps(obj).encode() if obj is not None else None,
+            "application/json" if obj is not None else None)
+        status, _, body = client.request("POST", self.base + "/api/mons/133/versions", hal["token"], make_edit("133", seed=1))
+        self.assertEqual(status, 201)
+        first = json.loads(body)["version_id"]
+        status, _, body = client.request("POST", self.base + "/api/mons/133/versions", ida["token"],
+                                         make_edit("133", seed=2, final=True))
+        second = json.loads(body)["version_id"]
+        # A vote from the web, one taken back from the console, a pin by the admin, a delete by the owner.
+        self.assertEqual(hal_web.api("POST", "/api/web/mons/133/vote", {"version_id": second, "on": True})[0], 200)
+        self.assertEqual(api("POST", "/api/mons/133/votes", hal, {"version_ids": []})[0], 200)
+        self.assertEqual(self.admin.api("POST", "/api/web/mons/133/pin", {"version_id": first})[0], 200)
+        self.assertEqual(ida_web.api("POST", "/api/web/versions/%d/delete" % second)[0], 200)
+        self.assertEqual(ida_web.api("POST", "/api/web/account/name", {"name": "Ida B"})[0], 200)
+
+        status, feed = hal_web.api("GET", "/api/web/feed?limit=6")
+        self.assertEqual(status, 200, feed)
+        kinds = [(i["kind"], i["who"]) for i in feed["items"]]
+        self.assertEqual(kinds, [("name", "Ida B"), ("delete", "Ida B"), ("pin", "boss"), ("unvote", "hal"),
+                                 ("vote", "hal"), ("upload", "Ida B")])
+        self.assertTrue(feed["more"])
+        name, delete, pin, unvote, vote, upload = feed["items"]
+        self.assertEqual((name["new_name"], name["key"]), ("Ida B", None))
+        # The deleted version is gone; the line still knows whose it was (the name at the time) and which picture.
+        self.assertEqual((delete["exists"], delete["owner"], delete["own"], delete["key"], delete["name"]),
+                         (False, "ida", 1, "133", "Front 133"))
+        self.assertEqual((pin["version_id"], pin["current"], pin["exists"]), (first, True, True))
+        self.assertEqual((vote["version_id"], vote["me"]), (second, True))
+        self.assertEqual((upload["final"], upload["revision"], upload["exists"], upload["me"]), (True, 1, False, False))
+        self.assertTrue(all(i["at"] > 0 for i in feed["items"]))
+        # Older lines come by id; the kinds narrow it down.
+        status, older = hal_web.api("GET", "/api/web/feed?before=%d" % feed["items"][-1]["id"])
+        self.assertEqual(older["items"][0]["kind"], "upload")
+        self.assertEqual(older["items"][0]["version_id"], first)
+        status, votes = hal_web.api("GET", "/api/web/feed?kind=votes&limit=2")
+        self.assertEqual([i["kind"] for i in votes["items"]], ["unvote", "vote"])
+        self.assertEqual(hal_web.api("GET", "/api/web/feed?kind=nonsense")[0], 400)
+        # The console API cannot read it; a signed-out browser neither.
+        self.assertEqual(Browser(self.base).api("GET", "/api/web/feed")[0], 401)
+
     def test_follow_the_web(self):
         """The web app says what it shows; the same account's console reads it (GET /api/focus)."""
         b, cfg = self.linked_client("kim")

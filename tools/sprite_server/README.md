@@ -69,6 +69,11 @@ views. Pages:
   both in turn; the game's colours, tinted by plane, or the editor's plane colours.
 - **Compare** (`/compare/025?v=12,15`): 2 to 4 versions side by side whose 3D views turn
   together, each with its facts and a Vote button. Pick versions with Compare on their cards.
+- **Feed** (`/feed`): who did what, newest first, by day: every upload (with a thumbnail of the
+  version and whether it is the current one, was replaced by that person's newer one, or was deleted
+  since), votes given and taken back, pins and unpins, deletes, name changes and linked consoles.
+  All, uploads, votes, pins & deletes, or people; "Older" loads further back. It grows by itself
+  while open. A server from before the feed starts with its uploads and votes (table `activity`).
 - **Account**: your name, linked consoles, a pairing code that turns into "Linked!" the moment
   the console uses it, password. **Users** (admins): add, disable, new passwords.
 
@@ -197,6 +202,7 @@ that came over plain HTTP through Cloudflare is ignored.
 | `GET /api/web/users`, `POST /api/web/users` `{name,role}`, `POST /api/web/users/<id>/enable\|disable\|reset` | admins |
 | `POST /api/web/focus` `{key,version_ids}` | what this page shows, for consoles following the web |
 | `GET /api/web/events` | the live channel (Server-Sent Events) |
+| `GET /api/web/feed` `?kind=all\|uploads\|votes\|curation\|people&before=<id>&limit=40` | the activity feed, newest first: `{items:[{id,at,kind,who,me,key,name,version_id,exists,replaced,current,owner,…}],more}` |
 
 Edit files themselves come from `GET /api/versions/<id>` (any signed-in user); the app parses
 and draws them in the browser.

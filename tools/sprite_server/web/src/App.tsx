@@ -8,6 +8,7 @@ import { LiveProvider } from "@/lib/live";
 import { keys, useSession } from "@/lib/queries";
 import { AccountPage } from "@/pages/Account";
 import { ComparePage } from "@/pages/Compare";
+import { FeedPage } from "@/pages/Feed";
 import { LoginPage } from "@/pages/Login";
 import { MonPage } from "@/pages/Mon";
 import { NotFoundPage } from "@/pages/NotFound";
@@ -57,6 +58,7 @@ export function App() {
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route element={<Shell user={user} />}>
           <Route index element={<ProgressPage />} />
+          <Route path="feed" element={<FeedPage />} />
           <Route path="mon/:key" element={<MonPage />} />
           <Route path="compare/:key" element={<ComparePage />} />
           <Route path="account" element={<AccountPage />} />

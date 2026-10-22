@@ -255,7 +255,7 @@ WEB_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset
              ".woff": "font/woff", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
              ".webmanifest": "application/manifest+json", ".txt": "text/plain; charset=utf-8"}
 # The app's own pages (React Router); anything else gets the app with a 404, which shows its own page.
-APP_PAGES = re.compile(r"^/(?:login|account|users|mon/[btp]?\d{3,5}|compare/[btp]?\d{3,5})?/?$")
+APP_PAGES = re.compile(r"^/(?:login|feed|account|users|mon/[btp]?\d{3,5}|compare/[btp]?\d{3,5})?/?$")
 APP_CSP = ("default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
            "connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'")
 NOT_BUILT = b"""<!doctype html><meta charset="utf-8"><title>Emerald 3D planes</title>
@@ -471,7 +471,7 @@ def web_vote(req: Request, key: str) -> Response:
 @route("POST", r"/api/web/mons/" + KEY + r"/pin", "admin")
 def web_pin(req: Request, key: str) -> Response:
     vid = int_field(json_body(req) or {}, "version_id")
-    if vid is None or not db.pin(req.conn, key, vid):
+    if vid is None or not db.pin(req.conn, key, vid, by=req.user["id"]):
         return api_error(404, "no such version")
     publish("pin", key=key, version_id=vid)
     return json_resp(mon_json(req, key))
@@ -479,7 +479,7 @@ def web_pin(req: Request, key: str) -> Response:
 
 @route("POST", r"/api/web/mons/" + KEY + r"/unpin", "admin")
 def web_unpin(req: Request, key: str) -> Response:
-    db.unpin(req.conn, key)
+    db.unpin(req.conn, key, by=req.user["id"])
     publish("pin", key=key, version_id=None)
     return json_resp(mon_json(req, key))
 
@@ -492,7 +492,7 @@ def web_delete(req: Request, vid: str) -> Response:
         return api_error(404, "no such version")
     if row["user_id"] != req.user["id"] and req.user["role"] != "admin":
         return api_error(403, "only its uploader or an admin can delete a version")
-    db.delete_version(req.conn, int(vid))
+    db.delete_version(req.conn, int(vid), by=req.user["id"])
     publish("delete", key=row["mon_key"], version_id=int(vid))
     return json_resp(mon_json(req, row["mon_key"]))
 
@@ -530,6 +530,7 @@ def web_account_name(req: Request) -> Response:
     if name is None:
         return api_error(400, "names are letters, digits, spaces, dots, dashes and underscores, up to 16")
     db.bump_rev(req.conn)
+    db.log(req.conn, "name", req.user["id"], name=name)
     req.user = req.conn.execute("SELECT * FROM users WHERE id = ?", (req.user["id"],)).fetchone()
     publish("name", name=name)
     return json_resp(account_json(req))
@@ -700,6 +701,43 @@ def web_events(req: Request):
     return Stream(req.user["id"], db.current_rev(req.conn))
 
 
+FEED_KINDS = {"all": None, "uploads": ("upload",), "votes": ("vote", "unvote"), "curation": ("pin", "unpin", "delete"),
+              "people": ("name", "console")}
+FEED_LIMIT = 40
+
+
+@route("GET", r"/api/web/feed", "web")
+def web_feed(req: Request) -> Response:
+    """The activity feed, newest first: ?before=<id> for the lines older than one, ?kind=all|uploads|votes|
+    curation|people, ?limit up to 100. Each line says who (as the site shows them), what, which picture
+    and version, and what became of that version since (gone, replaced, current)."""
+    kinds = FEED_KINDS.get(req.q("kind", "all"))
+    if req.q("kind", "all") not in FEED_KINDS:
+        return api_error(400, "kind is one of " + ", ".join(FEED_KINDS))
+    before = int(req.q("before", "0")) if req.q("before", "0").isdigit() else 0
+    limit = min(100, max(1, int(req.q("limit", str(FEED_LIMIT))) if req.q("limit", "").isdigit() else FEED_LIMIT))
+    rows = db.activity(req.conn, before, limit + 1, kinds)
+    items = []
+    for r in rows[:limit]:
+        detail = json.loads(r["detail"] or "{}")
+        item = {"id": r["id"], "at": r["at"], "kind": r["kind"], "who": r["who"], "me": r["user_id"] == req.user["id"],
+                "key": r["mon_key"], "name": CFG.name(r["mon_key"]) if r["mon_key"] else None,
+                "version_id": r["version_id"]}
+        if r["version_id"] is not None:
+            item["exists"] = r["live_id"] is not None
+            item["replaced"] = r["replaced_by"] is not None
+            item["current"] = r["live_id"] is not None and r["current_id"] == r["version_id"]
+            item["owner"] = r["owner"] or detail.get("owner")
+            item["final"] = bool(r["live_final"]) if r["live_id"] is not None else bool(detail.get("final", 0))
+        for k in ("revision", "again", "base", "own", "console"):
+            if k in detail and k not in item:
+                item[k] = detail[k]
+        if "name" in detail:  # a name change: the picture name slot is free, the new name goes beside it
+            item["new_name"] = detail["name"]
+        items.append(item)
+    return json_resp({"items": items, "more": len(rows) > limit, "rev": db.current_rev(req.conn)})
+
+
 def public_base(req: Request) -> str:
     host = req.headers.get("Host", "localhost")
     return ("https://" if req.https else "http://") + host
@@ -734,6 +772,7 @@ def publish_linked(req: Request, token: str) -> None:
     """A console or PC just traded its code: the account page that made the code shows it at once."""
     d = db.device_for_token(req.conn, token)
     if d is not None:
+        db.log(req.conn, "console", d["user_id"], console=d["console_name"])
         publish("console", _to=d["user_id"], action="linked", device_id=d["id"], console_name=d["console_name"])
 
 
@@ -763,9 +802,11 @@ def api_me(req: Request) -> Response:
 @route("POST", r"/api/me", "device")
 def api_me_name(req: Request) -> Response:
     """{"name": ...}: the console's author name becomes the name the site shows for this account."""
-    if db.set_display_name(req.conn, req.device["user_id"], str(req.json().get("name", ""))) is None:
+    name = db.set_display_name(req.conn, req.device["user_id"], str(req.json().get("name", "")))
+    if name is None:
         return api_error(400, "names are letters, digits, spaces, dots, dashes and underscores, up to 16")
     db.bump_rev(req.conn)
+    db.log(req.conn, "name", req.device["user_id"], name=name)
     publish("name")
     return api_me(req)
 
@@ -847,7 +888,7 @@ def api_delete_version(req: Request, vid: str) -> Response:
         return api_error(404, "no such version")
     if row["user_id"] != req.device["user_id"] and req.device["role"] != "admin":
         return api_error(403, "only its uploader can delete a version")
-    db.delete_version(req.conn, int(vid))
+    db.delete_version(req.conn, int(vid), by=req.device["user_id"])
     publish("delete", key=row["mon_key"], version_id=int(vid))
     return json_resp(_versions_json(req, row["mon_key"]))
 

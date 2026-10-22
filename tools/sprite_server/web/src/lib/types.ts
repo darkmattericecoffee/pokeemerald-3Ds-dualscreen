@@ -123,6 +123,47 @@ export interface Users {
   password?: string;
 }
 
+/** One line of the activity feed (/api/web/feed). */
+export type FeedKind = "upload" | "vote" | "unvote" | "pin" | "unpin" | "delete" | "name" | "console";
+
+export interface FeedItem {
+  id: number;
+  at: number;
+  kind: FeedKind;
+  /** Who did it, as the site shows them now; null when the account is gone. */
+  who: string | null;
+  me: boolean;
+  key: string | null;
+  name: string | null;
+  version_id: number | null;
+  /** Lines about a version: what became of it since. */
+  exists?: boolean;
+  replaced?: boolean;
+  current?: boolean;
+  final?: boolean;
+  /** The version's uploader (for pins and deletes by someone else). */
+  owner?: string | null;
+  revision?: number;
+  /** An upload that brought an earlier file of one's own back. */
+  again?: number;
+  /** Whose version the edit was made over, when the file says. */
+  base?: string;
+  /** A delete: 1 when the uploader deleted their own version. */
+  own?: number;
+  /** A name change: the new name. */
+  new_name?: string;
+  /** A console link: the console's name. */
+  console?: string;
+}
+
+export type FeedFilter = "all" | "uploads" | "votes" | "curation" | "people";
+
+export interface Feed {
+  items: FeedItem[];
+  more: boolean;
+  rev: number;
+}
+
 /** What the account's web app shows, for its consoles that follow the web (/api/web/focus). */
 export interface FocusState {
   key: string | null;

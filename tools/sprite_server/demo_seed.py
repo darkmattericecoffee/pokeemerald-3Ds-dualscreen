@@ -131,8 +131,9 @@ def main() -> None:
             edit = editfile.parse(data, key)
             vid, _, dup = db.add_version(conn, edit, uids[who], dids[who])
             if not dup:
-                conn.execute("UPDATE versions SET uploaded_at = ? WHERE id = ?",
-                             (db.now() - rnd.randint(60, 86400 * 4), vid))
+                at = db.now() - rnd.randint(60, 86400 * 4)
+                conn.execute("UPDATE versions SET uploaded_at = ? WHERE id = ?", (at, vid))
+                conn.execute("UPDATE activity SET at = ? WHERE kind = 'upload' AND version_id = ?", (at, vid))
                 made += 1
         ids = [r[0] for r in conn.execute("SELECT id FROM versions WHERE mon_key = ?", (key,))]
         for name in uids:
