@@ -299,6 +299,9 @@ static struct
     uint32_t voteNext;
     uint8_t voteNextSide;
     int8_t voteNextWant;
+    /* SAVE tapped: the pressed button and a SAVING banner get a frame on
+     * screen before the card is written (a second or two it is). */
+    uint8_t savePending;
     /* The offer to carry a drawn-on frame's planes to an untouched one:
      * made once per picture, from this frame. */
     bool askedPropagate;
@@ -2105,7 +2108,11 @@ static void ToggleFinal(void)
  * asks whether the picture is final. */
 static void SaveTap(void)
 {
-    if (sE.dirtyFile) Save(false);
+    if (sE.dirtyFile)
+    {
+        Toast("SAVING TO THE CARD...");
+        sE.savePending = 2;
+    }
     else sE.screen = S_CONFIRM_FINAL;
 }
 
@@ -4263,7 +4270,7 @@ static void DrawBar(void)
               sRedoCount ? INK_DARK : INK_OFF);
     /* The save: green when final, its dot green once saved, red while
      * changes wait for the card. */
-    CtrBottomDraw_Plate(SAVE_X, BAR_Y, SAVE_W, BAR_H, final ? 1 : 0, final || sE.pressed == P_SAVE);
+    CtrBottomDraw_Plate(SAVE_X, BAR_Y, SAVE_W, BAR_H, final ? 1 : 0, final || sE.pressed == P_SAVE || sE.savePending);
     Sprite(SPRITE_SAVE, SAVE_X + (SAVE_W - SPRITE_SIZE) / 2 - 1, BAR_Y + (BAR_H - SPRITE_SIZE) / 2);
     DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
     DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 3, sE.dirtyFile ? Rgb(31, 12, 8) : Rgb(8, 56, 10));
@@ -5395,6 +5402,12 @@ bool CtrStereoEdit_BottomFrame(void)
     if (sE.pl != NULL) sE.dirtyDraw = true;
 #endif
     in = TapInput(in);
+    /* SAVE, once its banner has been drawn. */
+    if (sE.savePending && --sE.savePending == 0)
+    {
+        Save(false);
+        sE.dirtyDraw = true;
+    }
     /* A version put on the card (the versions screen): the viewer read it
      * again, so the planes are taken up afresh. */
     if (CtrStereoMon_ReloadCount() != sE.reloads)
