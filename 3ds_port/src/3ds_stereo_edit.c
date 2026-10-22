@@ -290,6 +290,14 @@ static struct
     char forkWho[17];
     /* The versions screen's BIG view: the cursor's column at 2x. */
     bool big;
+    /* A server version is on its way to the card (PUT ON CARD, COPY AND
+     * EDIT): no drawing until it has landed, or the strokes would be lost
+     * when the picture is read again. */
+    bool useWait;
+    /* A pair vote: the back's version waits for the front's job to end. */
+    uint32_t voteNext;
+    uint8_t voteNextSide;
+    int8_t voteNextWant;
     /* The offer to carry a drawn-on frame's planes to an untouched one:
      * made once per picture, from this frame. */
     bool askedPropagate;
@@ -1458,6 +1466,8 @@ static void TouchPropagate(const CtrInput *in);
 static void DrawPropagate(void);
 static void TouchMerge(const CtrInput *in);
 static void DrawMerge(void);
+static void VoteVersion(unsigned side, uint32_t version);
+static void VoteVersionTo(unsigned side, uint32_t version, int want);
 /* The next open shows the new pictures (CtrStereoEdit_PreferNew). */
 static bool sPreferNew, sPreferDex;
 
@@ -2056,7 +2066,18 @@ static void WatchOnline(void)
         Toast(text);
     }
     if (status == CTR_ONLINE_BUSY) sE.toastFrames = TOAST_FRAMES;
-    else sE.onlineWatch = false;
+    else
+    {
+        sE.onlineWatch = false;
+        if (sE.useWait && status == CTR_ONLINE_ERROR) sE.useWait = false;
+        if (sE.voteNext)
+        {
+            uint32_t version = sE.voteNext;
+
+            sE.voteNext = 0;
+            VoteVersionTo(sE.voteNextSide, version, sE.voteNextWant);
+        }
+    }
 }
 
 static void ToggleFinal(void)
@@ -2166,6 +2187,14 @@ static void TouchEdit(const CtrInput *in)
 {
     int x = in->touchX, y = in->touchY;
 
+    if (in->touchDown && sE.useWait && x < RIGHT_X && y >= BAR_Y + BAR_H && y < BOT_Y)
+    {
+        /* The server's version is still on its way: a stroke now would be
+         * lost when the picture is read again (Magneton's front was). */
+        Toast("A MOMENT: THE SERVER'S VERSION IS COMING");
+        sE.dirtyDraw = true;
+        return;
+    }
     if (in->touchDown)
     {
         int b;
@@ -2909,7 +2938,8 @@ static void CursorTo(int column, unsigned side)
 /* A vote for a version of a side, or the vote taken back: any number of a
  * picture's versions (the front's and the back's apart), kept on the card
  * and sent now or as soon as the server answers. */
-static void VoteVersion(unsigned side, uint32_t version)
+/* `want` -1 toggles the vote, 0 takes it back, 1 gives it. */
+static void VoteVersionTo(unsigned side, uint32_t version, int want)
 {
     uint32_t fav[CTR_ONLINE_MAX_VOTES], keep[CTR_ONLINE_MAX_VOTES];
     unsigned n, m = 0;
@@ -2918,6 +2948,8 @@ static void VoteVersion(unsigned side, uint32_t version)
     n = CtrOnline_Favourites(sE.sideId[side], fav, NULL);
     for (unsigned k = 0; k < n; ++k)
         if (fav[k] != version) keep[m++] = fav[k];
+    if (m == n && want == 0) return;
+    if (m < n && want == 1) return;
     if (m == n)
     {
         if (n >= CTR_ONLINE_MAX_VOTES)
@@ -2933,6 +2965,44 @@ static void VoteVersion(unsigned side, uint32_t version)
     sE.onlineSerial = CtrOnline_Serial();
     sE.labelsDirty = true;
     sE.dirtyDraw = true;
+}
+
+static void VoteVersion(unsigned side, uint32_t version) { VoteVersionTo(side, version, -1); }
+
+/* VOTE: for the pair under the cursor, its front and its back (each a
+ * toggle: a vote already given is taken back); the back's vote goes out
+ * once the front's job has ended. */
+static void VoteColumn(void)
+{
+    uint32_t front = 0, back = 0;
+
+    if (sE.viewCount)
+    {
+        front = sE.colV[sE.cols[sE.curCol]][0];
+        back = sE.sideId[1] ? sE.colV[sE.cols[sE.curCol]][1] : 0;
+    }
+    if (!front && !back)
+    {
+        Toast("NOTHING TO VOTE FOR HERE");
+        return;
+    }
+    if (front && back)
+    {
+        /* Both voted already: both taken back; else the missing one(s) given. */
+        int want = Voted(sE.sideId[0], front) && Voted(sE.sideId[1], back) ? 0 : 1;
+
+        sE.voteNext = back;
+        sE.voteNextSide = 1;
+        sE.voteNextWant = (int8_t)want;
+        if (Voted(sE.sideId[0], front) == (want == 1))
+        {
+            /* The front needs nothing: straight to the back. */
+            sE.voteNext = 0;
+            VoteVersionTo(1, back, want);
+        }
+        else VoteVersionTo(0, front, want);
+    }
+    else VoteVersion(front ? 0 : 1, front ? front : back);
 }
 
 /* PUT ON CARD: the cursor's version onto the card (the card's own edit is
@@ -2955,6 +3025,7 @@ static void PutOnCard(void)
         snprintf(line, sizeof(line), "PUTTING %lu ON THE CARD...", (unsigned long)version);
         Toast(line);
         sE.onlineWatch = true;
+        sE.useWait = true;
         sE.onlineSerial = CtrOnline_Serial();
     }
     else Toast("BUSY - A MOMENT");
@@ -3371,7 +3442,7 @@ static void VersionsKeysPad(unsigned down, unsigned pad)
     else if (pad & CTR_KEY_DOWN) CursorTo((int)sE.curCol, 1);
     else if ((down & CTR_KEY_A) && sE.viewCount == 0 && VbListsIn()) CreateSide(sE.curSide);
     else if ((down & CTR_KEY_A) && sE.viewCount && CursorVersion() == 0) CreateSide(sE.curSide);
-    else if (down & CTR_KEY_A) VoteVersion(sE.curSide, CursorVersion());
+    else if (down & CTR_KEY_A) VoteColumn();
     else if (down & CTR_KEY_X) PutOnCard();
     else if (down & CTR_KEY_Y) ToggleFollow();
     else if (down & CTR_KEY_L) CursorTo((int)sE.curCol - CTR_STRIP_VISIBLE, sE.curSide);
@@ -3454,7 +3525,13 @@ static void TouchVersions(const CtrInput *in)
             column = (unsigned)sE.pressCol;
             side = sE.pressSide;
             CursorTo((int)column, side);
-            if (sE.colV[sE.cols[column]][side]) VoteVersion(side, sE.colV[sE.cols[column]][side]);
+            if (sE.colV[sE.cols[column]][side])
+            {
+                /* A tap picks the pair and shows it big on the top screen;
+                 * VOTE below (or A) votes for it. */
+                sE.big = true;
+                sE.labelsDirty = true;
+            }
             else
             {
                 sE.stripTouch = false;
@@ -3540,8 +3617,9 @@ static void TouchVersions(const CtrInput *in)
     }
     if (y >= VB_ROW_Y && y < VB_ROW_Y + VB_ROW_H)
     {
-        if (x < W / 3) UploadMine();
-        else if (x < 2 * W / 3) AskDeleteMine();
+        if (x < W / 4) VoteColumn();
+        else if (x < W / 2) UploadMine();
+        else if (x < 3 * W / 4) AskDeleteMine();
         else PutOnCard();
     }
 }
@@ -4587,12 +4665,14 @@ static void DrawVersions(void)
     VbThumb(&tx, &tw);
     CtrBottomDraw_Plate(tx, VB_BAR_Y - 1, tw, VB_BAR_TH + 2, sE.barTouch ? 1 : 0, sE.barTouch);
     /* The row along the bottom. */
-    CtrBottomDraw_Plate(2, VB_ROW_Y, W / 3 - 4, VB_ROW_H, 0, false);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "UPLOAD MINE", W / 6, VB_ROW_Y + 5, CTR_DRAW_DARK);
-    CtrBottomDraw_Plate(W / 3 + 2, VB_ROW_Y, W / 3 - 4, VB_ROW_H, 0, false);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "DELETE MINE", W / 2, VB_ROW_Y + 5, CTR_DRAW_RED);
-    CtrBottomDraw_Plate(2 * W / 3 + 2, VB_ROW_Y, W / 3 - 4, VB_ROW_H, 0, false);
-    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "PUT ON CARD  X", 5 * W / 6, VB_ROW_Y + 5, CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(2, VB_ROW_Y, W / 4 - 4, VB_ROW_H, 1, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "VOTE  A", W / 8, VB_ROW_Y + 5, CTR_DRAW_WHITE);
+    CtrBottomDraw_Plate(W / 4 + 2, VB_ROW_Y, W / 4 - 4, VB_ROW_H, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "UPLOAD MINE", 3 * W / 8, VB_ROW_Y + 5, CTR_DRAW_DARK);
+    CtrBottomDraw_Plate(W / 2 + 2, VB_ROW_Y, W / 4 - 4, VB_ROW_H, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "DELETE MINE", 5 * W / 8, VB_ROW_Y + 5, CTR_DRAW_RED);
+    CtrBottomDraw_Plate(3 * W / 4 + 2, VB_ROW_Y, W / 4 - 4, VB_ROW_H, 0, false);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "ON CARD  X", 7 * W / 8, VB_ROW_Y + 5, CTR_DRAW_DARK);
     if (sE.confirmDelete)
     {
         CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, CF_H / 8, false);
@@ -4910,7 +4990,7 @@ static void MakeHelpSheet(void)
     /* CTR_HELP_C_POKEMON on: the Pokédex's words, or the versions screen's. */
     static const char *const chooser[] = {"POKEMON", "", "PAGE BACK", "NEXT PAGE", "EDIT", "ONLINE", "SEARCH", "FILTER",
                                           "BACK"};
-    static const char *const versions[] = {"FRONT OR BACK", "SHOW A VERSION", "FRONT", "BACK", "", "VOTE FOR IT", "", "",
+    static const char *const versions[] = {"FRONT OR BACK", "SHOW A VERSION", "FRONT", "BACK", "", "VOTE THE PAIR", "", "",
                                            "BACK"};
     static uint8_t alpha[CTR_HELP_CELL_W * CTR_HELP_CELL_H];
     const CtrStereoEditMeta *meta = CtrStereoMon_EditMeta();
@@ -5293,6 +5373,7 @@ bool CtrStereoEdit_BottomFrame(void)
         sE.reloads = CtrStereoMon_ReloadCount();
         sE.id = 0;
         sE.pl = NULL;
+        sE.useWait = false;
         sE.dirtyDraw = true;
     }
     if (sE.screen != S_CHOOSE && sE.screen != S_KEYBOARD && !Bind())
@@ -5374,6 +5455,7 @@ bool CtrStereoEdit_BottomFrame(void)
             {
                 Toast("COPYING THEIR VERSION TO THE CARD...");
                 sE.onlineWatch = true;
+                sE.useWait = true;
                 sE.onlineSerial = CtrOnline_Serial();
             }
             else Toast(version ? "BUSY - TRY THE GLOBE" : "NOTHING TO COPY");

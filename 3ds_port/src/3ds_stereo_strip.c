@@ -446,7 +446,9 @@ void CtrStereoStrip_DrawEye(float sign, float slider)
         const unsigned c = sCursorColumn, slot = c % sSlots;
         const float cxF = CTR_GAME_WIDTH / 4.0f, cxB = CTR_GAME_WIDTH * 3 / 4.0f;
 
-        SlotLabel(slot, 0, c, CTR_GAME_WIDTH / 2.0f, AUTHOR_Y, sCells[c][0].mine || sCells[c][1].mine ? cyan : white, NULL);
+        /* Whose it is, over each half. */
+        SlotLabel(slot, 0, c, cxF, AUTHOR_Y, sCells[c][0].mine || sCells[c][1].mine ? cyan : white, NULL);
+        if (sIds[1]) SlotLabel(slot, 0, c, cxB, AUTHOR_Y, sCells[c][0].mine || sCells[c][1].mine ? cyan : white, NULL);
         if (sCells[c][0].web || sCells[c][1].web)
             Label(CTR_STRIP_WEB, CTR_GAME_WIDTH - 8 - LabelWidth(CTR_STRIP_WEB), AUTHOR_Y, C2D_Color32(255, 120, 220, 255));
         C2D_DrawRectSolid(CTR_GAME_WIDTH / 2.0f, AUTHOR_Y + 14, 0, 1, CTR_GAME_HEIGHT - AUTHOR_Y - 16, C2D_Color32(70, 75, 88, 255));

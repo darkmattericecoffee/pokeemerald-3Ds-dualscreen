@@ -474,6 +474,22 @@ void CtrStereoMon_Press(unsigned keys)
 static uint8_t sEditMarks[(CTR_STEREO_MON_MAX_COUNT + 7) / 8];
 static bool sEditScanned;
 static uint8_t *MarkOf(uint16_t id, unsigned *bit, bool final);
+/* The ids with edit files, for the index on the card (IndexWrite). */
+static uint16_t sEditIds[2 * CTR_STEREO_MON_MAX_COUNT];
+static unsigned sEditIdCount;
+static bool sIndexDirty;
+
+static void IndexWrite(void);
+
+static void IdsNote(uint16_t id, bool on)
+{
+    unsigned i;
+
+    for (i = 0; i < sEditIdCount && sEditIds[i] != id; ++i) {}
+    if (on && i == sEditIdCount && sEditIdCount < 2 * CTR_STEREO_MON_MAX_COUNT) sEditIds[sEditIdCount++] = id;
+    else if (!on && i < sEditIdCount) sEditIds[i] = sEditIds[--sEditIdCount];
+    sIndexDirty = true;
+}
 /* The first three letters of each edit file's signer, by the mark's index
  * (fronts by id, backs by their file index): the Pokédex's tags. */
 static char sEditWho[2][CTR_STEREO_MON_MAX_COUNT][4];
@@ -485,6 +501,7 @@ static void SetWho(uint16_t id, const char *author)
     if (MarkOf(id, &bit, false) == NULL || bit >= CTR_STEREO_MON_MAX_COUNT) return;
     memset(sEditWho[side][bit], 0, 4);
     for (unsigned k = 0; k < 3 && author && author[k] && author[k] != ' '; ++k) sEditWho[side][bit][k] = author[k];
+    sIndexDirty = true;
 }
 
 bool CtrStereoMon_EditAuthor3(uint16_t id, char *out)
@@ -547,6 +564,8 @@ static void SetMarkOf(uint16_t id, bool final, bool on)
     uint8_t *marks = MarkOf(id, &bit, final);
 
     if (marks == NULL) return;
+    if (final) sIndexDirty = true;
+    else IdsNote(id, on);
     if (on) marks[bit >> 3] |= (uint8_t)(1 << (bit & 7));
     else marks[bit >> 3] &= (uint8_t)~(1 << (bit & 7));
 }
@@ -1070,6 +1089,7 @@ bool CtrStereoMon_SaveEdit(void)
         sEdited = true;
         SetMark(sId, true);
         SetMarkOf(sId, true, sMeta.finalized);
+        IndexWrite();
         CtrStereoBattle_ForgetPlanes();
         CtrStereoMon_FlushLog();
     }
@@ -1097,30 +1117,84 @@ bool CtrStereoMon_ResetEdit(void)
     sEdited = false;
     SetMark(sId, false);
     SetMarkOf(sId, true, false);
+    IndexWrite();
     memset(&sMeta, 0, sizeof(sMeta));
     CtrStereoBattle_ForgetPlanes();
     sTexReady = false;
     return true;
 }
 
+/*
+ * The edit files' marks come from the folder's names (one readdir), their
+ * finished flags and signers from stereo/index.txt, written whenever they
+ * change; a file the index does not know (another console's card, an
+ * older build) is opened for its trailer once. Opening every file took
+ * seconds on a full card, at every boot.
+ */
+#define EDIT_INDEX EDIT_DIR "/index.txt"
+typedef struct { uint16_t id; uint8_t final; char who[4]; } IndexEntry;
+
+static void IndexWrite(void)
+{
+    FILE *f;
+
+    if (!sIndexDirty) return;
+    sIndexDirty = false;
+    f = fopen(EDIT_INDEX, "w");
+    if (f == NULL) return;
+    for (unsigned i = 0; i < sEditIdCount; ++i)
+    {
+        unsigned bit;
+        const uint8_t *final = MarkOf(sEditIds[i], &bit, true);
+        char who[4];
+
+        CtrStereoMon_EditAuthor3(sEditIds[i], who);
+        fprintf(f, "%04x %u %s\n", sEditIds[i], final && ((final[bit >> 3] >> (bit & 7)) & 1) ? 1 : 0, who);
+    }
+    fclose(f);
+}
+
 void CtrStereoMon_EditScan(void)
 {
-    DIR *d = opendir(EDIT_DIR);
+    DIR *d;
     struct dirent *e;
+    IndexEntry *known = NULL;
+    unsigned knownCount = 0, opened = 0;
+    FILE *f;
 
-    /* Once per boot: every file is opened for its trailer, seconds on a
-     * full card; saves, resets and reloads keep the marks up after. */
-    if (sEditScanned)
-    {
-        if (d) closedir(d);
-        return;
-    }
+    if (sEditScanned) return;
     memset(sEditMarks, 0, sizeof(sEditMarks));
     memset(sBackMarks, 0, sizeof(sBackMarks));
     memset(sFinalMarks, 0, sizeof(sFinalMarks));
     memset(sEditWho, 0, sizeof(sEditWho));
+    sEditIdCount = 0;
     sEditScanned = true;
-    if (d == NULL) return;
+    /* The index, when there is one. */
+    if ((f = fopen(EDIT_INDEX, "r")) != NULL)
+    {
+        char line[32];
+
+        known = malloc(sizeof(IndexEntry) * 2 * CTR_STEREO_MON_MAX_COUNT);
+        while (known && knownCount < 2 * CTR_STEREO_MON_MAX_COUNT && fgets(line, sizeof(line), f))
+        {
+            unsigned id = 0, final = 0;
+            char who[8] = "";
+
+            if (sscanf(line, "%x %u %7s", &id, &final, who) < 2) continue;
+            known[knownCount].id = (uint16_t)id;
+            known[knownCount].final = (uint8_t)final;
+            memset(known[knownCount].who, 0, 4);
+            memcpy(known[knownCount].who, who, strlen(who) < 3 ? strlen(who) : 3);
+            ++knownCount;
+        }
+        fclose(f);
+    }
+    d = opendir(EDIT_DIR);
+    if (d == NULL)
+    {
+        free(known);
+        return;
+    }
     while ((e = readdir(d)) != NULL)
     {
         unsigned n = 0, k = 0, kind = 0;
@@ -1132,14 +1206,23 @@ void CtrStereoMon_EditScan(void)
         if (k > (kind ? 1u : 0u) && strcmp(e->d_name + k, ".bin") == 0 && n < 0x4000 && (kind || n > 0))
         {
             uint16_t id = (uint16_t)(kind | n);
+            const IndexEntry *entry = NULL;
             uint8_t header[EDIT_HEADER_BYTES];
             CtrStereoEditMeta meta;
-            FILE *f;
 
             SetMark(id, true);
-            /* Its trailer, for the finished mark and the signer. */
+            for (unsigned i = 0; i < knownCount && !entry; ++i)
+                if (known[i].id == id) entry = &known[i];
+            if (entry)
+            {
+                if (entry->final) SetMarkOf(id, true, true);
+                SetWho(id, entry->who);
+                continue;
+            }
+            /* Not in the index: its trailer, for the finished mark and the signer. */
             f = OpenEdit(id, "bin", "rb");
             if (f == NULL) continue;
+            ++opened;
             if (fread(header, 1, sizeof(header), f) == sizeof(header) && ReadMeta(f, header[11], &meta))
             {
                 if (meta.finalized) SetMarkOf(id, true, true);
@@ -1149,6 +1232,11 @@ void CtrStereoMon_EditScan(void)
         }
     }
     closedir(d);
+    free(known);
+    CtrLog_Write(CTR_LOG_FS, "stereo: %u edit files (%u read for their trailers, %u from the index)", sEditIdCount, opened,
+                 knownCount);
+    if (opened || sEditIdCount != knownCount) sIndexDirty = true;
+    IndexWrite();
 }
 
 static unsigned sReloads;
@@ -1173,6 +1261,7 @@ static void ReloadShown(void)
     sTexReady = false;
     ++sPlanesVersion;
     ++sReloads;
+    IndexWrite();
     if (sMateId) ComposeMate();
 }
 
