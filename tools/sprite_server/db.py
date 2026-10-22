@@ -136,6 +136,11 @@ def init(path: str) -> None:
     # chosen, Standard). The versions from before carry none: their files all have 0 there.
     if "depth" not in [r["name"] for r in conn.execute("PRAGMA table_info(versions)")]:
         conn.execute("ALTER TABLE versions ADD COLUMN depth INTEGER NOT NULL DEFAULT 0")
+    # Added later: the lineage, whose version the edit was made over (the file's second
+    # trailer, editfile.META2_MAGIC); empty for one made from the game's planes.
+    if "base_author" not in [r["name"] for r in conn.execute("PRAGMA table_info(versions)")]:
+        conn.execute("ALTER TABLE versions ADD COLUMN base_author TEXT NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE versions ADD COLUMN base_revision INTEGER NOT NULL DEFAULT 0")
     # Added later: one version per person per picture. A newer upload of the same person replaces
     # the older one, which stays as history (replaced_by = the newer one's id) but is not listed,
     # voted on or current. Older databases are brought in line once, here.
@@ -375,9 +380,11 @@ def add_version(conn: sqlite3.Connection, edit, user_id: int, device_id: Optiona
             return old["id"], cur is not None and cur["version_id"] == old["id"], False
         vid = conn.execute(
             "INSERT INTO versions (mon_key, user_id, device_id, planes, frames, final, depth, revision, author_tag, "
-            "saved_at, sha256, size, data, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "saved_at, sha256, size, data, uploaded_at, base_author, base_revision) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (edit.key, user_id, device_id, edit.planes, edit.frames, int(edit.final), edit.depth, edit.revision,
-             edit.author, edit.saved, edit.sha256, len(edit.data), edit.data, now())).lastrowid
+             edit.author, edit.saved, edit.sha256, len(edit.data), edit.data, now(),
+             edit.base_author, edit.base_revision)).lastrowid
         for m in mine:
             _replace(conn, m, vid, edit.key)
         bump_rev(conn)
