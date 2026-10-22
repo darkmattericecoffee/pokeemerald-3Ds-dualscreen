@@ -27,11 +27,11 @@ LIBS := -lctru -lm
 TARGET := emerald3ds
 # The editor's own release (the game's is APP_VERSION): in the Homebrew
 # Launcher's title and description, so testers see which build they run.
-EDITOR_VERSION := 0.13
+EDITOR_VERSION := 0.14
 APP_TITLE := Pokémon Emerald 3D Editor v$(EDITOR_VERSION)
 # File names of the release executable (no spaces).
 APP_FILE := Emerald3DS
-APP_DESCRIPTION := Editor v$(EDITOR_VERSION) (2026-10-22) by darkmatter: sync keeps your own edits, pair votes, fast scan
+APP_DESCRIPTION := Editor v$(EDITOR_VERSION) (2026-10-22) by darkmatter: no dive on leaving, faster uploads, button presses
 APP_AUTHOR := Zallax
 # The release this build is, shown under the title screen (3ds_bottom_ui.c);
 # tools/build_release.py refuses a --version that differs.

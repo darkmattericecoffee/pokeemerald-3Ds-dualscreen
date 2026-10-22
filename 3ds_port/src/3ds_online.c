@@ -1922,7 +1922,9 @@ static void Worker(void *arg)
     if (job.type != JOB_FOCUS)
         CtrLog_Write(CTR_LOG_FS, "online: job %d on %s (Wi-Fi %lu%s)", job.type, link.server, (unsigned long)wifi,
                      link.verify ? "" : ", certificate checks OFF");
-    sTimeKnown = false;
+    /* The server's clock, once learnt, serves every job for TIME_REFRESH_MS
+     * (Http): asking again per job cost a round trip, seconds on a slow
+     * Wi-Fi, before every upload. */
     sPsReady = R_SUCCEEDED(psInit());
     r = httpcInit(HTTPC_SHARED);
     if (R_FAILED(r))

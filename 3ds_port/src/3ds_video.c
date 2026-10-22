@@ -11671,7 +11671,10 @@ void CtrVideo_Present(void)
     /* ... unless the 2D field was up: it stays until the voxel world is
      * drawn and the swoop crossfades into it (no black in between). */
     bool blank = overworld && !voxel && CtrVoxel_IsWarmingUp() && sFieldMode != FIELD_MODE_PIXEL;
-    if (!down)
+    /* The stereoscopic viewer over the field (the plane editor): the world
+     * is simply not drawn meanwhile, its mode and its VRAM untouched, so
+     * nothing dives back in when the editor closes. */
+    if (!down && !mon)
     {
         unsigned mode = !field ? FIELD_MODE_NONE : voxel ? FIELD_MODE_VOXEL
                       : blank ? sFieldMode : FIELD_MODE_PIXEL;

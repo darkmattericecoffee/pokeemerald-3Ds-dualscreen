@@ -591,13 +591,22 @@ void CtrStereoMonGame_Frame(void)
         if (national == 0)
             CtrStereoMon_Hide();
         else
+        {
+            uint64_t t0 = CtrPlatform_Ticks();
+
             Show(national, gallery);
+            if (gallery) CtrProf_Note("editor: picture %04x shown in %.0f ms", national, CtrPlatform_TickMs(CtrPlatform_Ticks() - t0));
+        }
     }
     if (sOpenEditor && gallery && CtrStereoMon_Active())
     {
+        uint64_t t0 = CtrPlatform_Ticks();
+
         sOpenEditor = FALSE;
         CtrStereoEdit_Open(sOpenFromGallery);
         sOpenFromGallery = FALSE;
+        CtrProf_Note("editor: opened in %.0f ms", CtrPlatform_TickMs(CtrPlatform_Ticks() - t0));
+        CtrProf_WriteStalls();
     }
 }
 

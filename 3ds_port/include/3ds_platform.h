@@ -70,6 +70,8 @@ uintptr_t CtrProf_Scene(void);
 void CtrProf_Close(void);
 /* The session's worst frames to sdmc:/3ds/emerald3ds/stalls.txt (3ds_prof.c). */
 void CtrProf_WriteStalls(void);
+/* A line for stalls.txt (the last 16 are kept): how long a known slow step took. */
+void CtrProf_Note(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 /*
  * Measured scenarios (3ds_scenario.c): a session recorded from boot - its

@@ -168,7 +168,8 @@ void CtrStereoMonGame_Name(uint16_t id, char *out, unsigned size);
 enum { T_BRUSH, T_ERASE, T_LASSO, T_FILL, T_PAN, T_COUNT };
 enum { B_OPACITY, B_GRID, B_STRAYS, B_COUNT };
 /* The pressed button's number: the tools', the right's, the bars'. */
-enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B, P_BATTLE, P_ONLINE, P_VOTE };
+enum { P_NONE = -1, P_TOOL = 0, P_RIGHT = 16, P_DEX = 32, P_MORE, P_UNDO, P_REDO, P_FRAME1, P_FRAME2, P_SAVE, P_TAB_F, P_TAB_B, P_BATTLE, P_ONLINE, P_VOTE,
+       P_CF_LEFT, P_CF_RIGHT, P_CF_UPLOAD };
 /* What the top screen shows: the colours, the planes tinted, the battle. */
 /* The mock battle view is gone: START plays the real battle. */
 enum { V_COLOURS, V_LAYERS, V_COUNT };
@@ -1495,8 +1496,14 @@ void CtrStereoEdit_Open(bool fromGallery)
     sE.reloads = CtrStereoMon_ReloadCount();
     /* The card's edit files are scanned once per boot (every file is opened
      * for its trailer: seconds on a full card); saves keep the marks up. */
-    CtrStereoMon_EditScan();
-    Bind();
+    {
+        uint64_t t0 = CtrPlatform_Ticks(), t1;
+
+        CtrStereoMon_EditScan();
+        t1 = CtrPlatform_Ticks();
+        Bind();
+        CtrProf_Note("editor: edit scan %.0f ms, bind %.0f ms", CtrPlatform_TickMs(t1 - t0), CtrPlatform_TickMs(CtrPlatform_Ticks() - t1));
+    }
     if (sPreferDex)
     {
         /* Opened to see and vote: straight into the Pokédex, on what a
@@ -3624,26 +3631,48 @@ static void TouchVersions(const CtrInput *in)
     }
 }
 
+/* The button under the stylus, pressed on the touch and acted on when it
+ * lifts (so the press shows). */
+static int ConfirmButtonAt(int x, int y)
+{
+    /* Linked, the FINAL question has an UPLOAD under its two. */
+    if (sE.screen == S_CONFIRM_FINAL && CtrOnline_Linked() && y >= CF_Y + CF_H - 2 && y < CF_Y + CF_H + 24
+        && x >= CF_X + 16 && x < CF_X + 184)
+        return P_CF_UPLOAD;
+    if (y >= CF_Y + 52 && y < CF_Y + 80)
+    {
+        if (x >= CF_X + 16 && x < CF_X + 96) return P_CF_LEFT;
+        if (x >= CF_X + 104 && x < CF_X + 184) return P_CF_RIGHT;
+    }
+    return P_NONE;
+}
+
 static void TouchConfirm(const CtrInput *in)
 {
-    if (!in->touchDown) return;
-    /* Linked, the FINAL question has an UPLOAD under its two. */
-    if (sE.screen == S_CONFIRM_FINAL && CtrOnline_Linked() && in->touchY >= CF_Y + CF_H - 2 && in->touchY < CF_Y + CF_H + 24
-        && in->touchX >= CF_X + 16 && in->touchX < CF_X + 184)
+    if (in->touchDown)
     {
-        sE.screen = S_EDIT;
-        Upload();
+        sE.pressed = ConfirmButtonAt(in->touchX, in->touchY);
+        sE.dirtyDraw = true;
+        return;
     }
-    else if (in->touchY >= CF_Y + 52 && in->touchY < CF_Y + 80)
+    if (in->touchActive || sE.pressed == P_NONE) return;
     {
-        if (in->touchX >= CF_X + 16 && in->touchX < CF_X + 96)
+        int button = sE.pressed;
+
+        sE.pressed = P_NONE;
+        sE.dirtyDraw = true;
+        if (button == P_CF_UPLOAD)
+        {
+            sE.screen = S_EDIT;
+            Upload();
+        }
+        else if (button == P_CF_LEFT)
         {
             if (sE.screen == S_CONFIRM_FINAL) { ToggleFinal(); sE.screen = S_EDIT; }
             else OptionAct(O_RESET + 100, false);
         }
-        else if (in->touchX >= CF_X + 104 && in->touchX < CF_X + 184) sE.screen = S_EDIT;
+        else if (button == P_CF_RIGHT) sE.screen = S_EDIT;
     }
-    sE.dirtyDraw = true;
 }
 
 /* ALREADY DONE BY X: MAKE NEW (the game's planes, as now) or COPY AND EDIT
@@ -4439,7 +4468,7 @@ static void DrawConfirm(void)
     CtrBottomDraw_Box(0, CF_X, CF_Y, CF_W / 8, (CF_H + (upload ? CF_UPLOAD_H : 0)) / 8, false);
     if (upload)
     {
-        CtrBottomDraw_Plate(CF_X + 16, CF_Y + CF_H - 2, 168, 24, 0, false);
+        CtrBottomDraw_Plate(CF_X + 16, CF_Y + CF_H - 2, 168, 24, 0, sE.pressed == P_CF_UPLOAD);
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "UPLOAD TO THE SERVER", CF_X + CF_W / 2, CF_Y + CF_H + 3,
                                   CTR_DRAW_BLUE);
     }
@@ -4455,8 +4484,8 @@ static void DrawConfirm(void)
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "BACK TO THE PACK'S PLANES?", CF_X + CF_W / 2, CF_Y + 10, CTR_DRAW_DARK);
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "YOUR EDITS OF THIS ONE ARE LOST.", CF_X + CF_W / 2, CF_Y + 26, CTR_DRAW_RED);
     }
-    CtrBottomDraw_Plate(CF_X + 16, CF_Y + 52, 80, 24, final ? 1 : 0, false);
-    CtrBottomDraw_Plate(CF_X + 104, CF_Y + 52, 80, 24, final ? 0 : 1, false);
+    CtrBottomDraw_Plate(CF_X + 16, CF_Y + 52, 80, 24, final ? 1 : 0, sE.pressed == P_CF_LEFT);
+    CtrBottomDraw_Plate(CF_X + 104, CF_Y + 52, 80, 24, final ? 0 : 1, sE.pressed == P_CF_RIGHT);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, final ? (isFinal ? "REOPEN" : "FINALIZE") : "RESET", CF_X + 56, CF_Y + 57,
                               final ? CTR_DRAW_WHITE : CTR_DRAW_RED);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, final ? "CANCEL" : "KEEP", CF_X + 144, CF_Y + 57,

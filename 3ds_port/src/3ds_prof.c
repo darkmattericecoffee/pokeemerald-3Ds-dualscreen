@@ -15,6 +15,7 @@
 #include <3ds.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include "3ds_platform.h"
@@ -70,6 +71,7 @@ static int Sections(char *text, size_t size, const uint32_t *ticks, const uint64
 #define STALLS 24
 typedef struct { uint64_t frame; float work, wait, game; uint32_t scene; char text[160]; } Stall;
 static Stall sStalls[STALLS];
+static uint64_t sStallsFrames[STALLS];
 static unsigned sStallCount, sStallsOver;
 static uint64_t sLastFrame;
 
@@ -90,6 +92,7 @@ static void StallNote(float workMs, float waitMs, uint64_t frame)
     else ++sStallCount;
     Sections(text, sizeof(text), sFrame, NULL, 0);
     sStalls[at].frame = frame;
+    sStallsFrames[at] = frame;
     sStalls[at].work = workMs;
     sStalls[at].wait = waitMs;
     sStalls[at].game = CtrPlatform_GetTiming()->gameMs;
@@ -103,13 +106,30 @@ static void StallNote(float workMs, float waitMs, uint64_t frame)
     }
 }
 
+#define NOTES 16
+static char sNotes[NOTES][120];
+static unsigned sNoteNext, sNoteCount;
+
+void CtrProf_Note(const char *format, ...)
+{
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(sNotes[sNoteNext], sizeof(sNotes[0]), format, args);
+    va_end(args);
+    sNoteNext = (sNoteNext + 1) % NOTES;
+    if (sNoteCount < NOTES) ++sNoteCount;
+}
+
 void CtrProf_WriteStalls(void)
 {
     FILE *f;
 
-    if (sStallCount == 0) return;
+    if (sStallCount == 0 && sNoteCount == 0) return;
     f = fopen("sdmc:/3ds/emerald3ds/stalls.txt", "w");
     if (f == NULL) return;
+    for (unsigned i = 0; i < sNoteCount; ++i)
+        fprintf(f, "note: %s\n", sNotes[(sNoteNext + NOTES - sNoteCount + i) % NOTES]);
     fprintf(f, "frames=%llu over%.0fms=%u (the %u worst, by frame; work=the frame's ms, game=the game's share, then its sections)\n",
             (unsigned long long)sLastFrame, (double)STALL_MS, sStallsOver, sStallCount);
     for (unsigned n = 0; n < sStallCount; ++n)
@@ -118,15 +138,16 @@ void CtrProf_WriteStalls(void)
         unsigned best = STALLS;
 
         for (unsigned i = 0; i < sStallCount; ++i)
-            if (sStalls[i].frame != 0 && (best == STALLS || sStalls[i].frame < sStalls[best].frame)) best = i;
+            if (sStalls[i].frame <= ~0ull - STALLS && (best == STALLS || sStalls[i].frame < sStalls[best].frame)) best = i;
         if (best == STALLS) break;
         fprintf(f, "f=%llu work=%.1f wait=%.1f game=%.1f scene=%08lx:%s\n", (unsigned long long)sStalls[best].frame,
                 (double)sStalls[best].work, (double)sStalls[best].wait, (double)sStalls[best].game,
                 (unsigned long)sStalls[best].scene, sStalls[best].text);
-        sStalls[best].frame = 0;
+        sStalls[best].frame = ~0ull - best; /* written: skipped below, kept for the next write */
     }
+    for (unsigned i = 0; i < sStallCount; ++i)
+        if (sStalls[i].frame > ~0ull - STALLS) sStalls[i].frame = sStallsFrames[i];
     fclose(f);
-    sStallCount = 0;
 }
 
 uint32_t Port_ProfTick(void)
