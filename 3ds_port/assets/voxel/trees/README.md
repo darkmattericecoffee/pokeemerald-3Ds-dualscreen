@@ -9,11 +9,21 @@ Original art for the voxel mode's trees, drawn for Emerald 3DS:
   transparent background.
 - `tree_2_small_trunk.png`, `tree_2_small_crown.png`: the same pair for
   Dewford Town's small tree, trunk on sand.
+- `tree_small_trunk_jungle.png`, `tree_small_trunk_grass_road.png`,
+  `tree_small_trunk_volcan.png`: 16×16, the small tree's trunk on Fortree's
+  jungle floor, Route 111's pale grass and Route 112's volcanic soil. Their
+  crown is `tree_small_crown.png`.
+- `tree_crown_base_floor.png`: 32×32, opaque ground of the secret base's
+  tree, on a 2×2-cell footprint.
+- `tree_crown_base.png`, `tree_crown_base_open.png`: 32×32 RGBA, its crown
+  closed and with the base's entrance opened (the same upper half).
 
 `scripts/gen_voxel_trees.py` packs them, unscaled, into
 `voxel/trees.rgba5551`: a 128×128 RGBA5551 texture in PICA200 order (large
 crown at 0,0; large trunk at 32,0; small crown at 32,32; small trunk at
-48,32; Dewford's small crown at 64,0 and its trunk at 80,0). It is an engine file and ships inside the 3DSX. The build regenerates
+48,32; Dewford's small crown at 64,0 and its trunk at 80,0; the jungle,
+pale-grass and volcanic trunks at 48,48, 80,16 and 64,32; the secret base
+tree's floor at 96,0, its crown at 0,64 and the opened one at 32,64). It is an engine file and ships inside the 3DSX. The build regenerates
 it whenever a source changes; it needs Pillow like the port's other graphics
 tools.
 
@@ -50,10 +60,34 @@ A small tree at the foot of a mountain (its crown's cell backed by a cliff or
 shelf, two cells north of the trunk) stands up steeper, the plane's top at the
 trunk cell's north edge: leant back at 50° it ran into the rock and came out of
 it where the rock falls away, a corner's slope (Route 110, by New Mauville's
-entrance).
+entrance). So does one whose north neighbour stands higher than its trunk (a
+terrace's edge, a wood climbing terraces on Route 112 and 119): the higher
+ground's top cut the leant crown across.
 
 Dewford Town's small tree (its secondary tileset, so the ids only mean a tree
 there) is replaced the same way with its own art: the trunk cells `23A` (on
 the sand) and `243` (inside the wood, where the next crown overlaps it, also
 the repeated border) become the trunk and carry the whole crown; the crown top
 `239` gets the sand `124` back.
+
+The General's small tree drawn by a secondary tileset over its own ground is
+replaced the same way, with the General's crown and a trunk on that ground:
+Fortree's `253` (jungle floor), Mauville's `226` (Route 111's pale grass) and
+Lavaridge's `218` (Route 112 and Lavaridge Town), with `21A`, `3B8` and
+`203` inside its woods, where the next crown overlaps the trunk (the
+General's `0C6`, on the soil and on the dark rock). Fortree's `22A` is that
+`0C6` with the crown drawn on both layers, round its tree houses: the
+General's trunk on grass. The old crown its tileset
+draws over the cell north of the trunk (over its ground, a mountain's rock or
+anything else) is cut away by the relief (`scripts/voxel_terraces.py`,
+`canopy_mask`), the ground it was drawn over laid under it. On maps the
+relief does not read that way (Verdanturf, the Battle Frontier, Southern
+Island, Ever Grande, Faraway Island) and over Route 112's dark rock,
+`VoxelTree_GroundMetatile` swaps the tile for the plain ground it is drawn
+over, the same tile without the crown.
+
+The secret base's tree (`01E–01F` over `026–027`, `036–037` once
+`secret_base.c` opens it) is a 2×2 tree like the large one, with its own
+floor and a 32×32 crown, two cells long at the same 50°; its lower row takes
+the opened crown when the base is open. Both are General ids, so it is
+replaced on every map.

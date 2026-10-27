@@ -179,7 +179,7 @@ static void DrawDock(const ViewState *s)
 {
     for (int i = 0; i < DockCount(s); ++i)
     {
-        bool8 enabled = (s->enabled >> i) & 1;
+        bool8 enabled = (s->enabled >> i) & 1 && (!s->dockLocked || i == s->screen);
         bool8 pressed = enabled && s->pressed == HIT_COLUMN + i, chosen = enabled && s->screen == i;
         const Icon *icon = &sRes.column[i];
         int x, w, oy;
@@ -213,13 +213,13 @@ static const u8 *SectionName(int screen)
 {
     switch (screen)
     {
-    case SCR_MAP: return Ascii(CTR_TEXT("MAP", "MAPA", "CARTE", "MAPPA", "MAPA"));
+    case SCR_MAP: return Ascii(CTR_TEXT("MAP", "MAPA", "CARTE", "MAPPA", "MAPA", "KARTE", "マップ"));
     case SCR_POKEDEX: return gText_MenuPokedex;
     case SCR_POKEMON: return gText_MenuPokemon;
     case SCR_BAG: return gText_MenuBag;
     case SCR_POKENAV: return gText_MenuPokenav;
     /* The trainer card's place holds the plane editor (3ds_stereo_edit.c). */
-    case SCR_CARD: return Ascii(CTR_TEXT("EDITOR", "EDITOR", "ÉDITEUR", "EDITOR", "EDITOR"));
+    case SCR_CARD: return Ascii(CTR_TEXT("EDITOR", "EDITOR", "ÉDITEUR", "EDITOR", "EDITOR", "EDITOR", "EDITOR"));
     case SCR_SAVE: return gText_MenuSave;
     case SCR_OPTION: return gText_MenuOption;
     case SCR_NUZLOCKE: return Ascii("NUZLOCKE");
@@ -283,6 +283,10 @@ static void DrawTitle(const ViewState *s)
     TextIn(title, TITLE_X, oy, tw - 8, HEAD_H, &sNormal, 'l', STYLE_INK, 7);
 }
 
+/* The header's Y last drawn without its icon, not in yet: the whole screen
+ * when it comes (CtrBottom_Frame). */
+static bool8 sHeaderYMissing;
+
 /* Y, the registered item (the 3DS's Y is SELECT): its icon on green, grey
  * with nothing registered; the Y badge on its corner. */
 static void DrawHeaderY(const ViewState *s)
@@ -292,10 +296,14 @@ static void DrawHeaderY(const ViewState *s)
     int oy = Plate(HEAD_Y_X, HEAD_Y, HEAD_Y_W, HEAD_H, !available ? sOffGrey : pressed ? sEmerald : sYGreen, state);
     int saved[4];
 
+    if (!available && !sPlateWarm)
+        sHeaderYMissing = FALSE;
     if (available)
     {
         int slot = ItemIcon(s->registered);
 
+        if (!sPlateWarm)
+            sHeaderYMissing = slot < 0;
         if (slot >= 0)
             IconCentred(sItemIcons[slot].tiles, 3, 2 * (HEAD_Y_X + 16), 2 * oy + HEAD_H, sItemIcons[slot].pal.c, FALSE);
         AddHit(0, HEAD_Y - 2, HEAD_Y_X + HEAD_Y_W + 1, HEAD_H + 4, HIT_COLUMN + COL_Y);
@@ -393,9 +401,16 @@ static void DrawRun(const ViewState *s)
         AddHit(RUN_X - 1, HEAD_Y - 2, W - RUN_X + 1, HEAD_H + 4, HIT_COLUMN + COL_RUN);
 }
 
+static void DrawFlyHeader(const ViewState *s);
+
 static void DrawHeader(const ViewState *s)
 {
     DrawHeaderY(s);
+    if (s->mapFly)
+    {
+        DrawFlyHeader(s);
+        return;
+    }
     DrawTitle(s);
     DrawRepel(s);
     if (!s->inBattle)

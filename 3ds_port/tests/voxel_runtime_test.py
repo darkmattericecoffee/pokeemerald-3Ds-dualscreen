@@ -20,6 +20,7 @@ def main():
     video = (ROOT / 'src/3ds_video.c').read_text()
     source = r'''
 #include <assert.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -48,6 +49,8 @@ static VoxelMapInstance maps[2];
 static int sViewRect[4] = {0, 0, 32, 16};
 static unsigned VoxelWorld_InstanceCount(void) { return 2; }
 static const VoxelMapInstance *VoxelWorld_Instance(unsigned i) { return &maps[i]; }
+/* Flat maps: no base, so AtlasInView's rows are the map's own. */
+static float VoxelRelief_Base(const VoxelMapInstance *inst) { (void)inst; return 0.0f; }
 static bool C3D_TexInitVRAM(C3D_Tex *tex, unsigned w, unsigned h, int fmt) {
     (void)w; (void)h; (void)fmt; if (allocated >= 6) return false;
     ++allocated; tex->data = &allocated; return true;
@@ -94,7 +97,7 @@ static bool sPrefetchBlocked;
 '''
     for signature in ['static unsigned WaitBucket(', 'static unsigned RequestWait(', 'static bool RequestOverdue(', 'static int CompareRequests(', 'static bool StartNextJob(', 'static bool JobSort(', 'static float PhaseCost(', 'static float PhaseCostInFrame(', 'static void NotePhaseCost(']:
         source += function(voxel, signature)
-    for signature in ['static C3D_Tex *AtlasTex(', 'static void FreeAtlasTextures(', 'static unsigned CountAllocatedAtlases(', 'static bool AtlasInView(const VoxelAtlasSlot *slot)\n{', 'static bool AllocateAtlasPage(']:
+    for signature in ['static C3D_Tex *AtlasTex(', 'static void FreeAtlasTextures(', 'static unsigned CountAllocatedAtlases(', 'static int DrawnRows(', 'static bool AtlasInView(const VoxelAtlasSlot *slot)\n{', 'static bool AllocateAtlasPage(']:
         source += function(voxel, signature)
     source += r'''
 static struct { unsigned count, staticCount; } sBuilder;

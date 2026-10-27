@@ -8,8 +8,8 @@ diff --git a/src/battle_message.c b/src/battle_message.c
  const u8 gText_StatRose[] = _("rose!");
  static const u8 sText_StatHarshly[] = _("harshly ");
  static const u8 sText_StatFell[] = _("fell!");
-+// A sharp change's two words as one, for languages that put the adverb
-+// after the verb.
++// A sharp change's two words as one, for Portuguese, which puts the adverb
++// after the verb (the game's other languages keep its two words).
 +static const u8 sText_StatSharplyRose[] = _("sharply rose!");
 +static const u8 sText_StatHarshlyFell[] = _("harshly fell!");
  static const u8 sText_AttackersStatRose[] = _("{B_ATK_NAME_WITH_PREFIX}'s {B_BUFF1}\n{B_BUFF2}");
@@ -39,7 +39,7 @@ diff --git a/src/battle_message.c b/src/battle_message.c
          {
          case B_BUFF_STRING: // battle string
              hword = T1_READ_16(&src[srcID + 1]);
-+            if (src[srcID + 3] == B_BUFF_STRING
++            if (CTR_LANG_PT_BR && src[srcID + 3] == B_BUFF_STRING
 +             && ((hword == STRINGID_STATSHARPLY && T1_READ_16(&src[srcID + 4]) == STRINGID_STATROSE)
 +              || (hword == STRINGID_STATHARSHLY && T1_READ_16(&src[srcID + 4]) == STRINGID_STATFELL)))
 +            {

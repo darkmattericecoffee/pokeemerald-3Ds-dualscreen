@@ -33,6 +33,9 @@ as on the console.
         every camera; the cells by what they show wrong (pixels summed over
         the views, and in how many views); --png: the map's drawing with
         each faulty cell tinted (magenta hole, orange side, red deformed)
+    python voxel_view_scan.py LAYOUT ... --pitches 75
+        the same from steeper cameras (from above: the ground behind the
+        mountains' backs, where the game's camera never looks)
     python voxel_view_scan.py LAYOUT ... --sheet DIR [--min-px 2000]
         also a picture of every cluster of faulty cells (DIR/index.txt)
     python voxel_view_scan.py LAYOUT --at X,Y [--pitch 40] [--dist 13]
@@ -187,6 +190,12 @@ class Scene:
                     if inside and not ring and not prop and (cx, cy) not in keep:
                         judged = True
                         kind = sc.surface(t)
+                        # a north face behind a back (voxel_mesh_builder.c
+                        # EmitNorthFace) lies on one row of the drawing, as a
+                        # south step does: from the game it is the slope the
+                        # camera sees from above the back, not a fault
+                        if kind == "deformed" and self.south_step(t):
+                            kind = "top"
                         cls = SIDE if kind == "side" else DEFORMED if kind == "deformed" else 0
                         if kind == "top" and (cx, cy) in falls:
                             cls = FLAT
@@ -696,6 +705,9 @@ def main():
     ap.add_argument("--at", default=None)
     ap.add_argument("--pitch", type=float, default=40.0)
     ap.add_argument("--dist", type=float, default=13.0)
+    ap.add_argument("--pitches", default=None,
+                    help="the whole map's cameras at these pitches instead (\"75\": from above, the ground "
+                         "behind every mountain's back, as the editor's free camera shows it)")
     ap.add_argument("--view", default=None)
     ap.add_argument("--box", default=None, help="x0,y0,x1,y1: only the cameras on these cells")
     ap.add_argument("--overlay", default=None,
@@ -704,6 +716,9 @@ def main():
     ap.add_argument("--min-px", type=int, default=2000,
                     help="pixels (summed over the views) a cell needs to be pictured by --sheet")
     args = ap.parse_args()
+    global PITCHES
+    if args.pitches:
+        PITCHES = tuple(float(v) for v in args.pitches.split(","))
     relief = os.path.abspath(args.relief) if args.relief else None
     if args.overlay:
         overlay(args.layouts, tuple(int(v) for v in args.box.split(",")), args.overlay, relief)

@@ -63,8 +63,9 @@ room by room: [VOXEL_STATUS.md](VOXEL_STATUS.md).
 5. **General rules, not exceptions.** A rule names tiles and shapes, never a
    map or a cell. A place no general rule fixes gets a hand correction **as
    data** (`relief_fixes.json` for terrain), not a special case in code.
-6. **Some things are never touched**: ledges and berry soil (gameplay reads
-   them), and the seams between connected maps.
+6. **Some things are never touched**: berry soil, a ledge's shape (gameplay
+   reads them) and the seams between connected maps. A ledge only follows
+   the levels either side of it: a berm on level land, a step between two.
 7. **Nothing from the cartridge is committed**: no renders, screenshots,
    extracted tiles or generated `.bin` files. Specs hold coordinates, tile
    ids, heights and names only. `python tools/release_audit.py --repo .

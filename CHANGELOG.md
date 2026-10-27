@@ -2,6 +2,113 @@
 
 ## Unreleased
 
+- OPTIONS > ENHANCEMENTS > REAL-TIME PACING is on by default: a new
+  settings.txt starts with it on (and so does one that never had it). A
+  settings.txt that already chose off keeps off.
+
+- 3D world: the rain, the sandstorm and the volcanic ash fall in the scene
+  instead of sliding over the screen - streaks, blowing sand and drifting
+  flakes in the air at their own depth, hidden by roofs and fading into the
+  distance, with the light of each weather and the thunderstorm's lightning
+  on the world. They cost the console almost nothing, and the 3D world no
+  longer draws the old sand and ash pictures over itself, which were most
+  of an Old 3DS frame.
+
+- 2D field: the sandstorm and the volcanic ash are drawn in one batch
+  instead of some two thousand separate pieces a frame.
+
+- Builder: the 3D scenery takes seconds instead of minutes. The release runs
+  the voxel generators once per supported ROM and the recipe carries, for
+  each of their files, a program that writes it again from the player's ROM
+  (tools/voxel_precompile.py, docs/VOXEL_PRECOMPILE.md): the port's own
+  geometry as it is, every texel of the game's art as the tile, row and
+  palette of the ROM it comes from. The data pack is byte for byte the same.
+  A file without a program is still generated as before.
+
+- Releases are made with one fixed Python (upstream.lock: 3.13, Pillow
+  12.3.0) - the voxel data depends on it - and `tools/docker_release.py`
+  makes one in a pinned environment (devkitARM by digest, the original
+  game's ELF built with the pinned agbcc), from scratch.
+
+- Web builder: the buildings came out different under Pyodide than on the
+  desktop, so the web build failed its check: a wall of Sootopolis's gym
+  took its colour from a tie broken by the order of a set, which follows a
+  32-bit hash in the browser. It now follows the desktop's order
+  (gen_voxel_relief.set_order, as the relief already did).
+
+- Builder: the Mauville gym's electric barriers' animation frames are among
+  the voxel inputs the builder rebuilds from the ROM (and built before the
+  generators in a fresh tree): the buildings generator reads them and failed
+  without them.
+
+- Builder: the terrain relief is made after the buildings, whose cells it
+  reads. Made side by side, the relief depended on which finished first,
+  and a data pack could fail to match the release.
+
+- Juan's gym battle no longer crashes the game when it ends, by @DannyM90
+  (pull request #182, issue #134). His defeat text is longer than the
+  battle's text buffer; on the GBA the rest landed in an unused array, here
+  it ran into live variables. The buffer now has room to spare behind it.
+
+- Portuguese, by @carlosmozart (pull request #178): the general texts of the
+  scripts (the POKéMON CENTER and MART signs, SELECT with no registered item,
+  whiting out, POKéRUS, a TM or HM found, the weird tree...) are translated,
+  and the bottom screen's type and contest icons are in Portuguese again.
+  In every language, the bottom screen's Pokédex shows an entry's whole
+  description, over the box's full width, instead of losing its last line.
+
+- Double battle target choice, by @eathanpage (pull request #176): the
+  bottom screen shows the four places of the battle two by two, as the top
+  screen has them, instead of left and right arrows and OK. Each plate has
+  the Pokémon's icon, name, level, gender and HP bar (the HP figures for
+  your side only), the opponents in red and your side in blue; one the move
+  cannot reach is grey and takes no tap, and an empty place has no plate. A
+  tap on a plate aims there and confirms; the D-pad walks the grid.
+
+- Double battles, by @maxxandres (pull request #152): the bottom screen's
+  target plates and the second mon's move menu are made ready while the
+  turn plays out, with the action menu and the first mon's moves. Built
+  when they first came up, they dropped an Old 3DS's frame rate sharply the
+  first time a target, or the second mon's move, was chosen. The second
+  mon's moves have pictures of their own, so warming them no longer throws
+  out the first mon's.
+
+- Voxel world: a map whose layout its script swaps is drawn with the swapped
+  one. The Mirage Tower no longer stands in 3D on the days the game hides it,
+  or after it falls, and it no longer shows from Mauville or Routes 112 and
+  113 while it is hidden; Route 131 shows the Sky Pillar, and Mirage Island
+  and the Sky Pillar's clean floors get their own relief and objects. Route
+  111's hand-shaped mountains apply to its layout without the tower too.
+  Reported, with the cause, by @Deunnis (issue #179).
+
+- Bottom screen map: a magnifier button in the map's bottom right corner
+  zooms in on the player's place and back out. Touching a place on the map
+  picks it: zoomed in, a panel shows its name and, for a city or town, its
+  picture, or the landmarks there. Based on @luksgrin's pull request #108.
+
+- Fly on the bottom screen: FLY from the party menu, or the HM from the Bag,
+  opens the bottom screen's map as the Fly map, with the places you can fly
+  to marked. Touch a place, then FLY in the header, or A; CANCEL or B goes
+  back to the party or the Bag. Meanwhile the dock is locked and the game's
+  buttons wait. The PokéNav's HOENN MAP entry is gone: the bottom screen's MAP
+  is that map, zoom included. Based on @luksgrin's pull request #108.
+
+- Battle speed, by @maxxandres (pull request #149): in a battle (wild or
+  trainer) R speeds the game up and L slows it down, 1x, 1.5x, 2x, 3x and 4x,
+  and a badge in the top right corner shows the speed for two seconds after
+  each press.
+  It is a speed of its own: until the first press the battle follows the
+  SPEED the player uses in the overworld, and then keeps its own
+  (`battle_speed=` in settings.txt). The bag, the party and the summary opened
+  from a battle, and the field, keep the overworld's SPEED; a local wireless
+  session and the measured scenarios stay at 1x. In the battle L and R no
+  longer reach the game; with the game's L=A button mode L stays A and R
+  alone goes round the speeds, 4x back to 1x. The soft reset,
+  L+R+START+SELECT, still works. The bottom screen's focus ring and the intervals of its
+  background refreshes now go by the clock, so they keep their pace at any
+  speed. The quick ball moves from R to X
+  (patch 0006-quick-ball); the ball button on the bottom screen is as before.
+
 - Stereoscopic Pokémon viewer: a Pokémon's front picture as layered depth
   planes on the top screen, with real 3D from the slider and a slow turn, on
   the Pokédex's info page and in a gallery (L+R+START in the field, or START
@@ -89,6 +196,32 @@
   game's logo draws it, on its arc, and VERSÃO in the place and style of its
   EDICIÓN (`tools/logo_ptbr.py` previews it, `make verify-logo-ptbr` checks
   that the port draws it).
+
+- German (experimental), by @DannyM90 (pull request #175, issue #135), with
+  work by @andyst-dev (pull request #96): the game in German from your own
+  Pokémon Smaragd-Edition (Germany) ROM, built with `tools/bootstrap.py
+  --make --german-rom` (`Emerald3DS-de.3dsx`, docs/GERMAN.md). The texts,
+  graphics, credits and Trainer Hill come from your ROM; the German layout
+  (wider windows, nine-column naming keyboard with Ä Ö Ü, the "KP" bar,
+  metres and kilograms) and the port's menus and messages are in German.
+  The healthbox's "KP" bar, the length check on raw texts, the German data
+  pack errors, the client/builder ROM check test and the cleanup when
+  switching back to English come from andyst-dev's German pull request.
+
+- Japanese (experimental): the game in Japanese from your own Pocket Monsters
+  Emerald (Japan) ROM. The web and Windows builders accept it and pick the
+  language from the ROM; every release carries the Japanese variant too
+  (`Emerald3DS-ja.3dsx` for Quick Update). The texts, graphics, fonts,
+  credits and the maps that differ come from your ROM; text is drawn in the
+  game's Japanese glyphs, the naming screen has the Japanese keyboard and
+  5-character names, battles draw names, levels and HP as the Japanese game
+  does, the touch screen has Japanese labels and the Pokédex shows metres
+  and kilograms. See docs/JAPANESE.md for what is still in English.
+
+- Locale manifests can be regenerated: `tools/locale_research/` holds the
+  matcher that finds the English game's objects in another language's ROM
+  and the generator of the Japanese manifest, and `rebase_manifest.py` moves
+  a manifest onto a changed tree without the ROM.
 
 ## 0.4.0 — 2026-10-16
 

@@ -1,8 +1,9 @@
 # Emerald 3DS Builder
 
 Turns the player's own Pokémon Emerald (USA, Europe), Pokémon Esmeralda
-(Spain) or Pokémon Émeraude (France) ROM into `emerald3ds.pak` and installs
-the game on an SD card, in that ROM's language.
+(Spain), Pokémon Émeraude (France), Pokémon Smeraldo (Italy) or Pocket
+Monsters Emerald (Japan) ROM into `emerald3ds.pak` and installs the game on an
+SD card, in that ROM's language.
 
 Release users get a standalone Windows executable (no Python needed). From
 source (any OS, Python 3.11+ and Pillow):
@@ -22,8 +23,9 @@ python -m emerald3ds_builder detect
 |---|---|
 | `rom.py` | recognises the supported ROM |
 | `recipe.py` | recipe format; rebuilds one file from the ROM and checks it |
+| `precompiled.py` | runs the recipe's precompiled programs: the voxel data from the ROM's tiles, no generator |
 | `vtree.py` | rebuilds the voxel generators' inputs from the ROM |
-| `voxel.py` | runs the bundled generators (in child processes, or in-process for the web) |
+| `voxel.py` | runs the bundled generators (in child processes, or in-process for the web) for what a release did not precompile |
 | `pak.py` | writes and reads the data pack |
 | `build.py` | ROM → data pack |
 | `install.py` | SD card detection and installation |
@@ -54,8 +56,12 @@ sound) but the install still succeeds.
 
 The website runs this same package in the browser (Pyodide, in a Web Worker)
 from the release's `Emerald3DS-WebPayload.zip`, through
-`web.run_web_build(rom, payload, out_pak, progress, manifest)`. The only
-difference with the desktop build is that the voxel generators run in-process
+`web.run_web_build(rom, payload, out_pak, progress, manifest)`. A release
+precompiles the voxel data (`tools/voxel_precompile.py`, see
+[docs/VOXEL_PRECOMPILE.md](../docs/VOXEL_PRECOMPILE.md)): the recipe carries a
+program per file, run in seconds on both builders, and the generators run
+only for a file without one. The only difference with the desktop build is
+that those generators run in-process
 (`voxel.run_step_inprocess`): each script gets fresh sibling modules, argv,
 working directory and import path, exactly as a new process would. Outputs are
 checked against the same CRCs and ABI. `tools/build_web_payload.py --synthetic

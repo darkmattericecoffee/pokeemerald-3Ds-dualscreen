@@ -10,6 +10,7 @@ contains a ROM, a data pack or anything extracted from the game.
 | `Emerald3DS-es.3dsx` | the same for the Spanish variant (installed as `Emerald3DS.3dsx`) |
 | `Emerald3DS-fr.3dsx` | the same for the French variant (installed as `Emerald3DS.3dsx`) |
 | `Emerald3DS-it.3dsx` | the same for the Italian variant (installed as `Emerald3DS.3dsx`) |
+| `Emerald3DS-ja.3dsx` | the same for the Japanese variant (installed as `Emerald3DS.3dsx`) |
 | `Emerald3DS-Forwarder.cia` | optional HOME Menu shortcut that starts the installed 3DSX (Luma3DS) |
 | `Emerald3DS-WebPayload.zip` | the web builder (website): payload, builder package, licences, `web-manifest.json` |
 | `web-manifest.json` | the same manifest on its own, read by the website without downloading the payload |
@@ -51,6 +52,7 @@ version.
    | `Emerald3DS.smdh` | listed with the 3DSX |
    | `Emerald3DS-es.3dsx` | Quick Update of the Spanish variant (offered after the local pack check) |
    | `Emerald3DS-fr.3dsx` | Quick Update of the French variant (offered after the local pack check) |
+   | `Emerald3DS-ja.3dsx` | Quick Update of the Japanese variant (offered after the local pack check) |
    | `Emerald3DS-Forwarder.cia` | the HOME Menu forwarder (download and FBI QR code) |
    | `Emerald3DS-vX.Y.Z-Windows.zip` | the Windows builder (not linked by the site) |
    | `SHA256SUMS.txt` | checksums of everything above |
@@ -67,16 +69,21 @@ version.
      `dist/Emerald3DS-WebPayload.zip` and the ROM, build, copy the ZIP to the SD
      card and boot the game. Use the payload from `dist/`, not the synthetic
      test payload.
-   - Optional, once per change to the voxel generators: compare the packs of
-     both runners (they must be byte-identical):
+   - The builders do not run the voxel generators: `build_release.py` ran
+     them (`tools/voxel_precompile.py`, below) and the recipe carries their
+     files as programs. To test the generators' own path as well
+     (`build_pack(..., precompiled_ok=False)`), once per change to the voxel
+     generators: compare the packs of both runners (they must be
+     byte-identical):
 
      ```
      python -c "import sys; sys.path.insert(0, 'builder'); from pathlib import Path; \
      from emerald3ds_builder.build import Payload, build_pack; \
      p = Payload(Path('dist/Emerald3DS-vX.Y.Z-Windows/payload')); \
-     build_pack(Path('baserom.gba'), p, Path('/tmp/sub.pak')); \
-     build_pack(Path('baserom.gba'), p, Path('/tmp/inp.pak'), runner='inprocess')"
-     cmp /tmp/sub.pak /tmp/inp.pak
+     build_pack(Path('baserom.gba'), p, Path('/tmp/pre.pak')); \
+     build_pack(Path('baserom.gba'), p, Path('/tmp/sub.pak'), precompiled_ok=False); \
+     build_pack(Path('baserom.gba'), p, Path('/tmp/inp.pak'), runner='inprocess', precompiled_ok=False)"
+     cmp /tmp/pre.pak /tmp/sub.pak && cmp /tmp/sub.pak /tmp/inp.pak
      ```
 5. **Publish the GitHub release**: tag `vX.Y.Z`, **published** (drafts are
    invisible to the site), not marked pre-release unless it really is one (a
@@ -117,7 +124,8 @@ always attach `web-manifest.json`. Consequences:
 - The direct download is the English `Emerald3DS.3dsx`. Players of another
   language check their own `emerald3ds.pak`: its header names the ROM it was
   built from, the site compares it with that language's `dataAbi` and offers
-  its executable (`Emerald3DS-es.3dsx` or `Emerald3DS-fr.3dsx`, saved as
+  its executable (`Emerald3DS-es.3dsx`, `Emerald3DS-fr.3dsx`, `Emerald3DS-it.3dsx`
+  or `Emerald3DS-ja.3dsx`, saved as
   `Emerald3DS.3dsx`).
 
 ## Languages
@@ -126,30 +134,38 @@ One release covers every language: there is never a release per language.
 The 3DS executable cannot be shared (the game data it links against differs
 in size between languages, so each has its own data ABI), but everything else
 is: `payload/` holds the English executable and recipe plus the voxel
-generators, and `payload/es/` (resp. `payload/fr/`, `payload/it/`) the Spanish (resp.
-French, Italian)
+generators, and `payload/es/` (resp. `payload/fr/`, `payload/it/`,
+`payload/ja/`) the Spanish (resp. French, Italian, Japanese)
 executable and recipe. The builders
 (Windows and web) pick the variant whose recipe was made from the player's ROM;
 `web-manifest.json` describes the English one at its top level and the others
 in `variants` (a site that predates it ignores them and stays English-only).
 
 `build_release.py --spanish-rom <clean BPES ROM> --french-rom <clean BPEF ROM>
---italian-rom <clean BPEI ROM>`
+--italian-rom <clean BPEI ROM> --japanese-rom <clean BPEJ ROM>`
 adds the localized variants: each copies this tree's sources (every file Git
-does not ignore) to `build/release-es` (resp. `build/release-fr`), localizes
-them with `tools/localize_spanish.py` (docs/SPANISH.md) or
-`tools/localize_french.py` (docs/FRENCH.md) or `tools/localize_italian.py`
-(docs/ITALIAN.md), builds the engine there and writes
-its recipe with the symbol names of `build/spanish-reference.s` (resp.
-`build/french-reference.s`). Without either option the release is English-only,
-as before.
+does not ignore) to `build/release-es` (resp. `build/release-fr`,
+`build/release-it`, `build/release-ja`), localizes them with
+`tools/localize_spanish.py` (docs/SPANISH.md), `tools/localize_french.py`
+(docs/FRENCH.md), `tools/localize_italian.py` (docs/ITALIAN.md) or
+`tools/localize_japanese.py` (docs/JAPANESE.md), builds the engine there and
+writes its recipe with the symbol names of `build/spanish-reference.s` (resp.
+`build/french-reference.s`, `build/italian-reference.s`,
+`build/japanese-reference.s`). Without these options the release is
+English-only, as before.
 
 ## Prerequisites (maintainer machine)
 
+- Python of the version `upstream.lock` names under `[python]` (3.13), with
+  Pillow (`pillow` there: 12.3.0), to run `build_release.py`: the voxel data
+  depends on the interpreter, so the release refuses any other and makes
+  `make` run the generators with the same one (`PYTHON=` is set for it).
+  `tools/docker_release.py` brings all of it (see *Release environment*).
+
 - A tree from `tools/bootstrap.py --make` (or the maintainer's workspace).
 - The supported ROM, and, for each localized variant, that language's clean
-  ROM (BPES, BPEF). The recipe generator also needs the ELF of the original
-  game built from the same
+  ROM (BPES, BPEF, BPEI, BPEJ). The recipe generator also needs the ELF of the
+  original game built from the same
   pinned upstream (`make` in the upstream tree's root produces
   `pokeemerald.elf`): its symbol table says
   where each table lives in the ROM. A localized variant uses its own reference
@@ -161,6 +177,37 @@ as before.
   `PATH` or in `3ds_port/tools-bin/` (ignored by Git). Without them, pass
   `--skip-cia` (the release then has no forwarder).
 
+## Release environment (Docker)
+
+The voxel data a release ships as precompiled programs depends on the
+interpreter that made it (docs/VOXEL_PRECOMPILE.md), and the recipe on the
+toolchain. `tools/docker_release.py` makes the release in one pinned
+environment, from scratch, on Linux, macOS or WSL with Docker:
+
+```
+python tools/docker_release.py --rom baserom.gba \
+    --spanish-rom esmeralda.gba --french-rom emeraude.gba --italian-rom smeraldo.gba \
+    --german-rom smaragd.gba --japanese-rom emerald-ja.gba --skip-cia
+```
+
+- a fresh tree (`build/release-tree`, `tools/bootstrap.py`);
+- the image `tools/release_env/Dockerfile`, from `upstream.lock`: devkitARM by
+  digest (`[devkitarm]`), Python and Pillow by version (`[python]`);
+- the original game's ELF built in it (`build/gba-elf`: the pinned
+  pokeemerald, unpatched, with the pinned agbcc, `[agbcc]`), checked to
+  rebuild the supported ROM byte for byte;
+- in the container, offline: `make tools generated`, then
+  `tools/build_release.py` (every step below, the voxel precompile included)
+  with `--skip-exe`; options it does not know go to `build_release.py`.
+  The assets are copied to `dist/`.
+
+PyInstaller makes an executable for the system it runs on, so the Windows
+builder's `.exe` is not made there: make the release on Windows as below
+(native devkitPro, Python 3.13 - `build_release.py` refuses another) when the
+Windows ZIP is wanted, or attach the Docker release's other assets and the
+Windows ZIP of a native run of the same commit (its data is the same: same
+pins, and `voxel_precompile.py` proves it against the recipe).
+
 ## Steps
 
 ```
@@ -168,10 +215,16 @@ python tools/build_release.py --version 0.1.0 --rom baserom.gba \
     --gba-elf build/upstream/pokeemerald.elf \
     --spanish-rom esmeralda.gba \
     --french-rom emeraude.gba \
+    --japanese-rom emerald-ja.gba \
     --make "make -j8 PYTHON=python"
 ```
 
-This runs `make release`, writes the recipe, assembles
+This runs `make release`, writes the recipe, precompiles the voxel data into
+it (`tools/voxel_precompile.py`: the generators run from the ROM as the
+builder runs them, about as long as a player's build took before; it fails
+unless their files are exactly those the executable was built with, so no
+precompiled data older than the code can be published; each localized
+variant is precompiled from its own ROM and tree), assembles
 `dist/Emerald3DS-v0.1.0-Windows/` (builder, `payload/Emerald3DS.3dsx`,
 `payload/Emerald3DS.smdh`, `payload/emerald3ds.recipe`, `payload/voxelgen/`,
 `README.txt`, `LICENSES/`) and zips it, copies the standalone `.3dsx` and

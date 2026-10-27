@@ -110,7 +110,7 @@ class ContainerErrorTests(unittest.TestCase):
     def test_wrong_metadata_types(self):
         cases = {"engine_abi": ["1", 1.5, True, None], "rom_sha1": [None, 5],
                  "release": [3, None], "entries": [{}, "x", None, [1], [["F", 0, 1]]],
-                 "bitmaps": [{}, None], "generated": [{}, "x"], "inputs": [7],
+                 "bitmaps": [{}, None], "generated": [{}, "x", [7], ["x"]], "inputs": [7],
                  "vtree": [[], "x"]}
         for key, values in cases.items():
             for value in values:

@@ -98,6 +98,7 @@ void CtrVideo_Bind(CtrVideoMemory memory);
 void CtrVideo_Present(void);
 /* Keep showing the last top-screen frame instead of the game's screen. */
 void CtrVideo_HoldTop(bool hold);
+bool CtrVideo_TopHeld(void);
 /* OAM entries belonging to field weather, tagged while BuildOamBuffer sorts sprites. */
 /*
  * The true y of the sprite that wrote OAM entries [first, end). OAM keeps 8
@@ -131,6 +132,20 @@ const uint16_t *CtrVideo_ExtPalette(unsigned index);
 void CtrVideo_ClearExtPaletteOam(void);
 void CtrVideo_MarkExtPaletteOam(unsigned first, unsigned end, unsigned index);
 void CtrVideo_NotifyTilesetAnimWrite(const void *dest, unsigned bytes);
+/*
+ * The field's banks of other tilesets (3ds_tile_banks.h). SetTileBank gives
+ * bank `bank` (0 to CTR_TILE_BANKS - 1) a secondary tileset's tiles (4bpp, at
+ * most CTR_TILE_BANK_BYTES) and its seven palettes 6-12, unfaded; NULL tiles
+ * empty it. A tilemap buffer registered with an array of bank numbers (1 +
+ * bank, 0 for none, an entry each) hands them over whenever the game copies
+ * it to VRAM (TilemapRequested, from bg.c); any other copy to that VRAM
+ * clears them. An entry keeps its bank only while VRAM holds the entry it
+ * was handed over with.
+ */
+void CtrVideo_SetTileBank(unsigned bank, const void *tiles, unsigned bytes, const uint16_t *palettes);
+void CtrVideo_RegisterTilemapBanks(const void *buffer, const uint8_t *banks, unsigned entries);
+void CtrVideo_UnregisterTilemapBanks(const void *buffer);
+void CtrVideo_TilemapRequested(unsigned vramOffset, const void *src, unsigned bytes);
 /*
  * A write the game made through its BIOS copies (3ds_prof_wrap.c): VRAM,
  * palette or OAM, by address. Phase F1, part B: which VRAM changed is
@@ -171,7 +186,9 @@ void CtrVideo_SetFieldBanner(bool banner);
 enum
 {
     CTR_CENTRED_NONE,
-    /* The fly map, the Town Map. */
+    /* The fly map, the Town Map, the OPTION screen, and the others with
+     * nothing of their own (ctr_gba_centred.h's default: contests,
+     * minigames, the slot machine). */
     CTR_CENTRED_PLAIN,
     /* The title menu and the professor's speech. */
     CTR_CENTRED_MAIN_MENU,
@@ -307,13 +324,9 @@ void CtrVideo_MarkScreenOam(unsigned first, unsigned end);
  * player (the healing machine's balls and monitors): drawn where the map has
  * the machine rather than where the window layer has its text. */
 void CtrVideo_MarkMachineOam(unsigned first, unsigned end);
+/* And Fly's bird and its rider, flying on that picture around the player. */
+void CtrVideo_MarkFlyOam(unsigned first, unsigned end);
 const CtrVideoStats *CtrVideo_GetStats(void);
-void CtrScene_Init(void);
-void CtrScene_Update(void);
-unsigned CtrScene_Mode(void);
-void CtrCursor_Init(const void *tiles, const uint16_t *palette);
-void CtrCursor_Update(bool visible);
-void CtrCursor_GetPosition(int *x, int *y);
 
 /* Pure, SDK-free address/format helpers, also used by host regression tests. */
 uint32_t CtrVideo_TextMapOffset(unsigned x, unsigned y, unsigned size);

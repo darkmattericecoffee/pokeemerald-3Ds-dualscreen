@@ -37,6 +37,25 @@ unsigned VoxelSlots_SourceColumn(unsigned atlasX, unsigned atlasWidth, unsigned 
 unsigned VoxelSlots_TilePixel(const uint8_t *tiles, unsigned width, unsigned x, unsigned y,
                               bool color256);
 
+/*
+ * A door's frame as field_door.c lays it (DrawCurrentDoorAnimFrame): a
+ * column of two metatiles a cell across, the top one's four 4bpp tiles (TL TR
+ * BL BR) then the bottom one's, 8 tiles a column and the columns one after
+ * the other; the column's tile i in palette palettes[i]. The colour index at
+ * (x, y) of its picture, 16 pixels a column across and 32 down, and in
+ * `*palette` that pixel's palette.
+ */
+unsigned VoxelSlots_DoorPixel(const uint8_t *tiles, const uint8_t *palettes,
+                              unsigned x, unsigned y, unsigned *palette);
+
+/*
+ * Where row `v` of a door's drawing goes against its wall at depth `wall`
+ * (world tiles, south +z), by the GBA's 45-degree rule that put every model
+ * where its drawing is: a row north of the wall stands up it, `wall - v`
+ * high; one south of it lies on the ground in front, at its own depth.
+ */
+void VoxelSlots_DoorRow(float v, float wall, float *height, float *depth);
+
 /* Lower first. */
 enum
 {

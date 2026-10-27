@@ -1,5 +1,6 @@
 """Exercise native capture tasks, the layout bridge and software-rasterized rendering."""
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -113,6 +114,15 @@ static int GetTileSlot(unsigned address, unsigned palette, bool color256) {
     assert(!color256);
     unsigned bg = address >= 0x8000u ? 2u : 3u;
     return (int)(bg * 1024u + (address - (bg == 2 ? 0x8000u : 0x4000u)) / 32u);
+}
+/* The field's banks of other tilesets: none on the Pokedex's screens. */
+static unsigned TilemapBankAt(unsigned entryAddress, unsigned entry) {
+    (void)entryAddress; (void)entry;
+    return 0;
+}
+static int BankedTileSlot(unsigned bank, unsigned entry, unsigned chars) {
+    (void)bank; (void)entry; (void)chars;
+    abort();
 }
 static void DrawSlot(int slot, int screenX, int screenY, bool flipX, bool flipY) {
     unsigned bg = (unsigned)slot / 1024u, tile = (unsigned)slot % 1024u;
@@ -495,8 +505,7 @@ int main(void) {
         path = folder / "pokedex_capture.c"
         binary = folder / "pokedex_capture"
         path.write_text(source, encoding="utf-8")
-        flags = ["-fsanitize=address,undefined", "-fno-sanitize-recover=all",
-                 "-fno-omit-frame-pointer"] if args.sanitize else []
+        flags = sanitizers(args.cc, folder) if args.sanitize else []
         subprocess.run([args.cc, "-std=c99", "-O1", "-Wall", "-Wextra", "-Werror", *flags,
                         str(path), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
@@ -508,6 +517,22 @@ int main(void) {
         subprocess.run([args.cc, "-std=c99", "-O1", "-Wall", "-Wextra", "-Werror", *flags,
                         str(rendering), "-o", str(renderer)], check=True)
         subprocess.run([str(renderer)], check=True)
+
+
+def sanitizers(cc, folder):
+    """The address and undefined-behaviour checks, when the host compiler can
+    link them (MinGW's gcc has neither): said, not dropped silently."""
+    flags = ["-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer"]
+    probe = folder / "sanitizer_probe.c"
+    probe.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    result = subprocess.run([cc, *flags, str(probe), "-o", str(folder / "sanitizer_probe")],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode == 0:
+        return flags
+    if os.name != "nt":
+        raise SystemExit("%s cannot link -fsanitize=address,undefined" % cc)
+    print("SKIP Pokedex capture sanitizers: %s cannot link -fsanitize=address,undefined" % cc, flush=True)
+    return []
 
 
 if __name__ == "__main__":

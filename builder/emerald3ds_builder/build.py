@@ -10,11 +10,11 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import followers, pak
+from . import followers, pak, precompiled
 from .errors import BuilderError
 from .recipe import Recipe, RecipeError, build_entry, recipe_rom_sha1
 from .rom import Rom, load_rom
-from .voxel import run_generators
+from .voxel import LABELS, STEPS, run_generators
 from .vtree import build_tree
 
 RECIPE_NAME = "emerald3ds.recipe"
@@ -130,15 +130,61 @@ class Progress:
                                            message if detail is None else "%s: %s" % (message, detail))
 
 
+def input_sources(recipe: Recipe, rom: bytes) -> precompiled.Sources:
+    """The recipe's voxel inputs, rebuilt from the ROM when a program reads them."""
+    by_path = {entry["path"]: entry for entry in recipe.inputs}
+
+    def read(path: str) -> bytes | None:
+        entry = by_path.get(path)
+        return None if entry is None else build_entry(entry, rom, recipe.literals, recipe.bitmaps)
+    return precompiled.Sources(read)
+
+
+def build_generated(recipe: Recipe, rom: bytes, progress=None, timings: list | None = None,
+                    steps: int | None = None) -> dict[str, bytes]:
+    """The generated files the release precompiled ("ops" in the recipe), from
+    their programs: the generators' work done, only the ROM's tiles and
+    palettes left to read. Each is checked against its CRC, as the
+    generators' outputs are. Files without a program are not in the result.
+    `steps` is the count the progress numbers them out of (all the voxel
+    files, when the generators make the rest)."""
+    entries = [e for e in recipe.generated if e.get("ops")]
+    sources = input_sources(recipe, rom)
+    # in the generators' order, labelled as they are
+    order = {step[2].split("/romfs/", 1)[-1]: (i, step[0]) for i, step in enumerate(STEPS)}
+    entries.sort(key=lambda e: order.get(e["path"], (len(STEPS), e["path"]))[0])
+    out: dict[str, bytes] = {}
+    for i, entry in enumerate(entries):
+        script = order.get(entry["path"], (0, entry["path"]))[1]
+        label = "%s (%d/%d)" % (LABELS.get(script, entry["path"]), i + 1, steps or len(entries))
+        if progress:
+            progress(i / len(entries), label)
+        start = time.perf_counter()
+        try:
+            out[entry["path"]] = build_entry(entry, rom, recipe.literals, recipe.bitmaps, sources)
+        except RecipeError as exc:
+            raise BuilderError("A voxel data file could not be rebuilt from the ROM.", str(exc),
+                               code="generator_output_mismatch") from exc
+        took = time.perf_counter() - start
+        if timings is not None:
+            timings.append((script, took))
+        if progress:
+            progress((i + 1) / len(entries), "%s, done in %.1f s" % (label, took))
+    return out
+
+
 def build_pack(rom_path: Path, payload: Payload, out_pak: Path, progress=None,
                keep_workdir: bool = False, runner: str = "subprocess", rom: Rom | None = None,
                follower_fetcher: "followers.Fetcher | None | bool" = True,
-               need_executables: bool = False) -> dict:
+               need_executables: bool = False, precompiled_ok: bool = True) -> dict:
     """Generate emerald3ds.pak from the ROM. Returns a summary.
 
     `runner` picks how the voxel generators run (see voxel.py); `rom` lets a
     caller that already holds the checked ROM in memory skip reading it again.
     The summary's `timings` holds (step, seconds) for the slow parts.
+
+    `precompiled_ok=False` runs the generators even for the files the
+    release precompiled (a check of the programs against the generators).
 
     `need_executables` makes the chosen language variant's own executables
     required (see `select_payload`), checked before extraction and before
@@ -180,16 +226,32 @@ def build_pack(rom_path: Path, payload: Payload, out_pak: Path, progress=None,
             report(0.05 + 0.45 * i / max(total, 1), "Extracting game data")
     timings.append(("extract", time.perf_counter() - start))
 
+    # The voxel data: from the release's programs where it precompiled them
+    # (no generator runs), from the generators for the rest.
+    ready: dict[str, bytes] = {}
+    programs = [e for e in recipe.generated if precompiled_ok and e.get("ops")]
+    rest = [e for e in recipe.generated if e not in programs]
     if recipe.generated:
+        report(0.5, "Preparing the 3D scenery inputs")
+    # the bar's 0.6-0.9 shared by file: the programs first, then the generators
+    split = 0.6 + 0.3 * len(programs) / max(1, len(recipe.generated))
+    if programs:
+        ready = build_generated(recipe, rom.data, report.span(0.6, split, "Generating the 3D scenery"),
+                                timings, steps=len(recipe.generated) if rest else None)
+        files.update(ready)
+    if rest:
         work = Path(tempfile.mkdtemp(prefix="emerald3ds-"))
         try:
-            report(0.5, "Preparing the 3D scenery inputs")
             start = time.perf_counter()
-            build_tree(rom.data, recipe, work, report.span(0.5, 0.6, "Preparing the 3D scenery inputs"))
+            # as before when nothing is precompiled: the tree 0.5-0.6, the generators 0.6-0.9
+            tree_end = split + (0.9 - split) / 6 if programs else 0.6
+            build_tree(rom.data, recipe, work, report.span(0.5 if not programs else split, tree_end,
+                                                           "Preparing the 3D scenery inputs"))
             timings.append(("tree", time.perf_counter() - start))
-            outputs = run_generators(work, payload.voxelgen, recipe.generated,
-                                     report.span(0.6, 0.9, "Generating the 3D scenery"), runner=runner,
-                                     timings=timings)
+            outputs = run_generators(work, payload.voxelgen, rest,
+                                     report.span(tree_end, 0.9, "Generating the 3D scenery"),
+                                     runner=runner, timings=timings, ready=ready,
+                                     numbering=(len(programs), len(recipe.generated)) if programs else None)
             files.update(outputs)
         finally:
             if not keep_workdir:

@@ -372,6 +372,60 @@ static void TestModelFacePush(void)
     }
 }
 
+/* ── Doors ───────────────────────────────────────────────────────────────── */
+
+/* A door's frame as field_door.c copies it to VRAM: tile t filled with colour
+ * t % 16, so the pixel names the tile it came from. */
+static void TestDoorPixel(void)
+{
+    static uint8_t tiles[16 * 32];
+    static const uint8_t palettes[8] = {10, 11, 12, 13, 14, 15, 16, 17};
+    unsigned palette = 0;
+
+    for (unsigned t = 0; t < 16; ++t)
+        memset(tiles + t * 32, (int)((t % 16) * 0x11), 32);
+    /* One column: the top metatile's TL TR BL BR, then the bottom one's. */
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 0, 0, &palette) == 0 && palette == 10);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 8, 0, &palette) == 1 && palette == 11);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 7, 8, &palette) == 2 && palette == 12);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 15, 15, &palette) == 3 && palette == 13);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 0, 16, &palette) == 4 && palette == 14);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 8, 24, &palette) == 7 && palette == 17);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 15, 31, &palette) == 7 && palette == 17);
+    /* A door two cells wide: the second column's 8 tiles, the same palettes. */
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 16, 0, &palette) == 8 && palette == 10);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 24, 16, &palette) == 13 && palette == 15);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 31, 31, &palette) == 15 && palette == 17);
+
+    /* 4bpp: the left pixel of a pair in the low nibble. */
+    memset(tiles, 0, sizeof(tiles));
+    tiles[5 * 32 + 3 * 4 + 2] = 0x9A;   /* tile 5, row 3, pixels 4 and 5 */
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 12, 19, &palette) == 0xA && palette == 15);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 13, 19, &palette) == 0x9);
+    CHECK(VoxelSlots_DoorPixel(tiles, palettes, 14, 19, &palette) == 0);
+}
+
+/* Every row lands where the GBA's projection put it, (u, h, v + h): up the
+ * wall north of it, on the ground south of it, the two meeting at its foot. */
+static void TestDoorRow(void)
+{
+    float h, z;
+
+    VoxelSlots_DoorRow(8.0f, 10.0f, &h, &z);
+    CHECK(h == 2.0f && z == 10.0f);
+    VoxelSlots_DoorRow(9.25f, 10.0f, &h, &z);
+    CHECK(h == 0.75f && z == 10.0f);
+    VoxelSlots_DoorRow(10.0f, 10.0f, &h, &z);
+    CHECK(h == 0.0f && z == 10.0f);
+    VoxelSlots_DoorRow(10.5f, 10.0f, &h, &z);
+    CHECK(h == 0.0f && z == 10.5f);
+    for (float v = 6.0f; v <= 12.0f; v += 0.125f)
+    {
+        VoxelSlots_DoorRow(v, 9.5f, &h, &z);
+        CHECK(h >= 0.0f && z >= 9.5f && z - h == v);
+    }
+}
+
 int main(void)
 {
     TestAtlasWidth();
@@ -384,6 +438,8 @@ int main(void)
     TestWildDisplacesGrass();
     TestOutOfRange();
     TestPriorityAndPlacement();
+    TestDoorPixel();
+    TestDoorRow();
     if (sFailures)
     {
         fprintf(stderr, "voxel_sprite_slots_test: %d failure(s)\n", sFailures);

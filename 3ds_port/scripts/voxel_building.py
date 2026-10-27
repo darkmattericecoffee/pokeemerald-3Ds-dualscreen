@@ -2843,15 +2843,20 @@ class Card:
     as it is lifted - its foot drawn where it was.
     """
 
-    def __init__(self, name, art, foot, voff=0, base=0):
+    def __init__(self, name, art, foot, voff=0, base=0, span=None):
         self.name, self.art, self.foot, self.voff = name, art, float(foot), voff
         self.base = float(base)
+        # (u0, u1, v0): its extent, where the art's own pixels are not all of
+        # it - a beam whose other animation frame reaches further
+        self.span = span
 
     def emit(self, mesh):
         W, H = self.art.size
         px = self.art.load()
         cols = [u for u in range(W) if any(px[u, v][3] >= 128 for v in range(H))]
         rows = [v for v in range(H) if any(px[u, v][3] >= 128 for u in range(W))]
+        if self.span is not None:
+            cols, rows = [self.span[0], self.span[1] - 1], [self.span[2]]
         if not cols:
             return
         u0, u1 = float(min(cols)), float(max(cols) + 1)
@@ -2860,6 +2865,28 @@ class Card:
         front = [(u0, b - 1.0, f + b), (u1, b - 1.0, f + b), (u1, b + h, f + b), (u0, b + h, f + b)]
         mesh.poly([(x, y, z, x, z - y + self.voff) for (x, y, z) in front], SHADE_ART,
                   self.name + ".card")
+
+
+class Ribbon:
+    """A strip running back across the plan, from (za, ya) to (zb, yb), u0
+    to u1 wide, its drawing projected (v = z - y): a beam of light from one
+    post to the next, exact at 45 degrees and a strip in the air from any
+    other angle. `voff`: the rows below the model's drawing where its own
+    pixels are."""
+
+    def __init__(self, name, u0, u1, za, ya, zb, yb, voff=0):
+        self.name, self.voff = name, voff
+        self.u0, self.u1 = float(u0), float(u1)
+        self.a, self.b = (float(za), float(ya)), (float(zb), float(yb))
+
+    def emit(self, mesh):
+        (za, ya), (zb, yb) = self.a, self.b
+        # wound as a card is: its lower edge on the screen first
+        lo, hi = ((zb, yb), (za, ya)) if zb - yb > za - ya else ((za, ya), (zb, yb))
+        quad = [(self.u0, lo[1], lo[0]), (self.u1, lo[1], lo[0]),
+                (self.u1, hi[1], hi[0]), (self.u0, hi[1], hi[0])]
+        mesh.poly([(x, y, z, x, z - y + self.voff) for (x, y, z) in quad], SHADE_ART,
+                  self.name + ".ribbon~proj")
 
 
 class Facet:

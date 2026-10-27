@@ -12,6 +12,7 @@ Where every part of Emerald 3DS comes from, and what ships where.
 | pret/pokeemerald decompilation | pret | no licence stated; not relicensed | pinned by `upstream.lock`; changes in `patches/` | compiled game logic in the 3DSX |
 | Pokémon Emerald data (graphics, maps, text, audio, tables) | the player's ROM | © Nintendo / Game Freak / Creatures | **never** | **never** — generated locally as `emerald3ds.pak` |
 | Recipe (`emerald3ds.recipe`) | generated from a build | offsets, sizes, CRCs, engine pointers | no | yes |
+| Precompiled voxel programs (in the recipe, op `V`) | the voxel generators' outputs, precompiled at release time | the port's geometry, heights, placements, shapes and masks; the game's texels and pixels only as references (tile, row, column, palette) into the player's ROM - see `docs/VOXEL_PRECOMPILE.md` | no | yes |
 | Builder (`builder/`) | Emerald 3DS | `LICENSE-PORT.md` | yes | standalone executable |
 | libctru, citro2d, citro3d | devkitPro | zlib | no | linked |
 | Plane editor's tool icons (`3ds_port/src/3ds_edit_icons.h`, made by `tools/sprite_editor/gen_icons.mjs`) | [Pixelarticons](https://pixelarticons.com) by Gerrit Halfmann, rasterised at 24 and 12 px | MIT | yes (bitmaps) | compiled into the 3DSX |
@@ -29,6 +30,10 @@ Where every part of Emerald 3DS comes from, and what ships where.
   paths, secrets, untracked large files, media without an entry in
   `tools/release_audit_allow.toml`, and (with `--rom`) any run of the ROM's
   bytes in any file or release archive.
+- `tools/voxel_precompile.py` fails when a texel of a voxel file would travel
+  literally instead of as a reference into the ROM (`--max-own-texels`, 0),
+  and `tools/release_audit.py` re-checks every precompiled program of a
+  recipe it scans.
 - `tools/gen_recipe.py` fails when more than a small, classified amount of
   the original game's own objects would have to travel as literal bytes.
 - Samples: the release uses the cartridge's original samples, built by

@@ -145,6 +145,33 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             voxel.run_generators(Path("."), Path("."), [], runner="thread")
 
+    def test_relief_waits_for_the_buildings(self):
+        # The relief reads buildings.bin (voxel_terraces.modelled): it must
+        # find it whole, also when the buildings take longer than it does.
+        buildings = '''import os, sys, time
+PORT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+time.sleep(0.5)
+out = os.path.join(PORT, "romfs", "voxel", "buildings.bin")
+open(out + ".part", "wb").write(b"models")
+os.replace(out + ".part", out)
+'''
+        relief = '''import os
+PORT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+voxel = os.path.join(PORT, "romfs", "voxel")
+seen = open(os.path.join(voxel, "buildings.bin"), "rb").read() if os.path.exists(os.path.join(voxel, "buildings.bin")) else b"none"
+open(os.path.join(voxel, "relief.bin"), "wb").write(b"relief over " + seen)
+'''
+        expected = [{"path": "voxel/" + name, "size": len(data), "crc": zlib.crc32(data) & 0xFFFFFFFF}
+                    for name, data in (("buildings.bin", b"models"), ("relief.bin", b"relief over models"))]
+        for runner in voxel.RUNNERS:
+            with self.subTest(runner=runner), tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                scripts = tmp / "voxelgen" / "scripts"
+                scripts.mkdir(parents=True)
+                (scripts / "gen_voxel_buildings.py").write_text(buildings)
+                (scripts / "gen_voxel_relief.py").write_text(relief)
+                voxel.run_generators(tmp / "tree", tmp / "voxelgen", expected, runner=runner)
+
 
 class SyntheticPayloadMixin:
     def setUp(self):

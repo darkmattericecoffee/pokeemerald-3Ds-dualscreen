@@ -28,7 +28,15 @@ generators and every build, the builder's included, gets the same terrain.
                                             this high, laid as the drawing lays it
                                             (VoxelRelief_Belt) - a cave carved out of
                                             the rock, its edges this high all round
-          "pieces": ["face_s_07c",          enabled on this map: every cell of
+          "edges": [{"edge": "W",           past the map's edges, voxel only: this
+                     "first": 0, "last": 12,  metatile (the map's own id), or a 2x2
+                     "metatile": 368,        block [nw, ne, sw, se] tiled as the
+                     "top": null}],          border is, in place of the border block
+                                            along those rows (W/E) or columns (N/S),
+                                            null: all; its top at "top" px over the
+                                            base, null: the map's edge
+                                            (VoxelRelief_EdgeFill)
+          "pieces":["face_s_07c",          enabled on this map: every cell of
                      {"id": "x", "rect": [x0, y0, x1, y1]}],   that metatile
           "cells": {
             "49,12": {
@@ -71,7 +79,7 @@ MAGIC = b"VXL4"
 SIDE = 5
 DRAWN = 0x8000
 UNIT2 = 0x4000
-LEVEL = 0x8000          # of the width: heights with no depth, lifted straight up as a base is
+LEVEL = 0x8000          # of the width: once a level map (no depth); kept, no longer set or read
 WIDE = 0x4000           # of the width: the cells' heights are s16 pixels (a mountain past 16 levels)
 BELT_SHIFT = 10         # bits 10-13 of the height: the belt's courses
 BELT_MAX = 15
@@ -81,6 +89,19 @@ HEIGHT_MASK = 0x03FF
 NO_VARIANT = 0xFFFF
 NONE16 = 0xFFFF
 NO_FACE = 0xFFFE
+# an edge fill (voxel_relief.c VoxelRelief_EdgeFill): u16 layout, u8 edge, u8
+# flags (2 top given, bits 4-7 metatile 0-3 is water), s16 first, s16 last,
+# s16 top, u16 metatiles[4] (a 2x2 block, as the game's border)
+EDGE_FMT = "<HBBhhh4H"
+EDGE_BYTES = 18
+EDGES = {"W": 1, "E": 2, "N": 4, "S": 8}
+EDGE_TOP, EDGE_WATER_SHIFT = 2, 4
+# Layouts that are one map drawn twice (the game swaps them as the story
+# goes): the second takes the fixes of the first, where it has none of its
+# own - Route 111 without its Mirage Tower is Route 111, and its marks (its
+# edge fills too: they stood at the edge's level on a save past the tower)
+# were lost the day the tower fell. voxel_terraces reads its hand marks so.
+TWINS = {"LAYOUT_ROUTE111_NO_MIRAGE_TOWER": "LAYOUT_ROUTE111"}
 
 
 # --- relief.bin, read and written without loss ---------------------------------
@@ -90,7 +111,8 @@ NO_FACE = 0xFFFE
 def parse(blob):
     """{"layouts": {index: {w, h, flags, base, belt, level, cells{(x, y): [25 px]}}},
     "variants": [(layout, metatile, rows[16])],
-    "cuts": {(layout, x, y): [variant, foot, ground, wall, sides, flags]}}"""
+    "cuts": {(layout, x, y): [variant, foot, ground, wall, sides, flags]},
+    "edges": [(layout, edge, flags, first, last, top, m0, m1, m2, m3)]}"""
     if blob[:4] != MAGIC:
         raise ValueError("not a relief.bin")
     count, side = struct.unpack_from("<HH", blob, 4)
@@ -123,7 +145,14 @@ def parse(blob):
             lay, x, y, k, foot, ground, wall, sides, flags = struct.unpack_from("<HBBHhHHBB", blob, at)
             cuts[(lay, x, y)] = [k, foot, ground, wall, sides, flags]
             at += 14
-    return {"layouts": layouts, "variants": variants, "cuts": cuts}
+    edges = []
+    if blob[-4:] == b"CUTS" and blob[at:at + 4] == b"EDGE":
+        n = struct.unpack_from("<H", blob, at + 4)[0]
+        at += 8
+        for _ in range(n):
+            edges.append(tuple(struct.unpack_from(EDGE_FMT, blob, at)))
+            at += EDGE_BYTES
+    return {"layouts": layouts, "variants": variants, "cuts": cuts, "edges": edges}
 
 
 _CUT_DIR = ((0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (1, -1), (-1, 1), (1, 1))
@@ -199,14 +228,14 @@ def ease_rows(ease, height):
 
 def seam_eases(relief):
     """{layout index: ease, units of 8 px}. A point stands as far south as it
-    is high over its own map's base (u, h, v + h), so a map whose south edge
-    is ground under its base - Route 111's, two levels under the plateau it
-    stands on - meets the map south of it at one height but rows short of
-    it. The ease is those rows, spread over the map's last rows (EaseRows):
-    each a little longer, its drawing and all on it, and the edges meet with
-    nothing between them (voxel_relief.c VoxelRelief_Depth). The commonest
-    shortfall along the seams where the heights meet; none past a level map
-    (no depth) or under 8 px."""
+    is high in the world, its map's base and its relief over it (u, h, v + h;
+    voxel_relief.h), so two maps meeting at one height meet in the same row
+    and there is no shortfall to ease: this finds none. It once stood as far
+    south as it was high over its own map's base, and a map whose south edge
+    was ground under its base - Route 111's, two levels under the plateau it
+    stands on - met the map south of it rows short of it; the ease spread
+    those rows over the map's last rows (EaseRows). The commonest shortfall
+    along the seams where the heights meet; none under 8 px."""
     if not _LINKS:
         import gen_voxel_relief
         _LINKS.extend(gen_voxel_relief.map_links())
@@ -216,7 +245,7 @@ def seam_eases(relief):
             continue
         ia, ib = layout_index(a), layout_index(b)
         ta = relief["layouts"].get(ia)
-        if ta is None or ta.get("level"):
+        if ta is None:
             continue
         tb = relief["layouts"].get(ib)
         ea, eb = layout_entry(a), layout_entry(b)
@@ -226,9 +255,10 @@ def seam_eases(relief):
             ha, hb = (ga[22] if ga else 0), (gb[2] if gb else 0)
             if abs(ta["base"] + ha - ((tb["base"] if tb else 0) + hb)) > 1:
                 continue        # a step: the skirt closes it
-            db = 0 if tb is None or tb.get("level") else hb
+            # depths in the world: base and relief
+            da, db = ta["base"] + ha, (tb["base"] if tb else 0) + hb
             c = tally.setdefault(ia, {})
-            c[db - ha] = c.get(db - ha, 0) + 1
+            c[db - da] = c.get(db - da, 0) + 1
     out = {}
     for ia, c in tally.items():
         gap, n = max(c.items(), key=lambda kv: kv[1])
@@ -296,6 +326,11 @@ def pack(relief):
         table += struct.pack("<HH16H", lay, m, *rows)
     for (lay, x, y), c in sorted(relief["cuts"].items()):
         table += struct.pack("<HBBHhHHBB", lay, x, y, *c)
+    edges = relief.get("edges") or []
+    if edges:
+        table += b"EDGE" + struct.pack("<HH", len(edges), 0)
+        for e in edges:
+            table += struct.pack(EDGE_FMT, *e)
     return blob + table + struct.pack("<I", len(blob)) + b"CUTS"
 
 
@@ -357,11 +392,57 @@ def _enabled(spec, pieces):
     return out
 
 
+def is_water(entry, metatile):
+    """A metatile of a layout's tilesets the console lays as water
+    (voxel_cells.WATER, voxel_world.c BehaviorShape)."""
+    import voxel_cells as vc
+    second = metatile >= vc.NUM_PRIMARY
+    tileset = entry["secondary_tileset" if second else "primary_tileset"]
+    if tileset not in vc.ATTRIBUTES:
+        return False
+    table = vc.read_u16(vc.ATTRIBUTES[tileset])
+    i = metatile - (vc.NUM_PRIMARY if second else 0)
+    return i < len(table) and (table[i] & 0xFF) in vc.WATER
+
+
+def edge_rows(name, spec, index, entry):
+    """A map's "edges" (the editor's edge fills): [{"edge": "W"|"E"|"N"|"S",
+    "first": cell along the edge or null, "last": ..., "metatile": its own id
+    or a 2x2 block of them [nw, ne, sw, se] tiled out as the game's border
+    block is, "top": pixels over the map's base where the fill's top stands,
+    or null to follow the map's edge}] as relief.bin's rows."""
+    rows = []
+    for e in spec.get("edges", []):
+        side = EDGES.get(str(e.get("edge", "")).upper())
+        if side is None or e.get("metatile") is None:
+            raise ValueError("%s: edge fill %r needs an edge (W E N S) and a metatile" % (name, e))
+        first, last = e.get("first"), e.get("last")
+        if first is None:
+            first = last = -1
+        elif last is None:
+            last = first
+        ms = e["metatile"] if isinstance(e["metatile"], list) else [e["metatile"]] * 4
+        if len(ms) != 4 or any(m is None for m in ms):
+            raise ValueError("%s: edge fill %r: one metatile or four" % (name, e))
+        ms = [int(m) for m in ms]
+        flags = EDGE_TOP if e.get("top") is not None else 0
+        for q, m in enumerate(ms):
+            if is_water(entry, m):
+                flags |= 1 << (EDGE_WATER_SHIFT + q)
+        rows.append((index, side, flags, int(min(first, last)), int(max(first, last)),
+                     int(e.get("top") or 0), *ms))
+    return rows
+
+
 def apply(relief, fixes, report=None):
     """The fixes over a parsed relief, in place. `report`, a list, gets one
     line per map changed."""
     pieces = fixes.get("pieces", {})
-    for name, spec in fixes.get("layouts", {}).items():
+    layouts = dict(fixes.get("layouts", {}))
+    for twin, first in TWINS.items():
+        if first in layouts:
+            layouts[twin] = dict(layouts[first], **layouts.get(twin, {}))
+    for name, spec in layouts.items():
         index = layout_index(name)
         entry = layout_entry(name)
         if index is None:
@@ -376,6 +457,8 @@ def apply(relief, fixes, report=None):
             t["base"] = int(spec["base"])
         if spec.get("drawn"):
             t["flags"] |= DRAWN
+        if "edges" in spec:
+            relief["edges"] = [e for e in relief.get("edges", []) if e[0] != index]                 + edge_rows(name, spec, index, entry)
         if "belt" in spec:
             courses = int(spec["belt"]) // 16
             if courses * 16 != int(spec["belt"]) or not 0 <= courses <= BELT_MAX:

@@ -32,6 +32,10 @@ void VoxelLighting_Reset(void);
 bool VoxelLighting_SetSun(float dx, float dz, float strength, uint32_t key);
 uint32_t VoxelLighting_Hash(int x0, int z0, int x1, int z1);
 float VoxelLighting_Sample(float x, float y, float z);
+/* The same answer for a point lit on its own, every frame (a sprite's card):
+ * without the blocks' bound, which pays for itself over a build's rays but
+ * classifies some four hundred cells the first time a lone ray needs it. */
+float VoxelLighting_SampleAlone(float x, float y, float z);
 /* Rays cast so far (samples not found in the cache), for the build logs. */
 unsigned VoxelLighting_Rays(void);
 /* Ray points tested, and tests against a relief's surface (rays and contact

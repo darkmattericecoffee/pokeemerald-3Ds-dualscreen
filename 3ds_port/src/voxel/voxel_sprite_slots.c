@@ -57,6 +57,32 @@ unsigned VoxelSlots_TilePixel(const uint8_t *tiles, unsigned width, unsigned x, 
     return (tiles[tile * 32u + py * 4u + px / 2u] >> ((px & 1u) * 4u)) & 0xFu;
 }
 
+unsigned VoxelSlots_DoorPixel(const uint8_t *tiles, const uint8_t *palettes,
+                              unsigned x, unsigned y, unsigned *palette)
+{
+    unsigned column = x / 16u;
+    unsigned tile = (y / 16u) * 4u + ((y / 8u) & 1u) * 2u + ((x / 8u) & 1u);
+    unsigned px = x & 7u, py = y & 7u;
+    const uint8_t *data = tiles + (column * 8u + tile) * 32u;
+
+    *palette = palettes[tile];
+    return (data[py * 4u + px / 2u] >> ((px & 1u) * 4u)) & 0xFu;
+}
+
+void VoxelSlots_DoorRow(float v, float wall, float *height, float *depth)
+{
+    if (v >= wall)
+    {
+        *height = 0.0f;
+        *depth = v;
+    }
+    else
+    {
+        *height = wall - v;
+        *depth = wall;
+    }
+}
+
 /* Float slack on the face's bound: a face computed on the cell's edge is not
  * rejected for an ulp (1/256 tile, far below a pixel's 1/16). */
 #define VOXEL_FACE_SLACK (1.0f / 256.0f)

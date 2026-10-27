@@ -25,14 +25,25 @@ typedef struct
     int16_t x, z;
     float top;        /* over the base */
     float base;       /* the base of the map the cell is on (VoxelRelief_Base) */
-    /* On a drawn map, how far south and how high what stands on the cell is
+    /* On a drawn map, how high over the base what stands on the cell is
      * drawn (VoxelRelief_CellShift): a tree on ground two levels under the
-     * base stands two rows north of its cell and two levels down. */
+     * base stands two levels down. */
+    float lift;
+    /* And how far south: as far as it stands high in the world, its lift and
+     * its map's base (VoxelBuilder_StretchZ) - that tree two rows north of
+     * its cell on a map at the world's level. */
     float shift;
+    /* A drawn map's relief: the lowest of its surface over the cell. A point
+     * under it is under the surface wherever in the cell it is. */
+    float bottom;
+    /* A shifted cell (shift not 0): the height past which nothing
+     * ObjectAt tests in it can stop a ray (ShiftedClear), once known. */
+    float clear;
     uint32_t generation;
     int8_t crownPart; /* VoxelTree_Part when the cell is a crown, else -1 */
     bool surface;     /* a drawn map's relief: tested as a height field */
     bool sign;        /* a sign or a lamp: tested against its drawing */
+    bool clearKnown;  /* `clear` worked out (ShiftedClear) */
     const uint16_t *mask; /* a model over part of the cell: its footprint */
 } LightCell;
 static LightCell sCells[CELL_CACHE_SIZE];
@@ -59,6 +70,8 @@ VoxelSun gVoxelSun = {0.85f, 0.55f, 1.0f, 0};
 static float sAmbient = VOXEL_AMBIENT;
 static float sStepInverseX = 4.0f / 0.85f, sStepInverseZ = 4.0f / 0.55f;
 static unsigned sRays;
+/* Lit without the blocks' bound (VoxelLighting_SampleAlone). */
+static bool sAlone;
 
 /*
  * No caster anywhere on screen is taller than this, so a ray that has climbed
@@ -113,6 +126,18 @@ static LightBlock sBlocks[BLOCK_CACHE_SIZE];
 /* How far a block's ceiling looks north and south for what is drawn into it
  * from another cell (ObjectAt): a tree four levels up a drawn mountain. */
 #define SHIFT_ROWS 4
+/* How far north of a row past every map's cells Cell looks for the map whose
+ * drawing reaches it: a map stands as far south as it is high in the world. */
+#define DRAWN_PAST_ROWS 16
+
+/* How far a map's drawing reaches past its cells, north or south, rows: its
+ * base and, on a drawn map, SHIFT_ROWS of relief over it. */
+static int DrawnReach(const VoxelMapInstance *inst)
+{
+    float reach = fabsf(VoxelRelief_Base(inst));
+
+    return (int)ceilf(reach) + (VoxelRelief_IsDrawn(inst) ? SHIFT_ROWS : 0);
+}
 static LightBlock sReach[BLOCK_CACHE_SIZE];
 /* Read for a ray with more than this left to climb to the map's bound. */
 #define BLOCK_CLIMB 1.0f
@@ -327,14 +352,41 @@ static const LightCell *Cell(int x, int z)
     cell->crownPart = -1;
     cell->surface = false;
     cell->sign = false;
+    cell->clearKnown = false;
     cell->mask = NULL;
     inst = VoxelWorld_GetInstanceAt(x, z);
     cell->base = VoxelRelief_Base(inst);
+    cell->lift = 0.0f;
     cell->shift = 0.0f;
-    if (inst == NULL || inst->indoor)
+    if (inst == NULL)
+    {
+        /* Past every map's cells: what is drawn here is the map north of it,
+         * as far south as it stands high (Fortree's last rows, on its base,
+         * past its south edge). Looked for there, as ObjectAt looks for what
+         * is drawn across a shifted cell, from the depth of that map's edge. */
+        for (int k = 1; k <= DRAWN_PAST_ROWS; ++k)
+        {
+            const VoxelMapInstance *north = VoxelWorld_GetInstanceAt(x, z - k);
+            float reach;
+
+            if (north == NULL)
+                continue;
+            reach = VoxelRelief_Base(north)
+                  + (VoxelRelief_IsDrawn(north) ? VoxelRelief_CellShift(north, x, z - k) : 0.0f);
+            if (!north->indoor && reach > (float)k - 1.0f)
+            {
+                cell->base = VoxelRelief_Base(north);
+                cell->shift = reach;
+            }
+            break;
+        }
+        return cell;
+    }
+    if (inst->indoor)
         return cell;
     if (VoxelRelief_IsDrawn(inst))
-        cell->shift = VoxelRelief_CellShift(inst, x, z);
+        cell->lift = VoxelRelief_CellShift(inst, x, z);
+    cell->shift = cell->lift + cell->base;
     metatile = VoxelWorld_GetMetatileId(x, z);
     if (VoxelWorld_UsesTreeSprites(inst))
     {
@@ -369,7 +421,7 @@ static const LightCell *Cell(int x, int z)
      * field, so a slope facing the sun is not shadowed by its own cell. */
     if (VoxelRelief_IsDrawn(inst))
     {
-        cell->top = VoxelRelief_SurfaceTop(inst, x, z);
+        cell->top = VoxelRelief_SurfaceTop(inst, x, z, &cell->bottom);
         cell->surface = cell->top > 0.05f;
         return cell;
     }
@@ -399,32 +451,31 @@ static float BlockCeiling(int bx, int bz)
 
     if (block->generation == sGeneration && block->bx == bx && block->bz == bz)
         return block->ceiling;
-    /* Off every map no cell casts (Cell): not worth classifying sixteen
-     * cells, each evicting one rays do test. */
-    for (unsigned i = 0; i < VoxelWorld_InstanceCount() && !onMap; ++i)
+    /* Off every map's drawing no cell casts (Cell): not worth classifying
+     * sixteen cells, each evicting one rays do test. A map's drawing is its
+     * cells and the rows round them it reaches (DrawnReach): what stands on
+     * its cells is drawn as far south as it stands high, ObjectAt. */
+    for (unsigned i = 0; i < VoxelWorld_InstanceCount(); ++i)
     {
         const VoxelMapInstance *inst = VoxelWorld_Instance(i);
+        int reach;
 
-        onMap = inst != NULL && inst->originX < x1 && inst->originX + inst->width > x0
-             && inst->originY < z1 && inst->originY + inst->height > z0;
-    }
-    /* (and on a drawn map the rows round it: what stands on its cells is
-     * drawn as far south as it is lifted, ObjectAt) */
-    for (unsigned i = 0; i < VoxelWorld_InstanceCount() && onMap && margin == 0; ++i)
-    {
-        const VoxelMapInstance *inst = VoxelWorld_Instance(i);
-
-        if (inst != NULL && VoxelRelief_IsDrawn(inst) && inst->originX < x1
-         && inst->originX + inst->width > x0 && inst->originY < z1 + SHIFT_ROWS
-         && inst->originY + inst->height > z0 - SHIFT_ROWS)
-            margin = SHIFT_ROWS;
+        if (inst == NULL || inst->originX >= x1 || inst->originX + inst->width <= x0)
+            continue;
+        reach = DrawnReach(inst);
+        if (inst->originY < z1 + reach && inst->originY + inst->height > z0 - reach)
+        {
+            onMap = true;
+            if (reach > margin)
+                margin = reach;
+        }
     }
     for (int z = z0 - margin; onMap && z < z1 + margin; ++z)
         for (int x = x0; x < x1; ++x)
         {
             const LightCell *cell = Cell(x, z);
-            float lift = cell->surface ? 0.0f : cell->shift;
-            int at = cell->surface ? z : Tile((float)z + 0.5f + lift);
+            float lift = cell->surface ? 0.0f : cell->lift;
+            int at = cell->surface ? z : Tile((float)z + 0.5f + cell->shift);
 
             /* CellOccludes: nothing under its top, and nothing at all from a
              * cell whose top is not above its base (a surface's always is). */
@@ -502,6 +553,10 @@ static bool CellOccludes(const LightCell *cell, float x, float y, float z)
         return false;
     if (cell->surface)
     {
+        /* Under the lowest of it: inside the rock, with no need to read
+         * where (a ray into a mountain, a corner's contact against a wall). */
+        if (y < cell->bottom - SURFACE_BIAS)
+            return true;
         ++sSurfaceTests;
         return y < VoxelRelief_SurfaceAt(x, z) - SURFACE_BIAS;
     }
@@ -552,14 +607,48 @@ static bool ObjectAt(int tx, float x, float y, float z, const LightCell **seen)
     const LightCell *cell = Cell(tx, Tile(z)), *o;
 
     *seen = cell;
+    /* (a cell drawn in its own row: lifted all the same, if its relief is
+     * as far under its base as the base is high) */
     if (cell->shift == 0.0f)
-        return CellOccludes(cell, x, y, z);
+        return CellOccludes(cell, x, y - cell->lift, z);
     if (cell->surface && CellOccludes(cell, x, y, z))
         return true;
     o = Cell(tx, Tile(z - cell->shift));
     if (o->surface || o->shift == 0.0f)
         return false;
-    return CellOccludes(o, x, y - o->shift, z - o->shift);
+    return CellOccludes(o, x, y - o->lift, z - o->shift);
+}
+
+/*
+ * A cell drawn shifted (cell->shift, on a drawn map's raised ground): the
+ * height past which nothing ObjectAt tests in it can stop a ray. That is the
+ * cell's own relief and what is drawn into it from the cells whose drawing
+ * lies across it - one or two rows, as a point runs down the cell - and the
+ * ray only climbs, so past all of them none can. Worked out once a cell, as
+ * rays first need it, and kept with it.
+ */
+static float ShiftedClear(int tx, int tz)
+{
+    LightCell *cell = (LightCell *)Cell(tx, tz);
+    float clear, shift;
+
+    if (cell->clearKnown)
+        return cell->clear;
+    clear = cell->surface ? cell->top + cell->base : -1000.0f;
+    shift = cell->shift;
+    for (int oz = Tile((float)tz - shift); oz <= Tile((float)(tz + 1) - shift); ++oz)
+    {
+        const LightCell *o = Cell(tx, oz);
+
+        if (!o->surface && o->shift != 0.0f && o->top > 0.0f
+         && o->top + o->base + o->lift > clear)
+            clear = o->top + o->base + o->lift;
+    }
+    /* (the lookups may have reused its bucket: found again) */
+    cell = (LightCell *)Cell(tx, tz);
+    cell->clear = clear;
+    cell->clearKnown = true;
+    return clear;
 }
 
 static bool Occludes(float x, float y, float z)
@@ -614,7 +703,7 @@ static bool Lit(float x, float y, float z)
         VoxelLighting_Reset();
     ceiling = RayCeiling(x, z);
     stretched = RayStretched(x, z);
-    blocks = VoxelWorld_InstanceCount() == sMapCeilings;
+    blocks = !sAlone && VoxelWorld_InstanceCount() == sMapCeilings;
     for (int step = 1; step <= VOXEL_LIGHT_REACH * 4;)
     {
         float rx, ry, rz;
@@ -654,12 +743,19 @@ static bool Lit(float x, float y, float z)
         if (gVoxelLightingStepEveryPoint)
             continue;
 #endif
-        /* (the cells' edges are where they stand, not along the ray; nor
-         * where what stands on them is drawn) */
-        if (stretched || cell->shift != 0.0f)
+        /* (the cells' edges are where they stand, not along the ray) */
+        if (stretched)
             continue;
-        if ((cell->crownPart >= 0 || cell->surface || cell->sign || cell->mask != NULL)
-         && cell->top + cell->base > ry)
+        if (cell->shift != 0.0f)
+        {
+            /* What is drawn across a shifted cell comes from the rows its
+             * drawing lies over: point by point until the ray is over it
+             * all, then past the cell at once. */
+            if (ShiftedClear(tx, tz) > ry)
+                continue;
+        }
+        else if ((cell->crownPart >= 0 || cell->surface || cell->sign || cell->mask != NULL)
+              && cell->top + cell->base > ry)
             continue;  /* not a box: point by point while it is above the ray */
         /* Leave the cell along the current sun direction. The estimate starts a step short
          * of the crossing and the exact points settle it. */
@@ -801,6 +897,16 @@ float VoxelLighting_Sample(float x, float y, float z)
     return (sample->lit ? 1.0f : sAmbient) * sample->contact;
 }
 
+float VoxelLighting_SampleAlone(float x, float y, float z)
+{
+    float shade;
+
+    sAlone = true;
+    shade = VoxelLighting_Sample(x, y, z);
+    sAlone = false;
+    return shade;
+}
+
 uint32_t VoxelLighting_Hash(int x0, int z0, int x1, int z1)
 {
     /* Include the moving ray's reach and neighbours for AO/face visibility. */
@@ -855,6 +961,24 @@ static void RawQuad(VoxelBuilder *builder, const VoxelVertex *a,
     if (builder->count + 6 > builder->capacity)
     {
         builder->dropped += 2;
+        return;
+    }
+    /* Cut along the diagonal whose ends are lit most alike: a shadow's edge
+     * crossing the quad the other way then runs straight along it, where the
+     * fixed cut drew it as a zigzag of half triangles. The same corners and
+     * the same samples, and the same winding either way. Only on a flat
+     * parallelogram, its texture one too, where either cut is the same
+     * surface and the same picture: on a relief's bent quad the diagonal is
+     * part of the shape (a ledge's berm). */
+    if (fabsf(a->shade - c->shade) > fabsf(b->shade - d->shade)
+     && fabsf(a->x + c->x - b->x - d->x) < 0.001f
+     && fabsf(a->y + c->y - b->y - d->y) < 0.001f
+     && fabsf(a->z + c->z - b->z - d->z) < 0.001f
+     && fabsf(a->u + c->u - b->u - d->u) < 0.0001f
+     && fabsf(a->v + c->v - b->v - d->v) < 0.0001f)
+    {
+        VoxelBuilder_Tri(builder, a, b, d);
+        VoxelBuilder_Tri(builder, b, c, d);
         return;
     }
     VoxelBuilder_Tri(builder, a, b, c);

@@ -29,6 +29,13 @@ static unsigned sTileReads;
  * recognise Dewford's tree art; this test never builds trees, so an empty
  * tileset is enough for the link. */
 const struct Tileset gTileset_Dewford = {0};
+const struct Tileset gTileset_Fortree = {0};
+const struct Tileset gTileset_Mauville = {0};
+const struct Tileset gTileset_Lavaridge = {0};
+const struct Tileset gTileset_Rustboro = {0};
+const struct Tileset gTileset_Lilycove = {0};
+const struct Tileset gTileset_EverGrande = {0};
+const struct Tileset gTileset_BattleFrontierOutsideWest = {0};
 
 unsigned VoxelWorld_InstanceCount(void) { return 2; }
 const VoxelMapInstance *VoxelWorld_Instance(unsigned i) { return i < 2 ? &sMaps[i] : NULL; }
@@ -277,6 +284,15 @@ int main(void)
                 assert(reference[h][z][x] == VoxelLighting_Sample(x * 0.31f - 1, h * 0.4f, z * 0.31f - 1));
             }
     sCeilingOverride = 0.0f;
+    /* A lone sample (a sprite's card) skips the blocks' bound: the same
+     * answers, cold. */
+    for (int h = 0; h < 3; ++h)
+        for (int z = 0; z < 25; ++z)
+            for (int x = 0; x < 25; ++x)
+            {
+                VoxelLighting_Reset();
+                assert(reference[h][z][x] == VoxelLighting_SampleAlone(x * 0.31f - 1, h * 0.4f, z * 0.31f - 1));
+            }
     VoxelLighting_Reset();
     /* Rays jump from cell to cell instead of visiting every point: the same
      * answers as the point-by-point march, over the whole reference grid. */

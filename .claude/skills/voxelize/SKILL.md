@@ -48,8 +48,11 @@ every generator you will change:
 4. General rules only: a rule names tiles and shapes, never a map or cell.
    An unsolvable spot gets a hand correction as data in
    `3ds_port/assets/voxel/relief_fixes.json`, never a special case in code.
-5. Never change ledges, berry soil or seams between maps (`ledgecheck.py`
-   must report 0 differences).
+5. Never change berry soil, seams between maps or a ledge's shape
+   (`ledgecheck.py` must report 0 differences outside ledges between two
+   levels). A ledge whose two sides the terraces put at different levels is
+   a step laid by the general rule (`voxel_terraces.py`, "ledges between two
+   levels"); never reshape one by hand.
 6. Never commit renders, screenshots, extracted tiles or generated `.bin`
    files; nothing from the cartridge. `python tools/release_audit.py --repo .
    --strict` must pass.

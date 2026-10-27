@@ -13,6 +13,14 @@ sequence of operations that write it from left to right:
                                       bitmap[i] is the source bit of
                                       destination bit i, or -1/-2 for a
                                       constant 0/1
+    ["V", literal_offset, length]     run the program at that place of the
+                                      literal pool (precompiled.py): a
+                                      generated file, its texels read from
+                                      the voxel `inputs`
+
+`generated` entries (the voxel generators' outputs) carry "ops" when the
+release precompiled them (tools/voxel_precompile.py); without, the builder
+runs the generators.
 
 An entry may also carry "patches": [dst_offset, literal_offset, length]
 triples written over the result afterwards (pointers inside remapped records).
@@ -92,7 +100,7 @@ def _check_field(meta: dict, key: str, kind: type, required: bool) -> None:
     if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
         raise RecipeError("damaged recipe: metadata %r is not %s" % (key, _TYPE_NAMES[kind]))
     # build_pack indexes every entry by name, so a non-object would escape as TypeError.
-    if key == "entries" and not all(isinstance(item, dict) for item in value):
+    if key in ("entries", "generated") and not all(isinstance(item, dict) for item in value):
         raise RecipeError("damaged recipe: metadata %r holds a non-object item" % key)
 
 
@@ -190,7 +198,8 @@ def apply_bitmap(src: bytes, dst: bytearray, bitmap: list[int]) -> None:
             dst[i >> 3] &= ~(1 << (i & 7))
 
 
-def build_entry(entry: dict, rom: bytes, literals: bytes, bitmaps: list) -> bytes:
+def build_entry(entry: dict, rom: bytes, literals: bytes, bitmaps: list, sources=None) -> bytes:
+    """`sources` (precompiled.Sources) is what "V" programs read."""
     out = bytearray()
     for op in entry["ops"]:
         kind = op[0]
@@ -213,6 +222,19 @@ def build_entry(entry: dict, rom: bytes, literals: bytes, bitmaps: list) -> byte
                 record = bytearray(dst_stride)
                 apply_bitmap(rom[off + k * src_stride: off + (k + 1) * src_stride], record, bitmap)
                 out += record
+        elif kind == "V":
+            from . import precompiled
+            if (len(op) != 3 or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0
+                                        for v in op[1:]) or op[1] + op[2] > len(literals)):
+                raise RecipeError("%s: damaged program reference %r" % (entry["path"], op))
+            if sources is None:
+                raise RecipeError("%s: a program with nothing to read" % entry["path"])
+            _, off, length = op
+            try:
+                out += precompiled.run(literals[off:off + length], sources,
+                                       limit=max(0, entry["size"] - len(out)))
+            except precompiled.ProgramError as exc:
+                raise RecipeError("%s: %s" % (entry["path"], exc)) from exc
         else:
             raise RecipeError("%s: unknown operation %r" % (entry["path"], kind))
     for dst, off, length in entry.get("patches", ()):

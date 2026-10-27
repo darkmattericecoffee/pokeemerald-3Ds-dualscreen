@@ -7,6 +7,7 @@
 #include "3ds_field_view.h"
 #include "3ds_platform.h"
 #include "voxel_camera.h"
+#include "voxel_relief.h"
 #include "voxel_world.h"
 
 #define VOXEL_DEG_TO_RAD (3.14159265358979323846f / 180.0f)
@@ -136,7 +137,9 @@ static void StopAtEdges(const VoxelCamera *cam, float *x, float *z)
     side = cam->distance / cosf(pitch) * tanf(half) * VOXEL_ASPECT;
 
     *x = CtrFieldView_Limit(*x, side, side, (float)map->originX, (float)(map->originX + map->width), closed & 3);
-    *z = CtrFieldView_Limit(*z, north, south, (float)map->originY, (float)(map->originY + map->height),
+    /* (its rows as far south as its base is high: VoxelBuilder_StretchZ) */
+    *z = CtrFieldView_Limit(*z, north, south, (float)map->originY + VoxelRelief_Base(map),
+                            (float)(map->originY + map->height) + VoxelRelief_Base(map),
                             (closed >> 2) & 3);
     *x = Between(*x, playerX - VOXEL_EDGE_SIDE * cam->distance, playerX + VOXEL_EDGE_SIDE * cam->distance);
     *z = Between(*z, playerZ - VOXEL_EDGE_DOWN * cam->distance, playerZ + VOXEL_EDGE_UP * cam->distance);

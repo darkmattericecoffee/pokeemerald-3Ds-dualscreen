@@ -14,6 +14,13 @@
  * recognise Dewford's tree art; this test never uses that art, so an empty
  * tileset is enough for the link. */
 const struct Tileset gTileset_Dewford = {0};
+const struct Tileset gTileset_Fortree = {0};
+const struct Tileset gTileset_Mauville = {0};
+const struct Tileset gTileset_Lavaridge = {0};
+const struct Tileset gTileset_Rustboro = {0};
+const struct Tileset gTileset_Lilycove = {0};
+const struct Tileset gTileset_EverGrande = {0};
+const struct Tileset gTileset_BattleFrontierOutsideWest = {0};
 
 static VoxelMapInstance sMap = {.originX = 7, .originY = 7, .width = 2, .height = 2};
 static bool sGeneral = true;
@@ -166,7 +173,7 @@ int main(void)
     VoxelTree_EmitInstance(&parts, &sMap, -3, -5, -1, -3);
     VoxelTree_EmitBorder(&parts, -5, -7, 1, 1);
     assert(parts.count == 0);
-    assert(VoxelTree_Part(NULL, 0x026) == -1); /* secret base tree */
+    assert(VoxelTree_Part(NULL, 0x02E) == -1); /* a pine, still its own art */
     assert(VoxelTree_Part(NULL, 0x1D9) == -1); /* rock */
 
     /* Grass fringes lose the old canopy and never acquire region walls. */
@@ -194,6 +201,18 @@ int main(void)
     assert(VoxelTree_Part(NULL, 0x23A) == -1 && VoxelTree_Part(NULL, 0x243) == -1);
     assert(VoxelTree_GroundMetatile(&gTileset_Dewford, 0x239) == 0x124);
     assert(VoxelTree_GroundMetatile(NULL, 0x239) == 0x239);
+    /* The General's small tree on a secondary tileset's ground, and only
+     * there: the same ids are other drawings on any other map. */
+    assert(VoxelTree_Part(&gTileset_Fortree, 0x253) == VOXEL_TREE_SMALL);
+    assert(VoxelTree_Part(&gTileset_Mauville, 0x226) == VOXEL_TREE_SMALL);
+    assert(VoxelTree_Part(&gTileset_Lavaridge, 0x218) == VOXEL_TREE_SMALL);
+    assert(VoxelTree_Part(&gTileset_Lavaridge, 0x253) == -1 && VoxelTree_Part(NULL, 0x226) == -1);
+    assert(VoxelTree_GroundMetatile(&gTileset_Rustboro, 0x2C0) == 0x079);
+    assert(VoxelTree_GroundMetatile(&gTileset_Lilycove, 0x2C0) == 0x2C0);
+    /* The secret base's tree, closed or opened, is a 2x2 tree. */
+    assert(VoxelTree_Part(NULL, 0x01E) == 0 && VoxelTree_Part(NULL, 0x01F) == 1);
+    assert(VoxelTree_Part(NULL, 0x026) == 2 && VoxelTree_Part(NULL, 0x027) == 3);
+    assert(VoxelTree_Part(NULL, 0x036) == 2 && VoxelTree_Part(NULL, 0x037) == 3);
     Init(&parts, sParts);
     VoxelMesh_EmitInstance(&parts, &sMap, -3, -5, -1, -3);
     assert(parts.count == 12 && parts.uncovered == 0); /* two grass tops */

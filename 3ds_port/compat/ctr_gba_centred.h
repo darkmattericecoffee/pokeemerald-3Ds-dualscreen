@@ -1,9 +1,10 @@
 /*
  * Force-included into the translation units whose screens are shown centred
  * as a GBA screen (full.mk, CTR_GBA_CENTRED_SRCS): the fly map, the Town Map,
- * the title menu with the professor's speech, the naming screen, the clock,
- * the choice of starter from the professor's bag, the communication error
- * screen, the Berry Blender, the wireless minigames and contests;
+ * the title menu with the professor's speech, the OPTION screen, the naming
+ * screen, the clock, the choice of starter from the professor's bag, the
+ * communication error screen, the Berry Blender, the wireless minigames,
+ * contests and the Game Corner's slot machine;
  * and into pokenav.c, pokemon_storage_system.c (the PC's boxes),
  * pokemon_summary_screen.c, item_menu.c (the bag), pokedex.c, trade.c and
  * trainer_card.c (the field's card, with the classic menus),

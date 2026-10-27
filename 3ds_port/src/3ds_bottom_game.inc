@@ -15,22 +15,29 @@ static const Rgb sFieldMove = {64, 120, 200};
  * message going on. CANCEL, YES and NO are the shared ones. */
 enum { HIT_NAT_SLOT = HIT_ROW, HIT_NAT_ENTRY = HIT_ROW + 8, HIT_NAT_MSG = HIT_ROW + 16 };
 
-/* The game's HP bar: green over half, yellow over a fifth, red under. */
+/* The game's HP bar, by the party menu's own math (DisplayPartyPokemonHPBar):
+ * its colour by GetHPBarLevel, its length by GetScaledHPFraction, so any HP
+ * at all is a pixel of it and only full HP the whole bar. */
 static void HpBar(int x, int y, int w, u16 hp, u16 maxHp)
 {
-    int fill = maxHp ? ((w - 2) * hp + maxHp / 2) / maxHp : 0;
+    int fill = maxHp ? GetScaledHPFraction(hp, maxHp, w - 2) : 0;
     u16 colour, dark;
 
-    if (hp * 2 > maxHp)
+    switch (maxHp ? GetHPBarLevel(hp, maxHp) : HP_BAR_EMPTY)
+    {
+    case HP_BAR_FULL:
+    case HP_BAR_GREEN:
         colour = PackRgb(112, 248, 168), dark = PackRgb(88, 208, 128);
-    else if (hp * 5 > maxHp)
+        break;
+    case HP_BAR_YELLOW:
         colour = PackRgb(248, 224, 0), dark = PackRgb(200, 168, 0);
-    else
+        break;
+    default:
         colour = PackRgb(248, 88, 56), dark = PackRgb(200, 56, 40);
+        break;
+    }
     FillRect(x, y, w, 5, PackRgb(40, 48, 56));
     FillRect(x + 1, y + 1, w - 2, 3, PackRgb(88, 96, 104));
-    if (hp && fill < 1)
-        fill = 1;
     if (fill)
     {
         FillRect(x + 1, y + 1, fill, 2, colour);
@@ -51,7 +58,7 @@ static void GenderSign(int x, int y, u8 gender)
 static const u8 *LevelText(u8 level)
 {
     static u8 text[16];
-    u8 *end = StringCopy(text, Ascii(CTR_TEXT("LV", "NV", "N", "LV", "NV")));
+    u8 *end = StringCopy(text, Ascii(CTR_TEXT("LV", "NV", "N", "LV", "NV", "LV", "Lv")));
 
     ConvertIntToDecimalStringN(end, level, STR_CONV_MODE_LEFT_ALIGN, 3);
     return text;
@@ -173,6 +180,16 @@ static bool8 DescIsYes(u8 desc)
         && desc != PARTYBOX_DESC_DONT_HAVE;
 }
 
+/* What the mon holds, as the party menu shows it: the item or mail sign at
+ * the foot of its icon, right of its centre, still while the icon hops. */
+static void PartyHeldSign(const ViewState *s, int slot, int cx, int cy)
+{
+    u8 held = s->party[slot].held;
+
+    if (held != HELD_NONE && sRes.holdTiles)
+        DrawSprite(sRes.holdTiles + (held == HELD_MAIL ? 32 : 0), 1, 1, cx, cy + 6, sRes.holdPal.c);
+}
+
 static void DrawPartyLead(const ViewState *s, int slot)
 {
     const MonView *mon = &s->party[slot];
@@ -185,6 +202,7 @@ static void DrawPartyLead(const ViewState *s, int slot)
     if (!mon->species)
         return;
     PartyIconAt(s, slot, x + 19, oy + 20);
+    PartyHeldSign(s, slot, x + 19, oy + 20);
     if (!mon->isEgg)
     {
         StyledRight(&sSmall, LevelText(mon->level), x + 98, oy + 6, STYLE_WHITE);
@@ -219,6 +237,7 @@ static void DrawPartyBox(const ViewState *s, int slot, int by)
     }
     oy = PlateEx(x, by, w, PARTY_ROW_H, PartyBoxColour(s, slot), PartyBoxState(s, slot), 36, 30, PlateCut(PARTY_ROW_H), 0);
     PartyIconAt(s, slot, x + 18, oy + 15);
+    PartyHeldSign(s, slot, x + 18, oy + 15);
     StyledStr(FitFont(&sNormal, mon->nick, 80), mon->nick, x + 44, TextY(oy, 16, &sNormal) + 1, STYLE_WHITE);
     if (!mon->isEgg)
     {
@@ -457,11 +476,11 @@ static const u8 *SummaryTabName(int page)
 {
     switch (page)
     {
-    case 0: return Ascii(CTR_TEXT("INFO", "INFO", "INFOS", "INFO", "INFO"));
-    case 1: return Ascii(CTR_TEXT("SKILLS", "HABILID.", "TALENTS", "ABILITÀ", "ATRIBUTOS"));
-    case 2: return Ascii(CTR_TEXT("MOVES", "MOVIM.", "CAPACITÉS", "MOSSE", "GOLPES"));
+    case 0: return Ascii(CTR_TEXT("INFO", "INFO", "INFOS", "INFO", "INFO", "INFO", "じょうほう"));
+    case 1: return Ascii(CTR_TEXT("SKILLS", "HABILID.", "TALENTS", "ABILITÀ", "ATRIBUTOS", "WERTE", "のうりょく"));
+    case 2: return Ascii(CTR_TEXT("MOVES", "MOVIM.", "CAPACITÉS", "MOSSE", "GOLPES", "ATTACKEN", "わざ"));
     }
-    return Ascii(CTR_TEXT("CONTEST", "CONCURSO", "CONCOURS", "GARE", "CONCURSO"));
+    return Ascii(CTR_TEXT("CONTEST", "CONCURSO", "CONCOURS", "GARE", "CONCURSO", "WETTBEW.", "コンテスト"));
 }
 
 static bool8 SummaryMovesPage(const struct CtrSummaryView *v)
@@ -469,22 +488,31 @@ static bool8 SummaryMovesPage(const struct CtrSummaryView *v)
     return v->page == 2 || v->page == 3;
 }
 
-/* The tabs; choosing or moving a move, only its page's and CANCEL. */
+/* The tabs; choosing or moving a move, only its page's and CANCEL. With
+ * CANCEL (choosing, moving or replacing a move) the tabs have three places
+ * and CANCEL the fourth: the last three tabs when the last one is to show
+ * (CONTEST its page, or open while replacing), else the first three. */
 static void DrawSummaryTabs(const ViewState *s)
 {
     const struct CtrSummaryView *v = &s->sv;
     bool8 picking = v->movesMode == CTR_SUM_MOVES_CHOOSE || v->movesMode == CTR_SUM_MOVES_SWITCH;
     bool8 cancel = v->movesMode != CTR_SUM_MOVES_VIEW;
     int n = 4, x = AREA_X, gap = 2, tw = (AREA_W - gap * (n - 1)) / n;
+    int first = 0, count = n;
 
-    for (int i = 0; i < n; ++i)
+    if (cancel)
+    {
+        bool8 lastShown = v->page == n - 1 || (!picking && n - 1 >= v->minPage && n - 1 <= v->maxPage);
+
+        count = n - 1;
+        first = lastShown ? 1 : 0;
+    }
+    for (int i = first; i < first + count; ++i)
     {
         bool8 live = i == v->page, open = i >= v->minPage && i <= v->maxPage && !(picking && !live);
         bool8 pressed = s->pressed == HIT_SUM_TAB + i;
         int oy;
 
-        if (cancel && i == n - 1 && !(open && !live))
-            break;
         oy = Plate(x, AREA_Y, tw, SUM_TAB_H, live || pressed ? sEmerald : open ? sLight : sGroupOff,
                    pressed ? PLATE_STATE_PRESSED : PLATE_STATE_NORMAL);
         TextIn(SummaryTabName(i), x, oy, tw, SUM_TAB_H, &sSmall, 'c', live || pressed ? STYLE_WHITE : open ? STYLE_INK
@@ -507,6 +535,60 @@ static void DrawSummaryTabs(const ViewState *s)
     }
 }
 
+/* The picture's part of the summary's left plate, above the name: where the
+ * mon moves, the part redrawn while only it does (DirtyRect). */
+#define SUM_PIC_BOTTOM (SUM_Y + 74)
+
+/*
+ * The mon as its sprite shows it now (CtrSummaryView's pic): the frame and
+ * colours of its OBJ tiles, centred on (cx, cy), moved, turned and scaled by
+ * its animation as the GBA draws an affine sprite - each pixel of its box
+ * mapped through the matrix back into the 64x64 picture - and kept to the
+ * box (x0, y0)-(x1, y1).
+ */
+static void DrawSummaryPicLive(const struct CtrSummaryView *v, int cx, int cy, int x0, int y0, int x1, int y1)
+{
+    bool8 affine = v->picAffine & ST_OAM_AFFINE_ON_MASK;
+    int half = v->picAffine == ST_OAM_AFFINE_DOUBLE ? 64 : 32;
+    u16 pal[16];
+
+    for (int i = 0; i < 16; ++i)
+        pal[i] = Rgb565(v->picPal[i]);
+    cx += v->picX;
+    cy += v->picY;
+    for (int py = -half; py < half; ++py)
+    {
+        int y = cy + py;
+
+        if (y < y0 || y >= y1)
+            continue;
+        for (int px = -half; px < half; ++px)
+        {
+            int x = cx + px, tx, ty;
+            u8 byte;
+
+            if (x < x0 || x >= x1)
+                continue;
+            if (affine)
+            {
+                tx = ((v->picMatrix[0] * px + v->picMatrix[1] * py) >> 8) + 32;
+                ty = ((v->picMatrix[2] * px + v->picMatrix[3] * py) >> 8) + 32;
+                if (tx < 0 || tx >= 64 || ty < 0 || ty >= 64)
+                    continue;
+            }
+            else
+            {
+                tx = v->picHFlip ? 31 - px : px + 32;
+                ty = py + 32;
+            }
+            byte = v->picTiles[((ty >> 3) * 8 + (tx >> 3)) * 32 + (ty & 7) * 4 + ((tx & 7) >> 1)];
+            byte = tx & 1 ? byte >> 4 : byte & 15;
+            if (byte)
+                Put(x, y, pal[byte]);
+        }
+    }
+}
+
 static void DrawSummaryMon(const ViewState *s)
 {
     const struct CtrSummaryView *v = &s->sv;
@@ -516,8 +598,9 @@ static void DrawSummaryMon(const ViewState *s)
     oy = PlateEx(x, SUM_Y, SUM_LEFT_W, SUM_H, sEmerald, PLATE_STATE_NORMAL, SUM_LEFT_W - 14, 15, PlateCut(SUM_H), 0);
     if (v->loading)
         return;
-    slot = FrontPic(SummaryPicSpecies(v), v->shiny);
-    if (slot >= 0)
+    if (v->picTiles)
+        DrawSummaryPicLive(v, x + 46, oy + 36, x + 2, SUM_Y + 2, x + SUM_LEFT_W - 2, min(oy + 70, SUM_PIC_BOTTOM));
+    else if ((slot = FrontPic(SummaryPicSpecies(v), v->shiny)) >= 0)
         DrawSprite(sFronts[slot].tiles, 8, 8, x + 14, oy + 4, sFronts[slot].pal.c);
     StyledStr(FitFont(&sNormal, v->nick, 78), v->nick, x + 8, oy + 72, STYLE_INK);
     if (!v->isEgg)
@@ -551,7 +634,7 @@ static void DrawSummaryInfo(const struct CtrSummaryView *v, int x, int y, int w,
 
     if (!v->isEgg)
     {
-        const u8 *item = v->item ? GetItemName(v->item) : Ascii(CTR_TEXT("NONE", "NINGUNO", "AUCUN", "NESSUNO", "NENHUM"));
+        const u8 *item = v->item ? GetItemName(v->item) : Ascii(CTR_TEXT("NONE", "NINGUNO", "AUCUN", "NESSUNO", "NENHUM", "KEINE", "なし"));
 
         for (int i = 0; i < 4; ++i)
         {
@@ -560,14 +643,14 @@ static void DrawSummaryInfo(const struct CtrSummaryView *v, int x, int y, int w,
             if (i)
                 FillRect(x + 8, ry, w - 16, 1, PackRgb(228, 218, 202));
         }
-        SummaryRow(x, w, y + 4, 20, Ascii(CTR_TEXT("TYPE", "TIPO", "TYPE", "TIPO", "TIPO")), NULL);
+        SummaryRow(x, w, y + 4, 20, Ascii(CTR_TEXT("TYPE", "TIPO", "TYPE", "TIPO", "TIPO", "TYP", "タイプ")), NULL);
         DrawTypeIcon(v->types[0], x + 90, y + 6);
         if (v->types[1] != v->types[0])
             DrawTypeIcon(v->types[1], x + 124, y + 6);
-        SummaryRow(x, w, y + 24, 20, Ascii(CTR_TEXT("OT", "EO", "DO", "AO", "TO")), v->ot);
-        SummaryRow(x, w, y + 44, 20, Ascii(CTR_TEXT("ID No.", "Nº ID", "No. ID", "N. ID", "Nº ID")),
+        SummaryRow(x, w, y + 24, 20, Ascii(CTR_TEXT("OT", "EO", "DO", "AO", "TO", "OT", "おや")), v->ot);
+        SummaryRow(x, w, y + 44, 20, Ascii(CTR_TEXT("ID No.", "Nº ID", "No. ID", "N. ID", "Nº ID", "ID-Nr.", "IDNo.")),
                    Number(v->otId, 5, STR_CONV_MODE_LEADING_ZEROS));
-        SummaryRow(x, w, y + 64, 20, Ascii(CTR_TEXT("ITEM", "OBJETO", "OBJET", "STRUMENTO", "ITEM")), item);
+        SummaryRow(x, w, y + 64, 20, Ascii(CTR_TEXT("ITEM", "OBJETO", "OBJET", "STRUMENTO", "ITEM", "ITEM", "どうぐ")), item);
     }
     else
     {
@@ -587,13 +670,13 @@ static const u8 *SummaryStatName(int i)
 {
     switch (i)
     {
-    case 0: return Ascii(CTR_TEXT("HP", "PS", "PV", "PS", "PS"));
-    case 1: return Ascii(CTR_TEXT("ATTACK", "ATAQUE", "ATTAQUE", "ATTACCO", "ATAQUE"));
-    case 2: return Ascii(CTR_TEXT("DEFENSE", "DEFENSA", "DÉFENSE", "DIFESA", "DEFESA"));
-    case 3: return Ascii(CTR_TEXT("SP. ATK", "AT. ESP.", "ATQ. SPÉ.", "ATT. SP.", "AT. ESP."));
-    case 4: return Ascii(CTR_TEXT("SP. DEF", "DEF. ESP.", "DÉF. SPÉ.", "DIF. SP.", "DEF. ESP."));
+    case 0: return Ascii(CTR_TEXT("HP", "PS", "PV", "PS", "PS", "KP", "HP"));
+    case 1: return Ascii(CTR_TEXT("ATTACK", "ATAQUE", "ATTAQUE", "ATTACCO", "ATAQUE", "ANGRIFF", "こうげき"));
+    case 2: return Ascii(CTR_TEXT("DEFENSE", "DEFENSA", "DÉFENSE", "DIFESA", "DEFESA", "VERTEID.", "ぼうぎょ"));
+    case 3: return Ascii(CTR_TEXT("SP. ATK", "AT. ESP.", "ATQ. SPÉ.", "ATT. SP.", "AT. ESP.", "SP. ANGR.", "とくこう"));
+    case 4: return Ascii(CTR_TEXT("SP. DEF", "DEF. ESP.", "DÉF. SPÉ.", "DIF. SP.", "DEF. ESP.", "SP. VERT.", "とくぼう"));
     }
-    return Ascii(CTR_TEXT("SPEED", "VELOC.", "VITESSE", "VELOCITÀ", "VELOC."));
+    return Ascii(CTR_TEXT("SPEED", "VELOC.", "VITESSE", "VELOCITÀ", "VELOC.", "TEMPO", "スピード"));
 }
 
 static void DrawSummarySkills(const ViewState *s, int x, int y, int w, int h)
@@ -627,13 +710,13 @@ static void DrawSummarySkills(const ViewState *s, int x, int y, int w, int h)
     if (CtrExtras_Get("ivs_evs"))
         AddHit(x, y, w, 6 * 16 + 8, HIT_SUM_STATS);
     ry = y + 102 + (extra ? 4 : 0);
-    StyledStr(&sSmall, Ascii(CTR_TEXT("EXP. POINTS", "PUNTOS EXP.", "POINTS EXP.", "PUNTI ESP.", "PONTOS EXP.")), x + 8,
+    StyledStr(&sSmall, Ascii(CTR_TEXT("EXP. POINTS", "PUNTOS EXP.", "POINTS EXP.", "PUNTI ESP.", "PONTOS EXP.", "E.-PUNKTE", "けいけんち")), x + 8,
               TextY(ry, 16, &sSmall), STYLE_GRAY);
     StyledRight(&sSmall, Number(v->exp, 7, STR_CONV_MODE_LEFT_ALIGN), x + w - 8, TextY(ry, 16, &sSmall), STYLE_INK);
     if (!extra)
     {
         ry += 15;
-        StyledStr(&sSmall, Ascii(CTR_TEXT("NEXT LV.", "SIG. NV.", "N. SUIV.", "LV SUCC.", "PRÓX. NV.")), x + 8,
+        StyledStr(&sSmall, Ascii(CTR_TEXT("NEXT LV.", "SIG. NV.", "N. SUIV.", "LV SUCC.", "PRÓX. NV.", "NÄCHST. LV", "つぎの レベルまで")), x + 8,
                   TextY(ry, 16, &sSmall), STYLE_GRAY);
         StyledRight(&sSmall, Number(v->toNextLevel, 7, STR_CONV_MODE_LEFT_ALIGN), x + w - 8, TextY(ry, 16, &sSmall),
                     STYLE_INK);
@@ -771,9 +854,9 @@ static void DrawSummaryMoveRows(const ViewState *s, int x, int y, int w, int h)
     {
         const struct ContestEffect *effect = &gContestEffects[gContestMoves[cursorMove].effect];
 
-        StyledStr(&sSmall, Ascii(CTR_TEXT("APPEAL", "EXHIB.", "SÉDUC.", "ESIB.", "APELO")), x + 10, oy + 3, STYLE_GRAY);
+        StyledStr(&sSmall, Ascii(CTR_TEXT("APPEAL", "EXHIB.", "SÉDUC.", "ESIB.", "APELO", "EINDRUCK", "アピール")), x + 10, oy + 3, STYLE_GRAY);
         StyledStr(&sSmall, Number(effect->appeal / 10, 1, STR_CONV_MODE_LEFT_ALIGN), x + 62, oy + 3, STYLE_INK);
-        StyledStr(&sSmall, Ascii(CTR_TEXT("JAM", "INTERF.", "PERTURB.", "INTRALC.", "INTERF.")), x + 90, oy + 3, STYLE_GRAY);
+        StyledStr(&sSmall, Ascii(CTR_TEXT("JAM", "INTERF.", "PERTURB.", "INTRALC.", "INTERF.", "STÖREN", "ぼうがい")), x + 90, oy + 3, STYLE_GRAY);
         StyledStr(&sSmall, Number(effect->jam / 10, 1, STR_CONV_MODE_LEFT_ALIGN), x + 150, oy + 3, STYLE_INK);
         TextLines(gContestEffectDescriptionPointers[gContestMoves[cursorMove].effect], x + 10, oy + 16, w - 20, 12, descLines,
                   &sSmall, STYLE_INK, TRUE);
@@ -782,10 +865,10 @@ static void DrawSummaryMoveRows(const ViewState *s, int x, int y, int w, int h)
     {
         u8 power = gBattleMoves[cursorMove].power, acc = gBattleMoves[cursorMove].accuracy;
 
-        StyledStr(&sSmall, Ascii(CTR_TEXT("POWER", "POTENCIA", "PUISS.", "POTENZA", "PODER")), x + 10, oy + 3, STYLE_GRAY);
+        StyledStr(&sSmall, Ascii(CTR_TEXT("POWER", "POTENCIA", "PUISS.", "POTENZA", "PODER", "STÄRKE", "いりょく")), x + 10, oy + 3, STYLE_GRAY);
         StyledStr(&sSmall, power > 1 ? Number(power, 3, STR_CONV_MODE_LEFT_ALIGN) : gText_ThreeDashes, x + 62, oy + 3,
                   STYLE_INK);
-        StyledStr(&sSmall, Ascii(CTR_TEXT("ACCURACY", "PRECISIÓN", "PRÉCISION", "PRECISIONE", "PRECISÃO")), x + 90, oy + 3,
+        StyledStr(&sSmall, Ascii(CTR_TEXT("ACCURACY", "PRECISIÓN", "PRÉCISION", "PRECISIONE", "PRECISÃO", "GENAUIGK.", "めいちゅう")), x + 90, oy + 3,
                   STYLE_GRAY);
         StyledStr(&sSmall, acc ? Number(acc, 3, STR_CONV_MODE_LEFT_ALIGN) : gText_ThreeDashes, x + 150, oy + 3, STYLE_INK);
         TextLines(gMoveDescriptionPointers[cursorMove - 1], x + 10, oy + 16, w - 20, 12, descLines, &sSmall, STYLE_INK, TRUE);
@@ -854,7 +937,9 @@ enum
 };
 #define BAG_LEFT_W 104
 #define BAG_LIST_X (AREA_X + BAG_LEFT_W + 4)
-#define BAG_LIST_W (AREA_W - BAG_LEFT_W - 4)
+/* Right of the list, its scroll bar, as the Pokédex's. */
+#define BAG_LIST_W (AREA_W - BAG_LEFT_W - 4 - 12)
+#define BAG_BAR_X (BAG_LIST_X + BAG_LIST_W + 2)
 #define BAG_ROW_H 14
 #define BAG_LIST_TOP (AREA_Y + 3)
 #define BAG_LIST_H (CTR_BAG_ROWS * BAG_ROW_H + 6)
@@ -921,6 +1006,19 @@ static void DrawBagList(const ViewState *s)
         /* Where the item being moved would go: a line over that row. */
         if (v->state == CTR_BAG_VIEW_SWAP && i == v->cursor && !moving)
             FillRect(x + 4, ry - 1, w - 8, 2, PackRgb(sEmerald.r, sEmerald.g, sEmerald.b));
+    }
+    /* The scroll bar: the rows shown out of those the pocket has, the thumb
+     * as long as the page is of the whole. */
+    Plate(BAG_BAR_X, AREA_Y, 10, BAG_LIST_H, sGroupOff, PLATE_STATE_NORMAL);
+    if (v->total > v->numRows && v->numRows > 0)
+    {
+        int th = BAG_LIST_H * v->numRows / v->total, room;
+
+        if (th < 18)
+            th = 18;
+        room = BAG_LIST_H - th;
+        Plate(BAG_BAR_X, AREA_Y + room * min(v->scroll, v->total - v->numRows) / (v->total - v->numRows), 10, th,
+              sEmerald, PLATE_STATE_NORMAL);
     }
 }
 
@@ -1158,16 +1256,16 @@ static void DrawDexList(const ViewState *s)
     DrawDexPic(v->species, AREA_X + DEX_LEFT_W / 2, AREA_Y + 52);
     AddHit(AREA_X, AREA_Y, DEX_LEFT_W, 104, HIT_DEX_LENS);
     oy = Plate(AREA_X, AREA_Y + 108, DEX_LEFT_W, 26, sLight, PLATE_STATE_NORMAL);
-    StyledStr(&sSmall, Ascii(CTR_TEXT("SEEN", "VISTOS", "VUS", "VISTI", "VISTOS")), AREA_X + 6, oy + 1, STYLE_GRAY);
+    StyledStr(&sSmall, Ascii(CTR_TEXT("SEEN", "VISTOS", "VUS", "VISTI", "VISTOS", "GESEHEN", "みつけた")), AREA_X + 6, oy + 1, STYLE_GRAY);
     StyledRight(&sSmall, Number(v->seen, 3, STR_CONV_MODE_LEFT_ALIGN), AREA_X + DEX_LEFT_W - 6, oy + 1, STYLE_INK);
-    StyledStr(&sSmall, Ascii(CTR_TEXT("OWN", "CAPTUR.", "PRIS", "PRESI", "CAPTUR.")), AREA_X + 6, oy + 12, STYLE_GRAY);
+    StyledStr(&sSmall, Ascii(CTR_TEXT("OWN", "CAPTUR.", "PRIS", "PRESI", "CAPTUR.", "GEFANGEN", "つかまえた")), AREA_X + 6, oy + 12, STYLE_GRAY);
     StyledRight(&sSmall, Number(v->own, 3, STR_CONV_MODE_LEFT_ALIGN), AREA_X + DEX_LEFT_W - 6, oy + 12, STYLE_INK);
     {
         bool8 pressed = s->pressed == HIT_DEX_SEARCH;
 
         oy = Plate(AREA_X, AREA_Y + 137, DEX_LEFT_W, 27, pressed ? sEmerald : sSlate,
                    pressed ? PLATE_STATE_PRESSED : PLATE_STATE_NORMAL);
-        TextIn(Ascii(CTR_TEXT("SEARCH", "BUSCAR", "CHERCHER", "CERCA", "BUSCAR")), AREA_X, oy, DEX_LEFT_W, 27, &sNormal, 'c',
+        TextIn(Ascii(CTR_TEXT("SEARCH", "BUSCAR", "CHERCHER", "CERCA", "BUSCAR", "SUCHEN", "さがす")), AREA_X, oy, DEX_LEFT_W, 27, &sNormal, 'c',
                STYLE_WHITE, 4);
         AddHit(AREA_X, AREA_Y + 137, DEX_LEFT_W, 27, HIT_DEX_SEARCH);
     }
@@ -1231,9 +1329,9 @@ static void DexTabCursor(int x, int oy, int w)
 
 static void DrawDexTabs(const ViewState *s)
 {
-    static const char *const names[][5] = {
-        {"INFO", "INFO", "INFO", "INFO", "INFO"}, {"AREA", "ÁREA", "ZONE", "AREA", "ÁREA"},
-        {"CRY", "GRITO", "CRI", "VERSO", "GRITO"}, {"SIZE", "TAMAÑO", "TAILLE", "ALTEZZA", "TAMANHO"}};
+    static const char *const names[][7] = {
+        {"INFO", "INFO", "INFO", "INFO", "INFO", "INFO", "せつめい"}, {"AREA", "ÁREA", "ZONE", "AREA", "ÁREA", "GEBIET", "ぶんぷ"},
+        {"CRY", "GRITO", "CRI", "VERSO", "GRITO", "RUF", "なきごえ"}, {"SIZE", "TAMAÑO", "TAILLE", "ALTEZZA", "TAMANHO", "GRÖSSE", "おおきさ"}};
     int n = 4, gap = 2, tw = (AREA_W - 64 - gap * (n - 1)) / n, x = AREA_X, oy;
     u8 state = s->dx.state;
     int liveTab = state == CTR_DEX_VIEW_AREA ? 1 : state == CTR_DEX_VIEW_CRY ? 2 : state == CTR_DEX_VIEW_SIZE ? 3 : 0;
@@ -1248,7 +1346,7 @@ static void DrawDexTabs(const ViewState *s)
 
         oy = Plate(x, AREA_Y, tw, DEX_TAB_H, live || pressed ? sEmerald : off ? sGroupOff : sLight,
                    pressed ? PLATE_STATE_PRESSED : PLATE_STATE_NORMAL);
-        TextIn(Ascii(CTR_TEXT(names[i][0], names[i][1], names[i][2], names[i][3], names[i][4])), x, oy, tw, DEX_TAB_H, &sSmall, 'c',
+        TextIn(Ascii(CTR_TEXT(names[i][0], names[i][1], names[i][2], names[i][3], names[i][4], names[i][5], names[i][6])), x, oy, tw, DEX_TAB_H, &sSmall, 'c',
                live || pressed ? STYLE_WHITE : off ? STYLE_GRAY : STYLE_INK, 3);
         if (i == cursor && !live)
             DexTabCursor(x, oy, tw);
@@ -1282,6 +1380,23 @@ static void DrawFootprint(const u8 *bits, int x, int y)
                     Put(x + (t & 1) * 8 + col, y + (t >> 1) * 8 + row, ink);
 }
 
+/* The entry, written for the game's narrower window in four lines, over
+ * the box's whole width in three: its line breaks become spaces, and it
+ * wraps in the normal font, or in the narrow one when that takes four. */
+static void DrawDexDescription(const u8 *text, int x, int y, int w)
+{
+    u8 joined[256];
+    int i;
+
+    for (i = 0; i < (int)sizeof(joined) - 1 && text[i] != EOS; ++i)
+        joined[i] = text[i] == CHAR_NEWLINE ? CHAR_SPACE : text[i];
+    joined[i] = EOS;
+    if (TextLinesBy(joined, x, y, w, 13, 4, &sNormal, &sNormal, STYLE_INK, FALSE) <= 3)
+        TextLinesBy(joined, x, y, w, 13, 3, &sNormal, &sNormal, STYLE_INK, TRUE);
+    else
+        TextLines(joined, x, y, w, 13, 3, &sNarrow, STYLE_INK, TRUE);
+}
+
 static void DrawDexInfo(const ViewState *s)
 {
     const struct CtrDexView *v = &s->dx;
@@ -1308,19 +1423,19 @@ static void DrawDexInfo(const ViewState *s)
     }
     oy = Plate(AREA_X, y + 100, AREA_W, AREA_Y + AREA_H - y - 100, sLight, PLATE_STATE_NORMAL);
     if (v->description)
-        TextLines(v->description, AREA_X + 10, oy + 2, AREA_W - 20, 13, 3, &sNormal, STYLE_INK, TRUE);
+        DrawDexDescription(v->description, AREA_X + 10, oy + 2, AREA_W - 20);
 }
 
 /* The list's START menu over the list, as the game's slides up over it: its
  * entries as plates, the cursor's dotted; a tap beside it closes it. */
 static void DrawDexMenu(const ViewState *s)
 {
-    static const char *const names[5][5] = {
-        {"BACK TO LIST", "VOLVER A LISTA", "RETOUR LISTE", "TORNA ALLA LISTA", "VOLTAR À LISTA"},
-        {"LIST TOP", "PRINCIPIO", "HAUT DE LISTE", "INIZIO LISTA", "INÍCIO DA LISTA"},
-        {"LIST BOTTOM", "FINAL", "BAS DE LISTE", "FINE LISTA", "FIM DA LISTA"},
-        {"BACK TO POKéDEX", "VOLVER A POKéDEX", "RETOUR POKéDEX", "TORNA AL POKéDEX", "VOLTAR À POKéDEX"},
-        {"CLOSE POKéDEX", "CERRAR POKéDEX", "FERMER POKéDEX", "CHIUDI POKéDEX", "FECHAR POKéDEX"},
+    static const char *const names[5][7] = {
+        {"BACK TO LIST", "VOLVER A LISTA", "RETOUR LISTE", "TORNA ALLA LISTA", "VOLTAR À LISTA", "ZUR LISTE", "リストに もどる"},
+        {"LIST TOP", "PRINCIPIO", "HAUT DE LISTE", "INIZIO LISTA", "INÍCIO DA LISTA", "LISTENANFANG", "リストの はじめ"},
+        {"LIST BOTTOM", "FINAL", "BAS DE LISTE", "FINE LISTA", "FIM DA LISTA", "LISTENENDE", "リストの おわり"},
+        {"BACK TO POKéDEX", "VOLVER A POKéDEX", "RETOUR POKéDEX", "TORNA AL POKéDEX", "VOLTAR À POKéDEX", "ZUM POKéDEX", "ずかんに もどる"},
+        {"CLOSE POKéDEX", "CERRAR POKéDEX", "FERMER POKéDEX", "CHIUDI POKéDEX", "FECHAR POKéDEX", "POKéDEX SCHLIESSEN", "ずかんを とじる"},
     };
     const struct CtrDexView *v = &s->dx;
     int n = v->menuCount <= 5 ? v->menuCount : 5, pitch = 26, h = 23;
@@ -1341,8 +1456,8 @@ static void DrawDexMenu(const ViewState *s)
         oy = PlateEx(x, by, w, h, pressed ? sEmerald : colour, pressed ? PLATE_STATE_PRESSED : PLATE_STATE_NORMAL,
                      30, 30, PlateCut(h), 0);
         EntryDot(x + 14, oy + h / 2, i == v->menuCursor ? sEmerald : colour);
-        TextIn(Ascii(CTR_TEXT(names[name][0], names[name][1], names[name][2], names[name][3], names[name][4])), x + 30, oy, w - 32, h,
-               FitFont(&sNormal, Ascii(CTR_TEXT(names[name][0], names[name][1], names[name][2], names[name][3], names[name][4])), w - 40),
+        TextIn(Ascii(CTR_TEXT(names[name][0], names[name][1], names[name][2], names[name][3], names[name][4], names[name][5], names[name][6])), x + 30, oy, w - 32, h,
+               FitFont(&sNormal, Ascii(CTR_TEXT(names[name][0], names[name][1], names[name][2], names[name][3], names[name][4], names[name][5], names[name][6])), w - 40),
                'l', STYLE_WHITE, 4);
         AddHit(x, by, w, h, HIT_DEX_MENU + i);
     }
@@ -1353,10 +1468,10 @@ static void DrawDexMenu(const ViewState *s)
  * under them; searching, and its result, over them. */
 static void DrawDexSearch(const ViewState *s)
 {
-    static const char *const labels[CTR_DEX_PARAMS][5] = {
-        {"NAME", "NOMBRE", "NOM", "NOME", "NOME"}, {"COLOR", "COLOR", "COULEUR", "COLORE", "COR"},
-        {"TYPE 1", "TIPO 1", "TYPE 1", "TIPO 1", "TIPO 1"}, {"TYPE 2", "TIPO 2", "TYPE 2", "TIPO 2", "TIPO 2"},
-        {"ORDER", "ORDEN", "ORDRE", "ORDINE", "ORDEM"}, {"MODE", "MODO", "MODE", "MODO", "MODO"},
+    static const char *const labels[CTR_DEX_PARAMS][7] = {
+        {"NAME", "NOMBRE", "NOM", "NOME", "NOME", "NAME", "なまえ"}, {"COLOR", "COLOR", "COULEUR", "COLORE", "COR", "FARBE", "いろ"},
+        {"TYPE 1", "TIPO 1", "TYPE 1", "TIPO 1", "TIPO 1", "TYP 1", "タイプ1"}, {"TYPE 2", "TIPO 2", "TYPE 2", "TIPO 2", "TIPO 2", "TYP 2", "タイプ2"},
+        {"ORDER", "ORDEN", "ORDRE", "ORDINE", "ORDEM", "ORDNUNG", "ならびかた"}, {"MODE", "MODO", "MODE", "MODO", "MODO", "MODUS", "モード"},
     };
     const struct CtrDexView *v = &s->dx;
     int n = 0, rowH, panelH = AREA_H - 34, oy, i, row = 0;
@@ -1380,7 +1495,7 @@ static void DrawDexSearch(const ViewState *s)
             FillRgb(AREA_X + 8, ry, AREA_W - 16, 1, sRule);
         if (pressed || focus)
             FillRgb(AREA_X + 4, ry + 1, AREA_W - 8, rowH - 1, sGroupOff);
-        TextIn(Ascii(CTR_TEXT(labels[i][0], labels[i][1], labels[i][2], labels[i][3], labels[i][4])), AREA_X + 6, ry, 120, rowH,
+        TextIn(Ascii(CTR_TEXT(labels[i][0], labels[i][1], labels[i][2], labels[i][3], labels[i][4], labels[i][5], labels[i][6])), AREA_X + 6, ry, 120, rowH,
                &sSmall, 'l', focus ? STYLE_GREEN : STYLE_INK, 6);
         if (v->paramText[i])
             StyledCentre(FitFont(&sSmall, v->paramText[i], wv - 24), v->paramText[i], left + wv / 2,
@@ -1396,9 +1511,9 @@ static void DrawDexSearch(const ViewState *s)
     }
     /* SEARCH, SHIFT, CANCEL. */
     {
-        static const char *const names[3][5] = {
-            {"SEARCH", "BUSCAR", "CHERCHER", "CERCA", "BUSCAR"}, {"SHIFT", "ORDENAR", "TRIER", "ORDINA", "ORDENAR"},
-            {"CANCEL", "SALIR", "RETOUR", "ESCI", "SAIR"},
+        static const char *const names[3][7] = {
+            {"SEARCH", "BUSCAR", "CHERCHER", "CERCA", "BUSCAR", "SUCHEN", "さがす"}, {"SHIFT", "ORDENAR", "TRIER", "ORDINA", "ORDENAR", "SORTIEREN", "ならべる"},
+            {"CANCEL", "SALIR", "RETOUR", "ESCI", "SAIR", "ZURÜCK", "やめる"},
         };
         int by = AREA_Y + AREA_H - 30, bw = (AREA_W - 8) / 3;
 
@@ -1410,7 +1525,7 @@ static void DrawDexSearch(const ViewState *s)
             Rgb colour = i == 0 ? sRedPlate : i == 1 ? sSlate : sCancelGrey;
 
             oy = Plate(bx, by, bw, 30, pressed ? sEmerald : colour, pressed ? PLATE_STATE_PRESSED : PLATE_STATE_NORMAL);
-            TextIn(Ascii(CTR_TEXT(names[i][0], names[i][1], names[i][2], names[i][3], names[i][4])), bx, oy, bw, 30, &sNormal, 'c',
+            TextIn(Ascii(CTR_TEXT(names[i][0], names[i][1], names[i][2], names[i][3], names[i][4], names[i][5], names[i][6])), bx, oy, bw, 30, &sNormal, 'c',
                    STYLE_WHITE, 4);
             if (v->searchState == CTR_DEX_SEARCH_CHOOSE)
                 AddHit(bx, by, bw, 30, id);
@@ -1511,7 +1626,7 @@ static void DrawDexArea(const ViewState *s)
         if (v->areaUnknown)
         {
             StringAppend(text, Ascii(": "));
-            StringAppend(text, Ascii(CTR_TEXT("AREA UNKNOWN", "ZONA DESCONOCIDA", "ZONE INCONNUE", "ZONA SCONOSC.", "ÁREA DESCONHECIDA")));
+            StringAppend(text, Ascii(CTR_TEXT("AREA UNKNOWN", "ZONA DESCONOCIDA", "ZONE INCONNUE", "ZONA SCONOSC.", "ÁREA DESCONHECIDA", "GEBIET UNBEK.", "ぶんぷ ふめい")));
         }
         TextIn(text, px, o, pw, ph, FitFont(&sSmall, text, pw - 12), 'l', STYLE_INK, 6);
     }
@@ -1532,7 +1647,7 @@ static void DrawDexCry(const ViewState *s)
         int by = AREA_Y + AREA_H - 40;
 
         oy = Plate(AREA_X, by, 100, 40, pressed ? sEmerald : sSlate, pressed ? PLATE_STATE_PRESSED : PLATE_STATE_NORMAL);
-        TextIn(Ascii(CTR_TEXT("PLAY CRY", "OÍR GRITO", "ÉCOUTER", "ASCOLTA", "OUVIR GRITO")), AREA_X, oy, 100, 40, &sNormal, 'c',
+        TextIn(Ascii(CTR_TEXT("PLAY CRY", "OÍR GRITO", "ÉCOUTER", "ASCOLTA", "OUVIR GRITO", "RUF ABSPIELEN", "なきごえ")), AREA_X, oy, 100, 40, &sNormal, 'c',
                STYLE_WHITE, 4);
         AddHit(AREA_X, by, 100, 40, HIT_DEX_PLAY);
         AddHit(AREA_X, y, 100, 96, HIT_DEX_PLAY);
@@ -1556,7 +1671,7 @@ static void DrawDexCry(const ViewState *s)
     {
         int ph = AREA_Y + AREA_H - y - h - 4, sw = 12, sx = x + w - 10 * (sw + 2) - 8;
 
-        TextIn(Ascii(CTR_TEXT("VOLUME", "VOLUMEN", "VOLUME", "VOLUME", "VOLUME")), x + 6, oy, sx - x - 10, ph, &sSmall, 'l',
+        TextIn(Ascii(CTR_TEXT("VOLUME", "VOLUMEN", "VOLUME", "VOLUME", "VOLUME", "LAUTSTÄRKE", "おんりょう")), x + 6, oy, sx - x - 10, ph, &sSmall, 'l',
                STYLE_GRAY, 4);
         for (int i = 0; i < 10; ++i)
             FillRect(sx + i * (sw + 2), oy + 8, sw, ph - 18,
