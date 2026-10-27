@@ -5981,9 +5981,6 @@ bool CtrVoxel_Update(void)
     sStats.updateMs = (float)((svcGetSystemTick() - started) * 1000.0 / SYSCLOCK_ARM11);
     if (sStats.updateMs > sStats.updatePeakMs)
         sStats.updatePeakMs = sStats.updateMs;
-    sStatus = sAtlasCapacityBlocked ? "capacity"
-            : sWarmupUntil != 0 && sStats.chunksMissing != 0 ? "loading"
-            : sDrawCount != 0 ? "on" : "nomesh";
     /* A map on screen without its atlas: the frame is the 2D picture (or
      * the battle's 2D scenery). Logged once the run of them is over, so a
      * console log tells a flash of 2D from the world switched off. */
