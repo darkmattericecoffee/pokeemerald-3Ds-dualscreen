@@ -44,6 +44,8 @@ export interface Grid {
   voted: string[];
   /** Every picture someone judged, versions or not. */
   reviews: Record<string, Review>;
+  /** The pictures the game ships planes for (the AI-made packs). */
+  builtin: string[];
   items: Record<string, GridItem>;
 }
 
@@ -63,7 +65,12 @@ export interface Version {
   saved_at: number;
   uploaded_at: number;
   mine: boolean;
+  /** The game's own planes (the AI-made pack): id 0, last in the list, never voted on or synced. */
+  builtin?: boolean;
 }
+
+/** The id of the built-in version on a picture's page. */
+export const BUILTIN_ID = 0;
 
 export interface Near {
   key: string;

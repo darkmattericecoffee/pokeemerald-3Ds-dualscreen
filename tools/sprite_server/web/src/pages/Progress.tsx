@@ -27,6 +27,7 @@ const Tile = React.memo(function Tile({
   picture,
   fresh,
   review,
+  builtin,
 }: {
   k: string;
   name: string;
@@ -34,13 +35,15 @@ const Tile = React.memo(function Tile({
   picture: boolean;
   fresh: boolean;
   review: ReviewStatus | undefined;
+  /** The game ships AI-made planes for it (shown on its page as a version of their own). */
+  builtin: boolean;
 }) {
   return (
     <Link
       to={`/mon/${k}`}
       className={cn(
         "group relative flex flex-col items-center rounded-xl border-2 bg-card px-1.5 pb-2 pt-1.5 text-center transition-transform hover:-translate-y-0.5 focus-visible:-translate-y-0.5",
-        item ? "border-border shadow-chunky-sm" : "border-dashed border-hairline",
+        item ? "border-border shadow-chunky-sm" : builtin ? "border-hairline" : "border-dashed border-hairline",
         review === "fix" && "border-solid border-primary",
         review === "ok" && "border-solid border-success",
         item?.final && "bg-[linear-gradient(180deg,color-mix(in_srgb,var(--accent)_30%,var(--card)),var(--card)_55%)]",
@@ -59,7 +62,8 @@ const Tile = React.memo(function Tile({
             decoding="async"
             className={cn(
               "pixelated size-16 transition-[filter,opacity]",
-              !item && "opacity-35 brightness-0 group-hover:opacity-60 dark:invert dark:opacity-25",
+              !item && !builtin && "opacity-35 brightness-0 group-hover:opacity-60 dark:invert dark:opacity-25",
+              !item && builtin && "opacity-80 group-hover:opacity-100",
             )}
           />
         ) : (
@@ -69,6 +73,8 @@ const Tile = React.memo(function Tile({
       <span className="line-clamp-1 w-full text-xs font-extrabold">{name}</span>
       {item ? (
         <span className="mt-0.5 line-clamp-1 w-full text-[11px] font-semibold text-muted-foreground">{item.author}</span>
+      ) : builtin ? (
+        <span className="mt-0.5 text-[11px] font-semibold text-muted-foreground/70">AI only</span>
       ) : (
         <span className="mt-0.5 text-[11px] font-semibold text-muted-foreground/70">not done</span>
       )}
@@ -178,6 +184,7 @@ export function ProgressPage() {
   }, [grid, kind, show, reviewShow, query]);
 
   const pictures = React.useMemo(() => new Set(grid?.pictures ?? []), [grid]);
+  const builtin = React.useMemo(() => new Set(grid?.builtin ?? []), [grid]);
 
   if (error) return <p className="panel p-5 font-bold">Could not load the progress: {String((error as Error).message)}</p>;
 
@@ -308,6 +315,7 @@ export function ProgressPage() {
               picture={pictures.has(k)}
               fresh={fresh.has(k)}
               review={grid.reviews[k]?.status}
+              builtin={builtin.has(k)}
             />
           ))}
         </div>

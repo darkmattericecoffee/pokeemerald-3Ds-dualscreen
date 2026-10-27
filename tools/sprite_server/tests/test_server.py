@@ -141,6 +141,13 @@ class ServerTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="spriteserver-")
         cls.data = os.path.join(cls.tmp, "data")
+        # The game's own planes: a pack with Squirtle's front (two frames) and a trainer's (one).
+        os.makedirs(os.path.join(cls.data, "builtin"))
+        body = bytes([0x10] * editfile.FRAME_BYTES * 2) + bytes([0x32] * editfile.FRAME_BYTES)
+        pack = editfile.PACK_HEADER.pack(editfile.PACK_MAGIC, 2, 4, 2, 64, 64)
+        pack += editfile.PACK_INDEX.pack(7, 0, 32) + editfile.PACK_INDEX.pack(0x4000 | 12, 1, 32 + 2 * editfile.FRAME_BYTES)
+        with open(os.path.join(cls.data, "builtin", "mons.bin"), "wb") as f:
+            f.write(pack + body)
         cls.httpd = server.make_server(cls.data, "127.0.0.1", 0)
         cls.base = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -764,6 +771,25 @@ class ServerTest(unittest.TestCase):
                          [("review", "b150", "", "ok"), ("review", "150", "ok", "fix"),
                           ("review", "b150", "ok", ""), ("review", "150", "fix", "")])
         self.assertEqual(Browser(self.base).api("POST", "/api/web/mons/150/review", {"status": "ok"})[0], 401)
+
+    def test_builtin_planes(self):
+        """The game's own planes are a version of their own on the web: id 0, last, never voted on."""
+        b, _ = self.linked_client("ai-viewer")
+        status, mon = b.api("GET", "/api/web/mons/007")
+        self.assertEqual(status, 200)
+        ai = mon["versions"][-1]
+        self.assertEqual((ai["version_id"], ai["builtin"], ai["frames"], ai["planes"]), (0, True, 2, 2))
+        status, _, data = b.go("GET", "/api/builtin/007.bin")
+        self.assertEqual(status, 200)
+        edit = editfile.parse(data, "007")
+        self.assertEqual((edit.frames, edit.plane(0, 0, 0), edit.plane(0, 1, 0)), (2, 0, 1))
+        self.assertEqual(editfile.parse(b.go("GET", "/api/builtin/t012.bin")[2], "t012").frames, 1)
+        self.assertEqual(b.go("GET", "/api/builtin/008.bin")[0], 404)
+        self.assertIsNone(next((v for v in b.api("GET", "/api/web/mons/008")[1]["versions"] if v.get("builtin")), None))
+        self.assertIn("007", b.api("GET", "/api/web/grid")[1]["builtin"])
+        self.assertEqual(Browser(self.base).go("GET", "/api/builtin/007.bin")[0], 401)
+        # Not something to vote on.
+        self.assertEqual(b.api("POST", "/api/web/mons/007/vote", {"version_id": 0, "on": True})[0], 404)
 
     def test_follow_the_web(self):
         """The web app says what it shows; the same account's console reads it (GET /api/focus)."""

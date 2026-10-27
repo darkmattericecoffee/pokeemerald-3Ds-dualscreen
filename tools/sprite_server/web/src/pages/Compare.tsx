@@ -83,7 +83,7 @@ export function ComparePage() {
                 ) : (
                   <span className="size-6" />
                 )}
-                #{v.version_id} {v.author}
+                {v.builtin ? "" : `#${v.version_id} `}{v.author}
                 {on ? <Check className="size-3.5" /> : <Plus className="size-3.5" />}
               </button>
             );

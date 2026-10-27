@@ -1,6 +1,7 @@
 import {
   ArrowLeft,
   ArrowLeftRight,
+  Bot,
   ChevronLeft,
   ChevronRight,
   Columns3,
@@ -144,8 +145,13 @@ export function VersionMeta({ v, mon }: { v: Version; mon: Mon }) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="font-pixel text-[10px] text-muted-foreground">#{v.version_id}</span>
+        {!v.builtin && <span className="font-pixel text-[10px] text-muted-foreground">#{v.version_id}</span>}
         <span className="font-black">{v.author}</span>
+        {v.builtin && (
+          <Badge variant="dark">
+            <Bot /> {mon.current === null ? "In the game now" : "Built in"}
+          </Badge>
+        )}
         {isCurrent && (
           <Badge variant="current">
             {mon.pinned ? <Pin /> : <Gamepad2 />} {mon.pinned ? "Current · pinned" : "Current"}
@@ -161,7 +167,11 @@ export function VersionMeta({ v, mon }: { v: Version; mon: Mon }) {
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs font-semibold text-muted-foreground">
         {v.signed && v.signed.toLowerCase() !== v.author.toLowerCase() && <span>signed {v.signed}</span>}
         {v.console && <span>from {v.console}</span>}
-        <span title={when(v.uploaded_at)}>{ago(v.uploaded_at)}</span>
+        {v.builtin ? (
+          <span>{mon.current === null ? "what the game shows until someone uploads one" : "replaced in the game by the current version"}</span>
+        ) : (
+          <span title={when(v.uploaded_at)}>{ago(v.uploaded_at)}</span>
+        )}
         {v.revision > 0 && <span>rev {v.revision}</span>}
         <span>
           {plural(v.planes, "plane")}, {plural(v.frames, "frame")}
@@ -198,7 +208,7 @@ function VersionCard({
   const act = useMonAction(mon.key);
   const voted = mon.favourites.includes(v.version_id);
   const isCurrent = mon.current === v.version_id;
-  const canDelete = mon.admin || v.mine;
+  const canDelete = !v.builtin && (mon.admin || v.mine);
   return (
     <Card
       className={cn(
@@ -225,7 +235,9 @@ function VersionCard({
         <div className="min-w-0 flex-1">
           <VersionMeta v={v} mon={mon} />
           <div className="mt-1.5 text-xs font-bold">
-            {v.voters.length ? (
+            {v.builtin ? (
+              <span className="text-muted-foreground/70">Made by the AI with the game; not voted on</span>
+            ) : v.voters.length ? (
               <span className="text-muted-foreground">
                 <Star className="mr-1 inline size-3 fill-accent text-border" />
                 {v.voters.join(", ")}
@@ -237,12 +249,14 @@ function VersionCard({
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <VoteButton
-          voted={voted}
-          votes={v.votes}
-          onToggle={() => vote.mutate({ versionId: v.version_id, on: !voted })}
-          className="basis-full sm:basis-auto"
-        />
+        {!v.builtin && (
+          <VoteButton
+            voted={voted}
+            votes={v.votes}
+            onToggle={() => vote.mutate({ versionId: v.version_id, on: !voted })}
+            className="basis-full sm:basis-auto"
+          />
+        )}
         <Button
           variant={showing ? "secondary" : "outline"}
           onClick={onShow}
@@ -261,11 +275,13 @@ function VersionCard({
         >
           <Columns3 /> {comparing ? "Picked" : "Compare"}
         </Button>
-        <Button variant="outline" onClick={onShow3ds} title="Show this version on your 3DS now" className="flex-1 sm:flex-none">
-          <Gamepad2 />
-          <span className="xl:hidden">3DS</span>
-          <span className="hidden xl:inline">Show on 3DS</span>
-        </Button>
+        {!v.builtin && (
+          <Button variant="outline" onClick={onShow3ds} title="Show this version on your 3DS now" className="flex-1 sm:flex-none">
+            <Gamepad2 />
+            <span className="xl:hidden">3DS</span>
+            <span className="hidden xl:inline">Show on 3DS</span>
+          </Button>
+        )}
         <DropdownMenu>
           <DropdownTrigger asChild>
             <Button variant="ghost" size="icon" aria-label="More">
@@ -274,11 +290,11 @@ function VersionCard({
           </DropdownTrigger>
           <DropdownContent>
             <DropdownItem asChild>
-              <a href={`/dl/v${v.version_id}/${mon.key}.bin`} download>
+              <a href={v.builtin ? `/api/builtin/${mon.key}.bin` : `/dl/v${v.version_id}/${mon.key}.bin`} download>
                 <Download /> Download .bin
               </a>
             </DropdownItem>
-            {mon.admin && !(isCurrent && mon.pinned) && (
+            {mon.admin && !v.builtin && !(isCurrent && mon.pinned) && (
               <DropdownItem onSelect={() => act.mutate({ kind: "pin", versionId: v.version_id })}>
                 <Pin /> {isCurrent ? "Pin as current" : "Make current (pin)"}
               </DropdownItem>
@@ -329,7 +345,7 @@ function CompareTray({ mon, picked, edits, picture, onRemove, onClear }: {
             return (
               <span key={vid} className="flex shrink-0 items-center gap-1 rounded-lg border-2 border-border bg-muted py-0.5 pl-0.5 pr-1">
                 {e && <EditPixels edit={e} picture={picture} frame={0} look="colour" className="size-8" />}
-                <span className="text-xs font-black">#{vid}</span>
+                <span className="text-xs font-black">{vid === 0 ? "AI" : `#${vid}`}</span>
                 <button onClick={() => onRemove(vid)} aria-label={`Unpick version ${vid}`} className="rounded p-0.5 hover:bg-card">
                   <X className="size-3.5" />
                 </button>
@@ -442,7 +458,7 @@ export function MonPage() {
               {shown && (
                 <div className="pointer-events-none absolute left-3 top-3 z-20 flex flex-wrap gap-1.5">
                   <span className="rounded-md bg-black/45 px-2 py-1 text-xs font-black text-white backdrop-blur">
-                    #{shown.version_id} · {shown.author}
+                    {shown.builtin ? shown.author : `#${shown.version_id} · ${shown.author}`}
                   </span>
                   {mon.current === shown.version_id && (
                     <Badge variant="current">

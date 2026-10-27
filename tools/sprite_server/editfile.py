@@ -179,6 +179,33 @@ def parse(data: bytes, expect_key: Optional[str] = None) -> Edit:
     raise EditError("size %d does not match %d frames" % (len(data), frames))
 
 
+# ── The game's own planes ───────────────────────────────────────────────────
+
+PACK_MAGIC = b"EM3DSTM1"
+PACK_HEADER = struct.Struct("<8sHBBHH")
+PACK_INDEX = struct.Struct("<HHI")
+
+
+def pack_entries(blob: bytes) -> dict:
+    """The pictures of a planes pack (romfs/stereo/mons.bin or backs.bin, the AI-made planes the game
+    ships with: 3ds_stereo_mon.c), each as the bytes of an edit file without a trailer. A pack is a
+    16-byte header ("EM3DSTM1", u16 count, u8 planes, u8 frames, u16 width, u16 height), an index of
+    (u16 id, u16 frames when 1..frames else the header's, u32 offset), then the frames' nibbles."""
+    magic, count, planes, frames, w, h = PACK_HEADER.unpack_from(blob)
+    if magic != PACK_MAGIC or (w, h) != (DIM, DIM):
+        raise EditError("not a planes pack")
+    out = {}
+    for i in range(count):
+        ident, own, off = PACK_INDEX.unpack_from(blob, PACK_HEADER.size + PACK_INDEX.size * i)
+        n = min(own if 0 < own <= frames else frames, MAX_FRAMES)
+        key = id_to_key(ident)
+        body = blob[off:off + n * FRAME_BYTES]
+        if key_to_id(key) is None or len(body) != n * FRAME_BYTES:
+            continue
+        out[key] = PACK_HEADER.pack(MAGIC, ident, planes, n, DIM, DIM) + body
+    return out
+
+
 # ── Colours ─────────────────────────────────────────────────────────────────
 
 def plane_colours(planes: int) -> List[RGB]:

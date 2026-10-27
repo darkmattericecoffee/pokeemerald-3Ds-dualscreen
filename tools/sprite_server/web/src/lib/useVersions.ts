@@ -2,15 +2,17 @@ import { useQueries } from "@tanstack/react-query";
 import { api } from "./api";
 import { parseEdit, type EditFile } from "./editfile";
 import { keys, usePicture } from "./queries";
-import type { Mon } from "./types";
+import { BUILTIN_ID, type Mon } from "./types";
 
 /** The game picture and the edit files of the given versions, fetched together. */
 export function useVersionFiles(mon: Mon | undefined, ids: number[]) {
   const picture = usePicture(mon?.key ?? "", !!mon?.picture);
   const edits = useQueries({
+    // Id 0 is the game's own planes (BUILTIN_ID), one per picture.
     queries: ids.map((vid) => ({
-      queryKey: keys.edit(vid),
-      queryFn: async () => parseEdit(await api.bytes(`/api/versions/${vid}`)),
+      queryKey: vid === BUILTIN_ID ? ["builtin", mon?.key ?? ""] : keys.edit(vid),
+      queryFn: async () =>
+        parseEdit(await api.bytes(vid === BUILTIN_ID ? `/api/builtin/${mon?.key}.bin` : `/api/versions/${vid}`)),
       staleTime: Infinity,
       gcTime: 30 * 60_000,
     })),

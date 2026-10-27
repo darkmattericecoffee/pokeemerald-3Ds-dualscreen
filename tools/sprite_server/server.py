@@ -19,10 +19,12 @@ Standard library only (Python 3.9+).
 import argparse
 import collections
 import getpass
+import hashlib
 import json
 import os
 import re
 import secrets
+import struct
 import sys
 import threading
 import time
@@ -56,6 +58,16 @@ class Config:
         self.db_path = os.path.join(data_dir, "sprites.db")
         self.sprites: Dict[str, editfile.Sprite] = {}
         self.names: Dict[str, str] = {}
+        # The planes the game ships with (the AI-made packs, <data>/builtin/*.bin): shown on the web as a
+        # version of their own, never voted on or sent to consoles (which have them already).
+        self.builtin: Dict[str, bytes] = {}
+        folder = os.path.join(data_dir, "builtin")
+        for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+            if name.endswith(".bin"):
+                try:
+                    self.builtin.update(editfile.pack_entries(open(os.path.join(folder, name), "rb").read()))
+                except (editfile.EditError, struct.error) as err:
+                    print("builtin/%s skipped: %s" % (name, err), file=sys.stderr)
         path = sprites_path or os.path.join(data_dir, "sprites.json")
         if os.path.exists(path):
             raw = json.load(open(path))
@@ -241,6 +253,32 @@ def bin_response(row, req: Request, attachment: bool = False) -> Response:
     return Response(bytes(row["data"]), 200, "application/octet-stream", headers)
 
 
+@route("GET", r"/api/builtin/" + KEY + r"\.bin", "web")
+def builtin_bin(req: Request, key: str) -> Response:
+    """The game's own planes of a picture (the AI-made pack), as an edit file."""
+    data = CFG.builtin.get(key)
+    if data is None:
+        return api_error(404, "the game has no planes for %s" % key)
+    etag = '"%s"' % hashlib.sha256(data).hexdigest()
+    headers = [("ETag", etag), ("Cache-Control", "private, no-cache"),
+               ("Content-Disposition", 'attachment; filename="%s-builtin.bin"' % key)]
+    if req.headers.get("If-None-Match") == etag:
+        return Response(b"", 304, "application/octet-stream", headers)
+    return Response(data, 200, "application/octet-stream", headers)
+
+
+def builtin_json(key: str) -> Optional[dict]:
+    """The game's own planes as a version card: id 0, never voted on, pinned or synced."""
+    data = CFG.builtin.get(key)
+    if data is None:
+        return None
+    edit = editfile.parse(data)
+    return {"version_id": 0, "builtin": True, "author": "AI (built in)", "signed": "", "console": None,
+            "revision": 0, "final": False, "votes": 0, "voters": [], "planes": len(edit.used_planes()),
+            "frames": edit.frames, "sha256": edit.sha256, "size": len(data), "saved_at": 0, "uploaded_at": 0,
+            "mine": False}
+
+
 @route("GET", r"/dl/v(?P<vid>\d+)/" + KEY + r"\.bin", "web")
 def download(req: Request, vid: str, key: str) -> Response:
     row = req.conn.execute("SELECT * FROM versions WHERE id = ? AND mon_key = ?", (int(vid), key)).fetchone()
@@ -403,6 +441,7 @@ def web_grid(req: Request) -> Response:
         "names": {k: CFG.name(k) for k in keys},
         "pictures": [k for k in keys if k in CFG.sprites],
         "mine": sorted(mine), "voted": sorted(voted), "reviews": db.reviews(req.conn),
+        "builtin": sorted(k for k in keys if k in CFG.builtin),
         "items": {r["mon_key"]: {"version_id": r["version_id"], "pinned": bool(r["pinned"]), "final": bool(r["final"]),
                                  "author": r["author"], "versions": r["n"],
                                  "uploaded_at": r["uploaded_at"]} for r in rows}})
@@ -437,7 +476,7 @@ def mon_json(req: Request, key: str) -> dict:
                       "planes": r["planes"], "frames": r["frames"],
                       "sha256": r["sha256"], "size": r["size"], "saved_at": r["saved_at"],
                       "uploaded_at": r["uploaded_at"], "mine": r["user_id"] == uid}
-                     for r in by_votes(rows, counts)]}
+                     for r in by_votes(rows, counts)] + [b for b in [builtin_json(key)] if b]}
 
 
 @route("GET", r"/api/web/mons/" + KEY, "web")
