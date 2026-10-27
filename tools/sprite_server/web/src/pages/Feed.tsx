@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, Gamepad2, Pin, PinOff, Star, ThumbsDown, ThumbsUp, Trash2, Upload, UserRoundPen } from "lucide-react";
+import { Activity, ArrowDown, CircleCheck, Gamepad2, Pin, PinOff, Star, ThumbsDown, ThumbsUp, Trash2, Upload, UserRoundPen, Wrench } from "lucide-react";
 import * as React from "react";
 import { Link, useSearchParams } from "react-router";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,16 @@ const ICONS: Record<FeedKind, { icon: React.ComponentType<{ className?: string }
   delete: { icon: Trash2, tone: "bg-muted text-muted-foreground" },
   name: { icon: UserRoundPen, tone: "bg-sky-500 text-white" },
   console: { icon: Gamepad2, tone: "bg-sky-500 text-white" },
+  review: { icon: Wrench, tone: "bg-primary text-white" },
 };
+
+/** A review line's icon follows what it was set to. */
+function iconFor(item: FeedItem) {
+  if (item.kind !== "review") return ICONS[item.kind];
+  if (item.status === "ok") return { icon: CircleCheck, tone: "bg-success text-success-foreground" };
+  if (item.status === "fix") return ICONS.review;
+  return { icon: Wrench, tone: "bg-muted text-muted-foreground" };
+}
 
 function Who({ item }: { item: FeedItem }) {
   return <span className="font-black">{item.me ? "You" : (item.who ?? "Someone")}</span>;
@@ -92,6 +101,20 @@ function Sentence({ item }: { item: FeedItem }) {
           <Who item={item} /> {item.me ? "are" : "is"} now called <span className="font-black">{item.new_name}</span>
         </>
       );
+    case "review":
+      return item.status ? (
+        <>
+          <Who item={item} /> marked <Picture item={item} />{" "}
+          <span className={cn("font-black", item.status === "fix" ? "text-primary" : "text-success")}>
+            {item.status === "fix" ? "needs work" : "good enough"}
+          </span>{" "}
+          <span className="text-muted-foreground">for the beta</span>
+        </>
+      ) : (
+        <>
+          <Who item={item} /> cleared the beta mark on <Picture item={item} />
+        </>
+      );
     case "console":
       return (
         <>
@@ -144,7 +167,7 @@ function Fate({ item }: { item: FeedItem }) {
 }
 
 const Row = React.memo(function Row({ item, fresh }: { item: FeedItem; fresh: boolean }) {
-  const { icon: Icon, tone } = ICONS[item.kind];
+  const { icon: Icon, tone } = iconFor(item);
   return (
     <li className={cn("panel flex items-center gap-3 p-3 sm:gap-4 sm:p-4", fresh && "animate-fresh")}>
       <span className={cn("grid size-8 shrink-0 place-items-center rounded-full border-2 border-border", tone)} aria-hidden>
@@ -217,7 +240,7 @@ export function FeedPage() {
             { value: "all", label: "All" },
             { value: "uploads", label: "Uploads" },
             { value: "votes", label: "Votes" },
-            { value: "curation", label: "Pins & deletes", title: "Pins, unpins and deleted versions" },
+            { value: "curation", label: "Curation", title: "Pins, unpins, deleted versions and beta review marks" },
             { value: "people", label: "People", title: "Name changes and linked consoles" },
           ]}
         />

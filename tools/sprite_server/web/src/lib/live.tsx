@@ -66,6 +66,7 @@ export function LiveProvider({ session, children }: { session: Session; children
         case "vote":
         case "pin":
         case "delete":
+        case "review":
           qc.invalidateQueries({ queryKey: keys.grid });
           qc.invalidateQueries({ queryKey: keys.mon(ev.key) });
           qc.invalidateQueries({ queryKey: ["feed"] });

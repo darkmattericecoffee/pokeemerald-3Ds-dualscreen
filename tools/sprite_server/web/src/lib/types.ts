@@ -24,6 +24,16 @@ export interface GridItem {
   uploaded_at: number;
 }
 
+/** The review before the beta: "fix" must be redone first, "ok" is good enough (refined along the way). */
+export type ReviewStatus = "fix" | "ok";
+
+export interface Review {
+  status: ReviewStatus;
+  /** Who set it, as the site shows them; null when the account is gone. */
+  by: string | null;
+  at: number;
+}
+
 export interface Grid {
   rev: number;
   dex_count: number;
@@ -32,6 +42,8 @@ export interface Grid {
   pictures: string[];
   mine: string[];
   voted: string[];
+  /** Every picture someone judged, versions or not. */
+  reviews: Record<string, Review>;
   items: Record<string, GridItem>;
 }
 
@@ -71,6 +83,7 @@ export interface Mon {
   favourites: number[];
   max_favourites: number;
   admin: boolean;
+  review: Review | null;
   versions: Version[];
 }
 
@@ -124,7 +137,7 @@ export interface Users {
 }
 
 /** One line of the activity feed (/api/web/feed). */
-export type FeedKind = "upload" | "vote" | "unvote" | "pin" | "unpin" | "delete" | "name" | "console";
+export type FeedKind = "upload" | "vote" | "unvote" | "pin" | "unpin" | "delete" | "name" | "console" | "review";
 
 export interface FeedItem {
   id: number;
@@ -154,6 +167,9 @@ export interface FeedItem {
   new_name?: string;
   /** A console link: the console's name. */
   console?: string;
+  /** A review: what it is now and was before ("" = not judged). */
+  status?: ReviewStatus | "";
+  was?: ReviewStatus | "";
 }
 
 export type FeedFilter = "all" | "uploads" | "votes" | "curation" | "people";
@@ -182,6 +198,7 @@ export type LiveEvent =
   | { type: "vote"; key: string; version_id?: number; on?: boolean; who?: string; at: number }
   | { type: "pin"; key: string; version_id: number | null; at: number }
   | { type: "delete"; key: string; version_id: number; at: number }
+  | { type: "review"; key: string; status: ReviewStatus | ""; who?: string; at: number }
   | { type: "name"; name?: string; at: number }
   | { type: "console"; action: "linked" | "unlinked"; device_id: number; console_name?: string; at: number }
   | { type: "users"; at: number };

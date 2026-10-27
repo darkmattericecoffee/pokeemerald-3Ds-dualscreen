@@ -17,6 +17,7 @@ import {
 import * as React from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { FollowBadge } from "@/components/FollowBadge";
+import { ReviewBar } from "@/components/ReviewBar";
 import { EditPixels, PicturePixels } from "@/components/Pixels";
 import { ViewControls } from "@/components/ViewControls";
 import { VoteButton } from "@/components/VoteButton";
@@ -410,6 +411,7 @@ export function MonPage() {
   return (
     <div className={cn("grid gap-5", picked.length > 0 && "pb-24")}>
       <MonHeader mon={mon} />
+      <ReviewBar mon={mon} />
 
       {mon.versions.length === 0 ? (
         <Card className="grid place-items-center gap-4 p-8 text-center">

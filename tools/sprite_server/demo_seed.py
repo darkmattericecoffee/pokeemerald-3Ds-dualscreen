@@ -139,6 +139,12 @@ def main() -> None:
         for name in uids:
             if len(ids) > 1 and rnd.random() < 0.5:
                 db.set_votes(conn, uids[name], key, rnd.sample(ids, rnd.randint(1, min(2, len(ids)))))
+    # Beta review marks on about a third of the pictures, versions or not.
+    fronts = ["%03u" % n for n in range(1, 387)]
+    for key in fronts + ["b" + k for k in fronts]:
+        roll = rnd.random()
+        if roll < 0.3:
+            db.set_review(conn, uids[rnd.choice(list(uids))], key, "fix" if roll < 0.1 else "ok")
     with open(os.path.join(a.data, "demo-passwords.txt"), "a") as f:
         f.write("".join(l + "\n" for l in lines))
     print("%d versions of %d pictures; passwords in %s" % (made, len(set(keys)),

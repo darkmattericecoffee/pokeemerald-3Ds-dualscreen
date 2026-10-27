@@ -93,6 +93,15 @@ CREATE TABLE IF NOT EXISTS activity (
     detail     TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS activity_by_time ON activity (at, id);
+-- The review before the beta, one per picture (front and back apart), whoever set it last:
+-- 'fix' (must be redone before the beta) or 'ok' (good enough, refined along the way). No row:
+-- not judged yet.
+CREATE TABLE IF NOT EXISTS reviews (
+    mon_key    TEXT PRIMARY KEY,
+    status     TEXT NOT NULL CHECK (status IN ('fix', 'ok')),
+    user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    at         INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 INSERT OR IGNORE INTO meta (k, v) VALUES ('seq', 0);
 -- Moves on with every upload, vote, pin and delete: the web pages poll it.
@@ -219,7 +228,7 @@ def current_rev(conn: sqlite3.Connection) -> int:
 
 # ── Activity (the feed) ─────────────────────────────────────────────────────
 
-ACTIVITY_KINDS = ("upload", "vote", "unvote", "pin", "unpin", "delete", "name", "console")
+ACTIVITY_KINDS = ("upload", "vote", "unvote", "pin", "unpin", "delete", "name", "console", "review")
 
 
 def log(conn: sqlite3.Connection, kind: str, user_id: Optional[int] = None, mon_key: Optional[str] = None,
@@ -582,3 +591,38 @@ def delete_version(conn: sqlite3.Connection, version_id: int, by: Optional[int] 
             _set_best(conn, row["mon_key"])
         bump_rev(conn)
         return row["mon_key"]
+
+
+# ── Reviews (what the beta needs) ───────────────────────────────────────────
+
+REVIEW_STATUSES = ("fix", "ok")
+
+
+def reviews(conn: sqlite3.Connection) -> dict:
+    """{key: {"status", "by", "at"}} for every picture someone judged."""
+    return {r["mon_key"]: {"status": r["status"], "by": r["who"], "at": r["at"]} for r in conn.execute(
+        "SELECT r.mon_key, r.status, r.at, COALESCE(u.display_name, u.name) AS who "
+        "FROM reviews r LEFT JOIN users u ON u.id = r.user_id")}
+
+
+def review(conn: sqlite3.Connection, key: str) -> Optional[dict]:
+    r = conn.execute("SELECT r.status, r.at, COALESCE(u.display_name, u.name) AS who FROM reviews r "
+                     "LEFT JOIN users u ON u.id = r.user_id WHERE r.mon_key = ?", (key,)).fetchone()
+    return None if r is None else {"status": r["status"], "by": r["who"], "at": r["at"]}
+
+
+def set_review(conn: sqlite3.Connection, user_id: int, key: str, status: str) -> bool:
+    """'fix', 'ok' or '' (not judged). True when it changed anything."""
+    with Tx(conn):
+        row = conn.execute("SELECT status FROM reviews WHERE mon_key = ?", (key,)).fetchone()
+        before = row["status"] if row else ""
+        if before == status:
+            return False
+        if status:
+            conn.execute("INSERT OR REPLACE INTO reviews (mon_key, status, user_id, at) VALUES (?, ?, ?, ?)",
+                         (key, status, user_id, now()))
+        else:
+            conn.execute("DELETE FROM reviews WHERE mon_key = ?", (key,))
+        log(conn, "review", user_id, key, status=status, was=before)
+        bump_rev(conn)
+        return True

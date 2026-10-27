@@ -402,7 +402,7 @@ def web_grid(req: Request) -> Response:
         "rev": db.current_rev(req.conn), "dex_count": DEX_COUNT, "others": others,
         "names": {k: CFG.name(k) for k in keys},
         "pictures": [k for k in keys if k in CFG.sprites],
-        "mine": sorted(mine), "voted": sorted(voted),
+        "mine": sorted(mine), "voted": sorted(voted), "reviews": db.reviews(req.conn),
         "items": {r["mon_key"]: {"version_id": r["version_id"], "pinned": bool(r["pinned"]), "final": bool(r["final"]),
                                  "author": r["author"], "versions": r["n"],
                                  "uploaded_at": r["uploaded_at"]} for r in rows}})
@@ -430,7 +430,7 @@ def mon_json(req: Request, key: str) -> dict:
         "prev": near(prev), "next": near(nxt), "other": near(other),
         "current": cur["version_id"] if cur else None, "pinned": bool(cur and cur["pinned"]),
         "favourites": db.favourites(req.conn, uid, key), "max_favourites": db.MAX_FAVOURITES,
-        "admin": req.user["role"] == "admin",
+        "admin": req.user["role"] == "admin", "review": db.review(req.conn, key),
         "versions": [{"version_id": r["id"], "author": r["uploader"], "signed": r["author_tag"],
                       "console": r["console_name"], "revision": r["revision"], "final": bool(r["final"]),
                       "votes": counts.get(r["id"], 0), "voters": voters.get(r["id"], []),
@@ -481,6 +481,23 @@ def web_pin(req: Request, key: str) -> Response:
 def web_unpin(req: Request, key: str) -> Response:
     db.unpin(req.conn, key, by=req.user["id"])
     publish("pin", key=key, version_id=None)
+    return json_resp(mon_json(req, key))
+
+
+def review_status(body: dict) -> Optional[str]:
+    """The status a review POST sent ('fix', 'ok' or '' to clear), or None."""
+    s = body.get("status")
+    return s if s == "" or s in db.REVIEW_STATUSES else None
+
+
+@route("POST", r"/api/web/mons/" + KEY + r"/review", "web")
+def web_review(req: Request, key: str) -> Response:
+    """{"status": "fix" | "ok" | ""}: the picture's review before the beta, for everybody."""
+    status = review_status(json_body(req) or {})
+    if editfile.key_to_id(key) is None or status is None:
+        return api_error(400, "send status: fix, ok or an empty string")
+    if db.set_review(req.conn, req.user["id"], key, status):
+        publish("review", key=key, status=status, who=db.shown_name(req.user))
     return json_resp(mon_json(req, key))
 
 
@@ -701,7 +718,8 @@ def web_events(req: Request):
     return Stream(req.user["id"], db.current_rev(req.conn))
 
 
-FEED_KINDS = {"all": None, "uploads": ("upload",), "votes": ("vote", "unvote"), "curation": ("pin", "unpin", "delete"),
+FEED_KINDS = {"all": None, "uploads": ("upload",), "votes": ("vote", "unvote"),
+              "curation": ("pin", "unpin", "delete", "review"),
               "people": ("name", "console")}
 FEED_LIMIT = 40
 
@@ -729,7 +747,7 @@ def web_feed(req: Request) -> Response:
             item["current"] = r["live_id"] is not None and r["current_id"] == r["version_id"]
             item["owner"] = r["owner"] or detail.get("owner")
             item["final"] = bool(r["live_final"]) if r["live_id"] is not None else bool(detail.get("final", 0))
-        for k in ("revision", "again", "base", "own", "console"):
+        for k in ("revision", "again", "base", "own", "console", "status", "was"):
             if k in detail and k not in item:
                 item[k] = detail[k]
         if "name" in detail:  # a name change: the picture name slot is free, the new name goes beside it
@@ -880,6 +898,17 @@ def api_votes(req: Request, key: str) -> Response:
     return json_resp(_versions_json(req, key))
 
 
+@route("POST", r"/api/mons/" + KEY + r"/review", "device")
+def api_review(req: Request, key: str) -> Response:
+    """{"status": "fix" | "ok" | ""}: the review button beside the editor's SAVE."""
+    status = review_status(req.json())
+    if editfile.key_to_id(key) is None or status is None:
+        return api_error(400, "send status: fix, ok or an empty string")
+    if db.set_review(req.conn, req.device["user_id"], key, status):
+        publish("review", key=key, status=status, who=req.device["console_name"])
+    return json_resp({"key": key, "status": status})
+
+
 @route("POST", r"/api/versions/(?P<vid>\d+)/delete", "device")
 def api_delete_version(req: Request, vid: str) -> Response:
     """A console takes its account's own version off the server (an admin's console any)."""
@@ -929,7 +958,8 @@ def api_sync(req: Request) -> Response:
 @route("GET", r"/api/mons", "any")
 def api_mons(req: Request) -> Response:
     """Every picture with a current version: how many versions it has, and how many of them are the
-    caller's favourites (a console's Pokédex marks both)."""
+    caller's favourites (a console's Pokédex marks both); and every picture's review, versions or
+    not ("reviews": {key: "fix" | "ok"})."""
     rows = req.conn.execute(
         "SELECT c.mon_key, c.version_id, c.pinned, v.final, COALESCE(u.display_name, u.name) AS author, "
         "(SELECT COUNT(*) FROM versions w WHERE w.mon_key = c.mon_key AND w.replaced_by IS NULL) AS n, "
@@ -939,7 +969,8 @@ def api_mons(req: Request) -> Response:
     return json_resp({"rev": db.current_rev(req.conn),
                       "items": [{"key": r["mon_key"], "name": CFG.name(r["mon_key"]), "current": r["version_id"],
                                  "pinned": bool(r["pinned"]), "final": bool(r["final"]), "author": r["author"],
-                                 "versions": r["n"], "mine": r["mine"]} for r in rows]})
+                                 "versions": r["n"], "mine": r["mine"]} for r in rows],
+                      "reviews": {k: r["status"] for k, r in db.reviews(req.conn).items()}})
 
 
 @route("GET", r"/api/focus", "device")

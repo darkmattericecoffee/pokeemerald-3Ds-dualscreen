@@ -732,6 +732,39 @@ class ServerTest(unittest.TestCase):
         # The console API cannot read it; a signed-out browser neither.
         self.assertEqual(Browser(self.base).api("GET", "/api/web/feed")[0], 401)
 
+    def test_beta_review(self):
+        """One mark per picture for everybody, from the web or a console, versions or not; in the grid,
+        the picture's page, the consoles' list and the feed."""
+        kim_web, kim = self.linked_client("rev")
+        api = lambda method, path, obj=None: client.request(
+            method, self.base + path, kim["token"], json.dumps(obj).encode() if obj is not None else None,
+            "application/json" if obj is not None else None)
+        # A picture nobody uploaded can be judged too (the game's own planes).
+        status, mon = kim_web.api("POST", "/api/web/mons/150/review", {"status": "fix"})
+        self.assertEqual(status, 200, mon)
+        self.assertEqual((mon["review"]["status"], mon["review"]["by"]), ("fix", "rev"))
+        status, _, body = api("POST", "/api/mons/b150/review", {"status": "ok"})
+        self.assertEqual((status, json.loads(body)), (200, {"key": "b150", "status": "ok"}))
+        self.assertEqual(api("POST", "/api/mons/150/review", {"status": "meh"})[0], 400)
+        self.assertEqual(kim_web.api("POST", "/api/web/mons/150/review", {})[0], 400)
+        # Another person overrides it; the grid and the consoles' list see the last one.
+        self.assertEqual(self.admin.api("POST", "/api/web/mons/150/review", {"status": "ok"})[0], 200)
+        status, grid = kim_web.api("GET", "/api/web/grid")
+        self.assertEqual((grid["reviews"]["150"]["status"], grid["reviews"]["150"]["by"]), ("ok", "boss"))
+        self.assertEqual(grid["reviews"]["b150"]["status"], "ok")
+        status, _, body = api("GET", "/api/mons")
+        self.assertEqual(json.loads(body)["reviews"], {"150": "ok", "b150": "ok"})
+        # Cleared: gone everywhere; clearing again changes nothing and logs nothing.
+        self.assertEqual(api("POST", "/api/mons/b150/review", {"status": ""})[0], 200)
+        self.assertEqual(api("POST", "/api/mons/b150/review", {"status": ""})[0], 200)
+        status, mon = kim_web.api("GET", "/api/web/mons/b150")
+        self.assertIsNone(mon["review"])
+        status, feed = kim_web.api("GET", "/api/web/feed?kind=curation&limit=4")
+        self.assertEqual([(i["kind"], i["key"], i["status"], i["was"]) for i in feed["items"][:4]],
+                         [("review", "b150", "", "ok"), ("review", "150", "ok", "fix"),
+                          ("review", "b150", "ok", ""), ("review", "150", "fix", "")])
+        self.assertEqual(Browser(self.base).api("POST", "/api/web/mons/150/review", {"status": "ok"})[0], 401)
+
     def test_follow_the_web(self):
         """The web app says what it shows; the same account's console reads it (GET /api/focus)."""
         b, cfg = self.linked_client("kim")

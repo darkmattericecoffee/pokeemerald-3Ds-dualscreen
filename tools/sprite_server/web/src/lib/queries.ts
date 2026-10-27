@@ -2,7 +2,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { toast } from "sonner";
 import { api, ApiError, setCsrf } from "./api";
 import { parseEdit, parsePicture } from "./editfile";
-import type { Account, Feed, FeedFilter, FocusState, Grid, Mon, PairingCode, PictureData, Session, Users } from "./types";
+import type { Account, Feed, FeedFilter, FocusState, Grid, Mon, PairingCode, PictureData, ReviewStatus, Session, Users } from "./types";
 
 export const keys = {
   session: ["session"] as const,
@@ -106,6 +106,34 @@ export function useVote(key: string) {
                   voters: on ? [...v.voters, me] : v.voters.filter((n, i) => n !== me || v.voters.indexOf(me) !== i),
                 },
           ),
+        });
+      }
+      return { before };
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.before) qc.setQueryData(keys.mon(key), ctx.before);
+      errorToast(err);
+    },
+    onSuccess: (mon) => {
+      qc.setQueryData(keys.mon(key), mon);
+      qc.invalidateQueries({ queryKey: keys.grid });
+    },
+  });
+}
+
+/** The picture's review before the beta ("" clears it); shown at once, settled by the server. */
+export function useReview(key: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (status: ReviewStatus | "") => api.post<Mon>(`/api/web/mons/${key}/review`, { status }),
+    onMutate: async (status) => {
+      await qc.cancelQueries({ queryKey: keys.mon(key) });
+      const before = qc.getQueryData<Mon>(keys.mon(key));
+      if (before) {
+        const me = qc.getQueryData<Session>(keys.session)?.user?.display_name ?? "you";
+        qc.setQueryData<Mon>(keys.mon(key), {
+          ...before,
+          review: status ? { status, by: me, at: Math.floor(Date.now() / 1000) } : null,
         });
       }
       return { before };

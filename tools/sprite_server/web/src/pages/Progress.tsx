@@ -1,4 +1,4 @@
-import { Search, Star, Users2, X } from "lucide-react";
+import { CircleCheck, Search, Star, Users2, Wrench, X } from "lucide-react";
 import * as React from "react";
 import { Link, useSearchParams } from "react-router";
 import { Input } from "@/components/ui/input";
@@ -6,11 +6,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Segmented } from "@/components/ui/toggle-group";
 import { useLive } from "@/lib/live";
 import { postFocus, useGrid } from "@/lib/queries";
-import type { Grid, GridItem } from "@/lib/types";
+import type { Grid, GridItem, ReviewStatus } from "@/lib/types";
 import { cn, shownNumber } from "@/lib/utils";
 
 type Kind = "front" | "back" | "other";
 type Show = "all" | "open" | "done" | "mine" | "voted";
+type ReviewShow = "any" | ReviewStatus | "unjudged";
 
 function keysFor(grid: Grid, kind: Kind): string[] {
   const fronts = Array.from({ length: grid.dex_count }, (_, i) => String(i + 1).padStart(3, "0"));
@@ -25,12 +26,14 @@ const Tile = React.memo(function Tile({
   item,
   picture,
   fresh,
+  review,
 }: {
   k: string;
   name: string;
   item: GridItem | undefined;
   picture: boolean;
   fresh: boolean;
+  review: ReviewStatus | undefined;
 }) {
   return (
     <Link
@@ -38,6 +41,8 @@ const Tile = React.memo(function Tile({
       className={cn(
         "group relative flex flex-col items-center rounded-xl border-2 bg-card px-1.5 pb-2 pt-1.5 text-center transition-transform hover:-translate-y-0.5 focus-visible:-translate-y-0.5",
         item ? "border-border shadow-chunky-sm" : "border-dashed border-hairline",
+        review === "fix" && "border-solid border-primary",
+        review === "ok" && "border-solid border-success",
         item?.final && "bg-[linear-gradient(180deg,color-mix(in_srgb,var(--accent)_30%,var(--card)),var(--card)_55%)]",
         fresh && "animate-fresh",
       )}
@@ -69,6 +74,17 @@ const Tile = React.memo(function Tile({
       )}
       {item?.final && (
         <Star className="absolute right-1.5 top-1.5 size-3.5 fill-accent text-border" aria-label="final" />
+      )}
+      {review && (
+        <span
+          className={cn(
+            "absolute -left-1.5 -top-2 grid size-5 place-items-center rounded-full border-2 border-border text-white",
+            review === "fix" ? "bg-primary" : "bg-success",
+          )}
+          title={review === "fix" ? "Needs work before the beta" : "Good enough for the beta"}
+        >
+          {review === "fix" ? <Wrench className="size-3" /> : <CircleCheck className="size-3" />}
+        </span>
       )}
       {item && item.versions > 1 && (
         <span
@@ -106,6 +122,7 @@ export function ProgressPage() {
   const [params, setParams] = useSearchParams();
   const kind = (params.get("kind") as Kind) || "front";
   const show = (params.get("show") as Show) || "all";
+  const reviewShow = (params.get("review") as ReviewShow) || "any";
   const [query, setQuery] = React.useState(params.get("q") ?? "");
   const { fresh } = useLive();
   const set = (k: string, v: string, dflt: string) => {
@@ -131,6 +148,10 @@ export function ProgressPage() {
       done: all.length,
       versions: all.reduce((n, i) => n + i.versions, 0),
       contested: all.filter((i) => i.versions > 1).length,
+      fix: Object.values(grid.reviews).filter((r) => r.status === "fix").length,
+      ok: Object.values(grid.reviews).filter((r) => r.status === "ok").length,
+      // Every picture that can be judged: the fronts, the backs and the trainers' and players' pictures.
+      judgeable: grid.dex_count * 2 + grid.others.length,
     };
   }, [grid]);
 
@@ -145,6 +166,8 @@ export function ProgressPage() {
       if (show === "done" && !it) return false;
       if (show === "mine" && !mine.has(k)) return false;
       if (show === "voted" && !voted.has(k)) return false;
+      const r = grid.reviews[k]?.status;
+      if (reviewShow === "unjudged" ? r : reviewShow !== "any" && r !== reviewShow) return false;
       if (q) {
         const num = k.replace(/^[btp]/, "");
         if (!(grid.names[k] ?? "").toLowerCase().includes(q) && !num.includes(q.padStart(Math.min(3, q.length), "0")) && String(Number(num)) !== q)
@@ -152,7 +175,7 @@ export function ProgressPage() {
       }
       return true;
     });
-  }, [grid, kind, show, query]);
+  }, [grid, kind, show, reviewShow, query]);
 
   const pictures = React.useMemo(() => new Set(grid?.pictures ?? []), [grid]);
 
@@ -160,7 +183,7 @@ export function ProgressPage() {
 
   return (
     <div className="grid gap-5 sm:gap-6">
-      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {stats ? (
           <>
             <Stat label="Fronts" done={stats.fronts} total={stats.total} tone="bg-primary" />
@@ -183,9 +206,23 @@ export function ProgressPage() {
                 with two or more versions · {stats.versions} versions in all
               </span>
             </div>
+            <Link
+              to={`/?${new URLSearchParams({ ...(kind !== "front" && { kind }), review: "fix" })}`}
+              className="panel col-span-2 flex flex-col gap-2 p-3 transition-transform hover:-translate-y-0.5 sm:p-4 lg:col-span-1"
+              title="Show the pictures that need work"
+            >
+              <span className="font-pixel text-[10px] uppercase text-muted-foreground">Before the beta</span>
+              <div className="flex items-center gap-2 text-2xl font-black tabular-nums sm:text-3xl">
+                <Wrench className="size-6 text-primary" /> {stats.fix}
+                <span className="text-base font-extrabold text-muted-foreground"> to redo</span>
+              </div>
+              <span className="text-xs font-semibold text-muted-foreground">
+                {stats.ok} good enough · {stats.judgeable - stats.fix - stats.ok} not judged
+              </span>
+            </Link>
           </>
         ) : (
-          [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28 rounded-xl" />)
+          [0, 1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-28 rounded-xl" />)
         )}
       </section>
 
@@ -211,6 +248,18 @@ export function ProgressPage() {
             { value: "done", label: "Done" },
             { value: "mine", label: "Mine" },
             { value: "voted", label: <><Users2 className="!size-3.5" />Voted</>, title: "Pictures you voted on" },
+          ]}
+        />
+        <Segmented<ReviewShow>
+          label="Beta review"
+          size="sm"
+          value={reviewShow}
+          onChange={(v) => set("review", v, "any")}
+          options={[
+            { value: "any", label: "Any mark", title: "Judged or not" },
+            { value: "fix", label: <><Wrench className="!size-3.5" />Needs work</>, title: "Must be redone before the beta" },
+            { value: "ok", label: <><CircleCheck className="!size-3.5" />Good enough</>, title: "Refined along the way" },
+            { value: "unjudged", label: "Not judged" },
           ]}
         />
         <div className="relative ml-auto w-full sm:w-56">
@@ -258,6 +307,7 @@ export function ProgressPage() {
               item={grid.items[k]}
               picture={pictures.has(k)}
               fresh={fresh.has(k)}
+              review={grid.reviews[k]?.status}
             />
           ))}
         </div>
