@@ -254,10 +254,8 @@ export function useUserAction() {
 /** Tells the server what this page shows (the picture, the versions compared, the one selected), for
  *  the account's consoles that follow the web. */
 export function postFocus(key: string | null, versionIds: number[] = [], selected: number | null = null) {
-  // The game's own planes (id 0) are on every console already: not something to follow.
-  api
-    .post("/api/web/focus", { key, version_ids: versionIds.filter((v) => v !== 0), selected: selected || null })
-    .catch(() => {});
+  // Id 0 is the game's own planes (BUILTIN_ID): a following console shows its pack's.
+  api.post("/api/web/focus", { key, version_ids: versionIds, selected }).catch(() => {});
 }
 
 /** Whether a 3DS of this account follows the web right now (it asks every couple of seconds). */
@@ -277,8 +275,8 @@ export function useShowOn3ds() {
     mutationFn: (v: { key: string; versionIds?: number[]; selected?: number | null; what?: string }) =>
       api.post<FocusState>("/api/web/focus", {
         key: v.key,
-        version_ids: (v.versionIds ?? []).filter((id) => id !== 0),
-        selected: v.selected || null,
+        version_ids: v.versionIds ?? [],
+        selected: v.selected ?? null,
         push: true,
       }),
     onSuccess: (f, v) => {

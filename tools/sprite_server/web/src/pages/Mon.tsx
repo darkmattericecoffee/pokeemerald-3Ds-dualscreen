@@ -275,13 +275,11 @@ function VersionCard({
         >
           <Columns3 /> {comparing ? "Picked" : "Compare"}
         </Button>
-        {!v.builtin && (
-          <Button variant="outline" onClick={onShow3ds} title="Show this version on your 3DS now" className="flex-1 sm:flex-none">
-            <Gamepad2 />
-            <span className="xl:hidden">3DS</span>
-            <span className="hidden xl:inline">Show on 3DS</span>
-          </Button>
-        )}
+        <Button variant="outline" onClick={onShow3ds} title="Show this version on your 3DS now" className="flex-1 sm:flex-none">
+          <Gamepad2 />
+          <span className="xl:hidden">3DS</span>
+          <span className="hidden xl:inline">Show on 3DS</span>
+        </Button>
         <DropdownMenu>
           <DropdownTrigger asChild>
             <Button variant="ghost" size="icon" aria-label="More">
@@ -515,7 +513,12 @@ export function MonPage() {
                 onCompare={() => togglePick(v.version_id)}
                 onShow3ds={() => {
                   setChosen(v.version_id);
-                  show3ds.mutate({ key: mon.key, versionIds: picked, selected: v.version_id, what: `#${v.version_id} by ${v.author}` });
+                  show3ds.mutate({
+                    key: mon.key,
+                    versionIds: picked,
+                    selected: v.version_id,
+                    what: v.builtin ? "the AI planes" : `#${v.version_id} by ${v.author}`,
+                  });
                 }}
               />
             ))}
