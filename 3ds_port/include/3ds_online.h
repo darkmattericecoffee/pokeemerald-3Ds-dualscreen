@@ -165,13 +165,17 @@ bool CtrOnline_HasFile(uint32_t version);
  * FetchFocus asks quietly (no status line); Focus returns a serial that
  * moves on with every answer (ok false when the last ask failed).
  */
+/* The game's own planes (the AI-made pack) where a version number goes:
+ * the web app's "AI (built in)" card is version 0 there. */
+#define CTR_ONLINE_BUILTIN 0xFFFFFFFFu
 typedef struct
 {
     bool ok;
     uint16_t id;
     uint8_t count;
     uint32_t seq;
-    /* The version the web page chose (0 none): the console shows it. */
+    /* The version the web page chose (0 none, CTR_ONLINE_BUILTIN the
+     * game's own planes): the console shows it. */
     uint32_t selected;
     uint32_t versions[CTR_ONLINE_MAX_VERSIONS];
 } CtrOnlineFocus;

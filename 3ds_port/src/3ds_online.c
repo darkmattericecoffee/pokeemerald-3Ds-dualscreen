@@ -1522,10 +1522,11 @@ static void DoFocus(const Link *link)
     {
         focus.id = IdOf(key);
         focus.count = (uint8_t)JsonNumbers((const char *)reply.body, "version_ids", ids, CTR_ONLINE_MAX_VERSIONS);
-        for (unsigned i = 0; i < focus.count; ++i) focus.versions[i] = (uint32_t)ids[i];
+        for (unsigned i = 0; i < focus.count; ++i) focus.versions[i] = ids[i] ? (uint32_t)ids[i] : CTR_ONLINE_BUILTIN;
     }
     focus.seq = (uint32_t)seq;
-    if (focus.id && JsonNumber((const char *)reply.body, "selected", &selected) && selected > 0) focus.selected = (uint32_t)selected;
+    if (focus.id && JsonNumber((const char *)reply.body, "selected", &selected) && selected >= 0)
+        focus.selected = selected ? (uint32_t)selected : CTR_ONLINE_BUILTIN;
     focus.ok = true;
     Lock();
     if (sFocus.seq != focus.seq || !sFocus.ok) CtrLog_Write(CTR_LOG_FS, "online: the web shows %s (seq %ld, %u picked, version %lu chosen)",

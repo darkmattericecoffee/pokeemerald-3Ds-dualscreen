@@ -199,14 +199,47 @@ unsigned CtrStereoStrip_Version(void) { return sOpen ? sVersion : 0; }
 
 /* ── Composing ───────────────────────────────────────────────────────── */
 
-/* A version's planes (its file from the online cache) into a slot's half:
- * false while the file is not there, or when it is not this picture's. */
+/* The game's own planes of a picture (the AI-made pack, CTR_ONLINE_BUILTIN)
+ * laid out as an edit file in sFile: its fronts from the planes file, the
+ * rest from the backs file. */
+static bool BuiltinFile(uint16_t id, uint32_t *size)
+{
+    const CtrStereoMonHeader *pack = (id & 0xC000) == 0 ? CtrStereoMon_Header() : CtrStereoMon_BacksHeader();
+    unsigned frames = 0;
+
+    if (pack == NULL) return false;
+    if ((id & 0xC000) == 0)
+    {
+        if (!CtrStereoMon_PlanesFor(id, sFile + 16, sizeof(sFile) - 16)) return false;
+        frames = pack->frames;
+    }
+    else if (!CtrStereoMon_BackPlanesFor(id, sFile + 16, sizeof(sFile) - 16, &frames))
+        return false;
+    memcpy(sFile, CTR_STEREO_EDIT_MAGIC, 8);
+    sFile[8] = (uint8_t)id;
+    sFile[9] = (uint8_t)(id >> 8);
+    sFile[10] = pack->planes;
+    sFile[11] = (uint8_t)frames;
+    sFile[12] = DIM;
+    sFile[13] = 0;
+    sFile[14] = DIM;
+    sFile[15] = 0;
+    *size = 16 + frames * (DIM * DIM / 2);
+    return true;
+}
+
+/* A version's planes (its file from the online cache, or the game's own)
+ * into a slot's half: false while the file is not there, or when it is not
+ * this picture's. */
 static bool ComposeHalf(unsigned slot, unsigned side, uint32_t version)
 {
     CtrStereoMonHeader header;
     uint32_t size = 0;
     unsigned planes, frames, frame = 0;
-    if (!CtrOnline_FileCopy(version, sFile, sizeof(sFile), &size) || size < 16 + DIM * DIM / 2) return false;
+    if (version == CTR_ONLINE_BUILTIN ? !BuiltinFile(sIds[side], &size)
+                                      : !CtrOnline_FileCopy(version, sFile, sizeof(sFile), &size))
+        return false;
+    if (size < 16 + DIM * DIM / 2) return false;
     if (memcmp(sFile, CTR_STEREO_EDIT_MAGIC, 8) != 0 || (sFile[8] | (sFile[9] << 8)) != sIds[side] || sFile[12] != DIM
         || sFile[14] != DIM)
         return false;

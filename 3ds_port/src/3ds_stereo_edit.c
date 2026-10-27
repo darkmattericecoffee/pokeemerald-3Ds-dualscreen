@@ -194,6 +194,14 @@ enum { GRID_OFF, GRID_WHITE, GRID_BLACK };
 #define CH_PREV_X 254
 #define CH_NEXT_X 287
 #define CH_PAGE_W 31
+/* Along the bottom: the page, the review marks of the Pokémon under the
+ * cursor (its front's and its back's), FOLLOW WEB. */
+#define CH_BAR_Y (CH_Y0 + CH_ROWS * CH_ROW_H + 1)
+#define CH_BAR_H 22
+#define CH_MARK_X 58
+#define CH_MARK_W 56
+#define CH_MARK_STEP 60
+#define CH_FOLLOW_W 92
 /* Every picture of both files at most. */
 #define LIST_MAX (2 * CTR_STEREO_MON_MAX_COUNT)
 /* The keyboard: letters and digits, then DEL, SPACE, CLEAR and OK. */
@@ -1491,6 +1499,9 @@ void CtrStereoEdit_Open(bool fromGallery)
     sE.outlineOn = CtrSettings_GetInt("edit_outline", 1) != 0;
     sE.grid = (uint8_t)CtrSettings_GetInt("edit_grid", GRID_WHITE);
     sE.straysOn = CtrSettings_GetInt("edit_strays", 1) != 0;
+    /* FOLLOW WEB, on in the Pokédex and the voting view alike. */
+    sE.follow = CtrSettings_GetInt("online_follow", 0) != 0;
+    sE.focusSeen.seq = 0xFFFFFFFFu;
     if (sE.grid > GRID_BLACK) sE.grid = GRID_OFF;
     sE.view = (uint8_t)CtrSettings_GetInt("edit_view", V_COLOURS);
     sE.controls = CtrSettings_GetInt("edit_controls", 1) != 0;
@@ -2168,14 +2179,19 @@ static void TryBattle(void)
 /* The review before the beta, beside the save (the web app's "Needs work" /
  * "Good enough", shared by everybody): a tap goes on from none to FIX to OK
  * and round again. Kept on the card and sent as the votes are. */
-static void ReviewTap(void)
+static void ReviewCycle(uint16_t id, const char *who)
 {
-    const unsigned next = (CtrOnline_Review(sE.id, NULL) + 1) % 3;
+    const unsigned next = (CtrOnline_Review(id, NULL) + 1) % 3;
+    char line[48];
 
-    CtrOnline_SetReview(sE.id, next);
-    Toast(next == CTR_ONLINE_REVIEW_FIX ? "NEEDS WORK BEFORE THE BETA"
-          : next == CTR_ONLINE_REVIEW_OK ? "GOOD ENOUGH FOR THE BETA" : "BETA MARK CLEARED");
+    CtrOnline_SetReview(id, next);
+    snprintf(line, sizeof(line), "%s%s", who,
+             next == CTR_ONLINE_REVIEW_FIX ? "NEEDS WORK BEFORE THE BETA"
+             : next == CTR_ONLINE_REVIEW_OK ? "GOOD ENOUGH FOR THE BETA" : "BETA MARK CLEARED");
+    Toast(line);
 }
+
+static void ReviewTap(void) { ReviewCycle(sE.id, ""); }
 
 /* The bar along the picture's top: a tap on one of its buttons. */
 static bool BarAct(int x, int y)
@@ -2739,6 +2755,18 @@ static void BuildView(void)
     sE.dirtyDraw = true;
 }
 
+/* Whether the game ships planes of a side (the pack: fronts in the planes
+ * file, the rest in the backs file). */
+static bool HasBuiltin(unsigned side)
+{
+    const uint16_t id = sE.sideId[side];
+
+    return id != 0 && ((id & 0xC000) == 0 ? CtrStereoMon_Has(id) : CtrStereoMon_HasBack(id));
+}
+
+/* The column of the game's own planes. */
+static bool AiColumn(unsigned c) { return sE.colV[c][0] == CTR_ONLINE_BUILTIN || sE.colV[c][1] == CTR_ONLINE_BUILTIN; }
+
 /*
  * The columns from the two lists: each front with the same author's back
  * uploaded closest to it (an upload sends both), in the front list's order
@@ -2806,6 +2834,14 @@ static void BuildColumns(void)
             sE.colV[at][1] = mine[1];
         }
     }
+    /* Last, the game's own planes (the AI-made pack) of either side: what
+     * the game shows while nobody's version is on the card. */
+    if (n < CTR_STRIP_MAX_COLUMNS && (HasBuiltin(0) || HasBuiltin(1)))
+    {
+        sE.colV[n][0] = HasBuiltin(0) ? CTR_ONLINE_BUILTIN : 0;
+        sE.colV[n][1] = HasBuiltin(1) ? CTR_ONLINE_BUILTIN : 0;
+        ++n;
+    }
     sE.colCount = n;
     BuildView();
     /* The cursor stays on the version it was on. */
@@ -2825,14 +2861,17 @@ static bool ColumnsStale(void)
 {
     unsigned held = 0, listed = sE.sideList[0].count + (sE.sideId[1] ? sE.sideList[1].count : 0);
 
+    bool ai = false;
+
     for (unsigned c = 0; c < sE.colCount; ++c)
         for (unsigned d = 0; d < 2; ++d)
-            if (sE.colV[c][d])
+            if (sE.colV[c][d] == CTR_ONLINE_BUILTIN) ai = true;
+            else if (sE.colV[c][d])
             {
                 if (SideVersion(d, sE.colV[c][d]) == NULL) return true;
                 ++held;
             }
-    return held != listed;
+    return held != listed || ai != (HasBuiltin(0) || HasBuiltin(1));
 }
 
 /* The sides of the picture the editor has: a Pokémon's front and back, a
@@ -2859,6 +2898,8 @@ static void InitSides(void)
     memset(sE.labelText, 0, sizeof(sE.labelText));
     sE.askedFor = 0;
     CtrStereoStrip_Open(sE.sideId[0], sE.sideId[1]);
+    /* The game's own planes are there before any list comes. */
+    BuildColumns();
 }
 
 static void OpenVersions(void)
@@ -2880,6 +2921,9 @@ static void OpenVersions(void)
     sE.focusSerial = CtrOnline_Focus(&sE.focusSeen);
     sE.versionsSerial = CtrOnline_GetVersions(&sE.sideList[0]);
     InitSides();
+    /* Following, and the web shows this Pokémon: its pick once the lists are in. */
+    if (sE.follow && sE.focusSeen.ok && sE.focusSeen.id && (sE.focusSeen.id == sE.sideId[0] || sE.focusSeen.id == sE.sideId[1]))
+        sE.webJump = true;
     sE.screen = S_VERSIONS;
     sE.helpDirty = true;
     sE.dirtyDraw = true;
@@ -3027,6 +3071,11 @@ static void VoteColumn(void)
         Toast("NOTHING TO VOTE FOR HERE");
         return;
     }
+    if (front == CTR_ONLINE_BUILTIN || back == CTR_ONLINE_BUILTIN)
+    {
+        Toast("THE GAME'S OWN PLANES: NO VOTES");
+        return;
+    }
     if (front && back)
     {
         /* Both voted already: both taken back; else the missing one(s) given. */
@@ -3055,6 +3104,11 @@ static void PutOnCard(void)
     char line[40];
 
     if (version == 0) return;
+    if (version == CTR_ONLINE_BUILTIN)
+    {
+        Toast("IN THE GAME ALREADY - MORE: RESET");
+        return;
+    }
     if (version == sE.sideCard[sE.curSide])
     {
         Toast("ALREADY ON THE CARD");
@@ -3146,9 +3200,16 @@ static void DeleteMine(void)
 
 static void ToggleFollow(void)
 {
+    if (!sE.follow && !CtrOnline_Linked())
+    {
+        Toast("LINK THE CONSOLE: OPTIONS, ONLINE");
+        return;
+    }
     sE.follow = !sE.follow;
     CtrSettings_SetInt("online_follow", sE.follow);
     sE.focusAskedAt = sE.tick - VB_FOCUS_FRAMES;
+    /* What the web shows now is taken up, not only its next change. */
+    if (sE.follow) sE.focusSeen.seq = 0xFFFFFFFFu;
     if (!sE.follow)
     {
         sE.webOnly = false;
@@ -3214,7 +3275,8 @@ static void ApplyFocus(const CtrOnlineFocus *focus)
         if (at >= 0)
         {
             CursorTo(at, side);
-            snprintf(line, sizeof(line), "THE WEB SHOWS VERSION %lu", (unsigned long)focus->selected);
+            if (focus->selected == CTR_ONLINE_BUILTIN) snprintf(line, sizeof(line), "THE WEB SHOWS THE AI PLANES");
+            else snprintf(line, sizeof(line), "THE WEB SHOWS VERSION %lu", (unsigned long)focus->selected);
         }
         else snprintf(line, sizeof(line), "VERSION %lu IS NOT HERE YET", (unsigned long)focus->selected);
         Toast(line);
@@ -3249,7 +3311,7 @@ static void AskFiles(void)
         unsigned col = sE.cols[(first + k) % sE.viewCount];
 
         for (unsigned d = 0; d < 2 && n < CTR_ONLINE_MAX_FILES; ++d)
-            if (sE.colV[col][d] && !CtrOnline_HasFile(sE.colV[col][d]))
+            if (sE.colV[col][d] && sE.colV[col][d] != CTR_ONLINE_BUILTIN && !CtrOnline_HasFile(sE.colV[col][d]))
             {
                 versions[n] = sE.colV[col][d];
                 ids[n++] = sE.sideId[d];
@@ -3781,6 +3843,79 @@ static void TouchOptions(const CtrInput *in)
     sE.dirtyDraw = true;
 }
 
+/* An entry's pictures: a Pokémon's front and back, else its one picture
+ * (ids[1] 0). */
+static void ChooseSides(unsigned index, uint16_t ids[2])
+{
+    const uint16_t id = CtrStereoMon_GalleryIdAt(index), other = CtrStereoMon_Counterpart(id);
+    const bool back = (id & 0xC000) == CTR_STEREO_ID_BACK;
+
+    ids[0] = back && other ? other : id;
+    ids[1] = back ? (other ? id : 0) : (id & 0xC000) == 0 ? other : 0;
+    if (back && !other)
+    {
+        ids[0] = id;
+        ids[1] = 0;
+    }
+}
+
+/* FOLLOW WEB in the Pokédex: the cursor goes to the Pokémon the account's
+ * web app shows (the top screen previews it); the filter and the search
+ * give way when it is not listed. */
+static void ChooseCursorTo(uint16_t id)
+{
+    uint16_t other = CtrStereoMon_Counterpart(id);
+    int index = CtrStereoMon_GalleryIndexOf((id & 0xC000) == CTR_STEREO_ID_BACK && other ? other : id);
+    char name[CTR_STEREO_MON_NAME], line[48];
+
+    if (index < 0)
+    {
+        Toast("THE WEB SHOWS ONE THIS GAME HAS NOT");
+        return;
+    }
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        for (unsigned k = 0; k < sListCount; ++k)
+            if (sList[k] == (unsigned)index)
+            {
+                sE.chooseCursor = k;
+                CtrStereoMonGame_Name(id, name, sizeof(name));
+                snprintf(line, sizeof(line), "WEB: %s", name);
+                Toast(line);
+                sE.dirtyDraw = true;
+                sE.helpDirty = true;
+                return;
+            }
+        sE.show = SHOW_ALL;
+        sE.query[0] = 0;
+        BuildList();
+    }
+}
+
+static void ChooseFollow(void)
+{
+    CtrOnlineFocus focus;
+    unsigned serial;
+
+    if (!sE.follow || !CtrOnline_Linked()) return;
+    if (!CtrOnline_Busy() && sE.tick - sE.focusAskedAt >= VB_FOCUS_FRAMES)
+    {
+        sE.focusAskedAt = sE.tick;
+        CtrOnline_FetchFocus();
+    }
+    serial = CtrOnline_Focus(&focus);
+    if (serial == sE.focusSerial) return;
+    sE.focusSerial = serial;
+    if (focus.ok != sE.focusSeen.ok) sE.dirtyDraw = true;
+    if (!focus.ok || focus.seq == sE.focusSeen.seq)
+    {
+        sE.focusSeen.ok = focus.ok;
+        return;
+    }
+    sE.focusSeen = focus;
+    if (focus.id) ChooseCursorTo(focus.id);
+}
+
 static void TouchChoose(const CtrInput *in)
 {
     unsigned count = sListCount, page = sE.chooseCursor / CH_PER_PAGE, cell;
@@ -3796,6 +3931,19 @@ static void TouchChoose(const CtrInput *in)
         else if (count && x >= CH_PREV_X && x < CH_PREV_X + CH_PAGE_W)
             sE.chooseCursor = (sE.chooseCursor + count - CH_PER_PAGE % count) % count;
         else if (count && x >= CH_NEXT_X) sE.chooseCursor = (sE.chooseCursor + CH_PER_PAGE) % count;
+        return;
+    }
+    if (y >= CH_BAR_Y)
+    {
+        if (x >= W - 2 - CH_FOLLOW_W) ToggleFollow();
+        else if (count && x >= CH_MARK_X && x < CH_MARK_X + CH_MARK_STEP + CH_MARK_W)
+        {
+            uint16_t ids[2];
+            const unsigned k = x >= CH_MARK_X + CH_MARK_STEP;
+
+            ChooseSides(sList[sE.chooseCursor], ids);
+            if (ids[k]) ReviewCycle(ids[k], k ? "BACK: " : ids[1] ? "FRONT: " : "");
+        }
         return;
     }
     col = x / (W / CH_COLS);
@@ -4657,6 +4805,24 @@ static void DrawVoteCell(unsigned k, unsigned side, int x)
     const int o = voted || pressing ? 1 : 0;
     char line[40];
 
+    if (version == CTR_ONLINE_BUILTIN)
+    {
+        /* The game's own planes: shown, never voted on. */
+        CtrBottomDraw_Plate(x, y, VB_BTN_W, VB_BTN_H, 2, pressing);
+        if (cursor)
+        {
+            CtrBottomDraw_Fill(x - 1, y - 1, VB_BTN_W + 2, 2, Rgb(4, 24, 28));
+            CtrBottomDraw_Fill(x - 1, y + VB_BTN_H - 1, VB_BTN_W + 2, 2, Rgb(4, 24, 28));
+            CtrBottomDraw_Fill(x - 1, y + 1, 2, VB_BTN_H - 2, Rgb(4, 24, 28));
+            CtrBottomDraw_Fill(x + VB_BTN_W - 1, y + 1, 2, VB_BTN_H - 2, Rgb(4, 24, 28));
+        }
+        DrawPictureAt(CtrStereoMon_SidePicture(sE.sideId[side]), x + (VB_BTN_W - CTR_STEREO_MON_DIM) / 2 + o, y + 1 + o);
+        if (sE.follow && WebPicked(version)) CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, "WEB", x + 4 + o, y + 3 + o, CTR_DRAW_RED);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "AI - BUILT IN", x + VB_BTN_W / 2 + o, y + 63 + o, CTR_DRAW_DARK);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, sE.sideCard[side] || CtrStereoMon_HasEdit(sE.sideId[side]) ? "NOT ON CARD" : "IN THE GAME",
+                                  x + VB_BTN_W / 2 + o, y + 74 + o, CTR_DRAW_BLUE);
+        return;
+    }
     if (v == NULL)
     {
         /* No upload of this side here: CREATE one (the editor on it). */
@@ -4717,7 +4883,12 @@ static void DrawVersions(void)
     CtrStereoMonGame_Name(sE.sideId[0], name, sizeof(name));
     if (!sE.sideLoaded[0] && !sE.sideLoaded[1]) snprintf(line, sizeof(line), "%s  ASKING...", name);
     else if (sE.webOnly && sE.viewCount != sE.colCount) snprintf(line, sizeof(line), "%s  WEB %u OF %u", name, sE.viewCount, sE.colCount);
-    else snprintf(line, sizeof(line), "%s  %u UPLOAD%s", name, sE.colCount, sE.colCount == 1 ? "" : "S");
+    else
+    {
+        unsigned uploads = sE.colCount - (sE.colCount && AiColumn(sE.colCount - 1) ? 1 : 0);
+
+        snprintf(line, sizeof(line), "%s  %u UPLOAD%s", name, uploads, uploads == 1 ? "" : "S");
+    }
     /* BIG: the top screen shows the cursor's column alone at 2x. */
     CtrBottomDraw_Plate(4 + VB_BACK_W, 1, VB_BIG_W, 21, sE.big ? 1 : 0, sE.big);
     CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, "BIG", 4 + VB_BACK_W + VB_BIG_W / 2 + (sE.big ? 1 : 0), 6 + (sE.big ? 1 : 0),
@@ -4746,7 +4917,7 @@ static void DrawVersions(void)
         const unsigned c = sE.cols[k];
         const CtrOnlineVersion *fv = SideVersion(0, sE.colV[c][0]), *bv = SideVersion(1, sE.colV[c][1]);
         /* The card: a mid green, a mid teal for this account's own. */
-        const uint16_t card = (fv && fv->mine) || (bv && bv->mine) ? Rgb(14, 42, 22) : Rgb(17, 44, 17);
+        const uint16_t card = AiColumn(c) ? Rgb(13, 30, 20) : (fv && fv->mine) || (bv && bv->mine) ? Rgb(14, 42, 22) : Rgb(17, 44, 17);
 
         CtrBottomDraw_Fill(x + 1, VB_CARD_Y, VB_CARD_W - 2, VB_CARD_H, card);
         CtrBottomDraw_Fill(x, VB_CARD_Y + 1, VB_CARD_W, VB_CARD_H - 2, card);
@@ -4819,6 +4990,14 @@ static void StripLabels(void)
         const CtrOnlineVersion *who = f ? f : b;
 
         for (unsigned j = 0; j < 3; ++j) column[CTR_STRIP_SLOT_LABEL(s, j)] = (int)k;
+        if (AiColumn(c))
+        {
+            snprintf(text[CTR_STRIP_SLOT_LABEL(s, 0)], 40, "AI - BUILT IN");
+            for (unsigned d = 0; d < 2; ++d)
+                if (sE.colV[c][d] == CTR_ONLINE_BUILTIN)
+                    snprintf(text[CTR_STRIP_SLOT_LABEL(s, 1 + d)], 40, "THE GAME'S OWN");
+            continue;
+        }
         if (who && who->base[0])
             snprintf(text[CTR_STRIP_SLOT_LABEL(s, 0)], 40, "%s FROM %s", who->mine ? "YOU" : who->author[0] ? who->author : "?", who->base);
         else if (who) snprintf(text[CTR_STRIP_SLOT_LABEL(s, 0)], 40, "%s", who->mine ? "BY YOU" : who->author[0] ? who->author : "?");
@@ -5029,9 +5208,41 @@ static void DrawChooser(void)
         CtrBottomDraw_Plate(x + W / CH_COLS - 4 - CH_GLOBE_W, y + 7, CH_GLOBE_W, 22, 0, false);
         Sprite(SPRITE_GLOBE, x + W / CH_COLS - 4 - CH_GLOBE_W + (CH_GLOBE_W - SPRITE_SIZE) / 2 - 1, y + 10);
     }
-    /* (The game font's strings take 39 characters at most.) */
-    snprintf(line, sizeof(line), "PAGE %u OF %u   A: EDIT   X: ONLINE", count ? page + 1 : 1, pages);
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, CH_Y0 + CH_ROWS * CH_ROW_H + 1, CTR_DRAW_DARK);
+    /* The bottom row: the page; the review marks of the Pokémon under the
+     * cursor, its front's and its back's (a tap goes on: ? FIX OK); FOLLOW
+     * WEB (the cursor goes where the web app is). */
+    snprintf(line, sizeof(line), "%u/%u", count ? page + 1 : 1, pages);
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, 6, CH_BAR_Y + 5, CTR_DRAW_DARK);
+    if (count)
+    {
+        uint16_t ids[2];
+
+        ChooseSides(sList[sE.chooseCursor], ids);
+        for (unsigned k = 0; k < 2; ++k)
+        {
+            const int bx = CH_MARK_X + (int)k * CH_MARK_STEP;
+            bool pending;
+            unsigned mark;
+
+            if (ids[k] == 0) continue;
+            mark = CtrOnline_Review(ids[k], &pending);
+            CtrBottomDraw_Plate(bx, CH_BAR_Y, CH_MARK_W, CH_BAR_H, mark == CTR_ONLINE_REVIEW_OK ? 1 : 0, false);
+            snprintf(line, sizeof(line), "%s %s", ids[1] == 0 ? "MARK" : k ? "B" : "F",
+                     mark == CTR_ONLINE_REVIEW_FIX ? "FIX" : mark == CTR_ONLINE_REVIEW_OK ? "OK" : "?");
+            CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, line, bx + CH_MARK_W / 2, CH_BAR_Y + 5,
+                                      mark == CTR_ONLINE_REVIEW_FIX ? CTR_DRAW_RED : mark == CTR_ONLINE_REVIEW_OK ? CTR_DRAW_WHITE
+                                                                                                           : CTR_DRAW_OFF);
+            if (pending)
+            {
+                DrawDisc(bx + CH_MARK_W - 5, CH_BAR_Y + 5, 4, Rgb(1, 2, 2));
+                DrawDisc(bx + CH_MARK_W - 5, CH_BAR_Y + 5, 3, Rgb(31, 40, 4));
+            }
+        }
+    }
+    CtrBottomDraw_Plate(W - 2 - CH_FOLLOW_W, CH_BAR_Y, CH_FOLLOW_W, CH_BAR_H, sE.follow ? 1 : 0, sE.follow);
+    CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL, sE.follow && !sE.focusSeen.ok ? "FOLLOW WEB ?" : "FOLLOW WEB",
+                              W - 2 - CH_FOLLOW_W / 2 + (sE.follow ? 1 : 0), CH_BAR_Y + 5 + (sE.follow ? 1 : 0),
+                              sE.follow ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
 }
 
 static void DrawKeyboard(void)
@@ -5505,7 +5716,7 @@ bool CtrStereoEdit_BottomFrame(void)
             Toast("BACK FROM THE BATTLE");
         }
     }
-    if (sE.screen == S_CHOOSE) { TouchChoose(in); ChoosePad(in); PreviewChosen(); }
+    if (sE.screen == S_CHOOSE) { TouchChoose(in); ChoosePad(in); ChooseFollow(); PreviewChosen(); }
     else if (sE.screen == S_KEYBOARD) TouchKeyboard(in);
     else if (sE.screen == S_OPTIONS) TouchOptions(in);
     else if (sE.screen == S_VERSIONS) { TouchVersions(in); VersionsFrame(); }
