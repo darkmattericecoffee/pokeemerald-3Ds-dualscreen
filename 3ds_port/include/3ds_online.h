@@ -102,6 +102,16 @@ bool CtrOnline_UseVersion(uint16_t id, uint32_t version);
 bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count);
 unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[CTR_ONLINE_MAX_VOTES], bool *pending);
 unsigned CtrOnline_PendingVotes(void);
+/* The review before the beta, one mark per picture shared by everybody (the
+ * web app's "Needs work" / "Good enough"): kept on the card at once
+ * (online_reviews.txt) and sent as the votes are (PendingVotes counts the
+ * marks still waiting too). Review gives what the console knows, the
+ * server's from the last FetchIndex unless its own is on the way; the
+ * serial moves on with every change. */
+enum { CTR_ONLINE_REVIEW_NONE, CTR_ONLINE_REVIEW_FIX, CTR_ONLINE_REVIEW_OK };
+bool CtrOnline_SetReview(uint16_t id, unsigned status);
+unsigned CtrOnline_Review(uint16_t id, bool *pending);
+unsigned CtrOnline_ReviewSerial(void);
 /* Per picture: how many versions the server has and whether this account
  * voted for one (the Pokédex's marks), from FetchIndex (a sync fetches it
  * too); IndexSerial moves on with each, ageMs how old it is. */

@@ -53,6 +53,10 @@
 /* The votes per picture, sent or still to send: "key pending v1 v2 ...". */
 #define VOTES_PATH DATA_DIR "/online_votes.txt"
 #define MAX_FAVS 800
+/* The review marks before the beta, set or still to send: "key status pending"
+ * (status 0 none, 1 needs work, 2 good enough). */
+#define REVIEWS_PATH DATA_DIR "/online_reviews.txt"
+#define MAX_REVIEWS 1024
 #define MAX_INDEX 1024
 /* A vote kept on the card is tried again this often while it waits. */
 #define FLUSH_RETRY_MS 60000
@@ -153,6 +157,17 @@ struct Fav
 static Fav sFavs[MAX_FAVS];
 static unsigned sFavCount;
 static bool sFavsRead;
+/* The review marks, as the console knows them (online_reviews.txt): the
+ * server's from the last index, the console's own until they are sent. */
+typedef struct
+{
+    uint16_t id;
+    uint8_t status;
+    bool pending;
+} Mark;
+static Mark sMarks[MAX_REVIEWS];
+static unsigned sMarkCount, sMarkSerial;
+static bool sMarksRead;
 /* Per picture on the server: how many versions, how many are this
  * account's favourites (GET /api/mons). */
 typedef struct
@@ -1599,6 +1614,194 @@ static void WriteFavs(void)
     free(text);
 }
 
+/* ── Review marks, kept on the card until the server has them ──────── */
+
+/* Called with sLock held. */
+static void ReadMarksLocked(void)
+{
+    FILE *f;
+    char line[40];
+
+    if (sMarksRead) return;
+    sMarksRead = true;
+    sMarkCount = 0;
+    if ((f = fopen(REVIEWS_PATH, "r")) == NULL) return;
+    while (sMarkCount < MAX_REVIEWS && fgets(line, sizeof(line), f))
+    {
+        char key[16];
+        unsigned status = 0, pending = 0;
+        Mark *m = &sMarks[sMarkCount];
+
+        if (sscanf(line, "%15s %u %u", key, &status, &pending) < 2 || (m->id = IdOf(key)) == 0
+            || status > CTR_ONLINE_REVIEW_OK)
+            continue;
+        m->status = (uint8_t)status;
+        m->pending = pending != 0;
+        ++sMarkCount;
+    }
+    fclose(f);
+}
+
+/* Called with sLock held. */
+static Mark *MarkLocked(uint16_t id, bool create)
+{
+    ReadMarksLocked();
+    for (unsigned i = 0; i < sMarkCount; ++i)
+        if (sMarks[i].id == id) return &sMarks[i];
+    if (!create || sMarkCount == MAX_REVIEWS) return NULL;
+    memset(&sMarks[sMarkCount], 0, sizeof(sMarks[0]));
+    sMarks[sMarkCount].id = id;
+    return &sMarks[sMarkCount++];
+}
+
+static void WriteMarks(void)
+{
+    char *text;
+    size_t n = 0, size;
+
+    Lock();
+    size = sMarkCount * 16 + 1;
+    if ((text = malloc(size)) == NULL)
+    {
+        Unlock();
+        return;
+    }
+    for (unsigned i = 0; i < sMarkCount; ++i)
+    {
+        char key[8];
+
+        /* A mark the server has and that is none needs no line. */
+        if (sMarks[i].status == CTR_ONLINE_REVIEW_NONE && !sMarks[i].pending) continue;
+        KeyOf(sMarks[i].id, key, sizeof(key));
+        n += (size_t)snprintf(text + n, size - n, "%s %u %u\n", key, sMarks[i].status, sMarks[i].pending ? 1u : 0u);
+    }
+    Unlock();
+    if (!WriteWhole(REVIEWS_PATH, text, (uint32_t)n)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", REVIEWS_PATH);
+    free(text);
+}
+
+static unsigned PendingMarks(void)
+{
+    unsigned count = 0;
+
+    Lock();
+    ReadMarksLocked();
+    for (unsigned i = 0; i < sMarkCount; ++i) count += sMarks[i].pending;
+    Unlock();
+    return count;
+}
+
+static const char *const sMarkWords[] = {"", "fix", "ok"};
+
+/* Every mark still on the card to the server. False when the server could
+ * not be reached (they wait for the next time). */
+static bool FlushMarks(const Link *link)
+{
+    unsigned sent = 0;
+
+    for (;;)
+    {
+        Mark m;
+        bool found = false;
+        char key[8], path[48], body[32];
+        Reply reply;
+        int n;
+
+        Lock();
+        ReadMarksLocked();
+        for (unsigned i = 0; i < sMarkCount && !found; ++i)
+            if (sMarks[i].pending)
+            {
+                m = sMarks[i];
+                found = true;
+            }
+        Unlock();
+        if (!found) break;
+        SetStatus(CTR_ONLINE_BUSY, "SENDING MARK...");
+        KeyOf(m.id, key, sizeof(key));
+        snprintf(path, sizeof(path), "/api/mons/%s/review", key);
+        n = snprintf(body, sizeof(body), "{\"status\":\"%s\"}", sMarkWords[m.status]);
+        if (!Http(link, HTTPC_METHOD_POST, path, body, (uint32_t)n, "application/json", &reply) || reply.status == 0)
+        {
+            ReplyFree(&reply);
+            CtrLog_Write(CTR_LOG_FS, "online: no server: the review marks wait on the card");
+            SetStatus(CTR_ONLINE_DONE, "SAVED - SENDS LATER");
+            WriteMarks();
+            return false;
+        }
+        if (reply.status == 401 || reply.status == 429 || reply.status >= 500)
+        {
+            FailStatus(&reply, "mark");
+            ReplyFree(&reply);
+            WriteMarks();
+            return false;
+        }
+        if (reply.status != 200)
+            CtrLog_Write(CTR_LOG_ERROR, "online: %s mark %s refused (HTTP %d)", key, sMarkWords[m.status], reply.status);
+        else
+            CtrLog_Write(CTR_LOG_FS, "online: %s marked \"%s\"", key, sMarkWords[m.status]);
+        ReplyFree(&reply);
+        Lock();
+        {
+            Mark *now = MarkLocked(m.id, false);
+
+            /* Sent as it stands (the player may have changed it meanwhile). */
+            if (now && now->status == m.status) now->pending = false;
+        }
+        Unlock();
+        ++sent;
+    }
+    WriteMarks();
+    if (sent) SetStatus(CTR_ONLINE_DONE, sent == 1 ? "MARK SENT" : "%u MARKS SENT", sent);
+    return true;
+}
+
+/* The server's marks ("reviews": {"025": "fix", ...} in GET /api/mons): every
+ * mark not still on its way from here takes the server's, or none. */
+static void LearnMarks(const char *json)
+{
+    const char *p = strstr(json, "\"reviews\":{");
+
+    if (p == NULL) return;
+    p += 11;
+    Lock();
+    ReadMarksLocked();
+    for (unsigned i = 0; i < sMarkCount; ++i)
+        if (!sMarks[i].pending) sMarks[i].status = CTR_ONLINE_REVIEW_NONE;
+    while (*p && *p != '}')
+    {
+        char key[16], word[8];
+        const char *q;
+        size_t len;
+        uint16_t id;
+
+        if ((p = strchr(p, '"')) == NULL) break;
+        q = strchr(++p, '"');
+        if (q == NULL || (len = (size_t)(q - p)) >= sizeof(key)) break;
+        memcpy(key, p, len);
+        key[len] = 0;
+        if ((p = strchr(q + 1, '"')) == NULL) break;
+        q = strchr(++p, '"');
+        if (q == NULL || (len = (size_t)(q - p)) >= sizeof(word)) break;
+        memcpy(word, p, len);
+        word[len] = 0;
+        p = q + 1;
+        if ((id = IdOf(key)) != 0)
+        {
+            Mark *m = MarkLocked(id, true);
+
+            if (m && !m->pending)
+                m->status = strcmp(word, "fix") == 0 ? CTR_ONLINE_REVIEW_FIX
+                          : strcmp(word, "ok") == 0 ? CTR_ONLINE_REVIEW_OK : CTR_ONLINE_REVIEW_NONE;
+        }
+        while (*p == ' ' || *p == ',') ++p;
+    }
+    ++sMarkSerial;
+    Unlock();
+    WriteMarks();
+}
+
+/* The votes and the review marks still on the card. */
 static unsigned PendingVotes(void)
 {
     unsigned count = 0;
@@ -1607,7 +1810,7 @@ static unsigned PendingVotes(void)
     ReadFavsLocked();
     for (unsigned i = 0; i < sFavCount; ++i) count += sFavs[i].pending;
     Unlock();
-    return count;
+    return count + PendingMarks();
 }
 
 /* The server's own list of a picture's favourites: kept unless the
@@ -1627,6 +1830,7 @@ static void DoFlush(const Link *link)
 {
     unsigned sent = 0, refused = 0;
 
+    if (PendingMarks() && !FlushMarks(link)) return;
     for (;;)
     {
         Fav fv;
@@ -1736,6 +1940,7 @@ static void DoIndex(const Link *link)
         list[count].mine = (uint8_t)(mine < 255 ? mine : 255);
         ++count;
     }
+    LearnMarks((const char *)reply.body);
     ReplyFree(&reply);
     Lock();
     memcpy(sIndex, list, count * sizeof(list[0]));
@@ -2424,6 +2629,66 @@ unsigned CtrOnline_Favourites(uint16_t id, uint32_t out[CTR_ONLINE_MAX_VOTES], b
 
 unsigned CtrOnline_PendingVotes(void) { return PendingVotes(); }
 
+bool CtrOnline_SetReview(uint16_t id, unsigned status)
+{
+    Job job;
+    bool busy;
+
+    if (status > CTR_ONLINE_REVIEW_OK) return false;
+    /* Kept on the card first, so a mark is never lost; then sent. */
+    Lock();
+    {
+        Mark *m = MarkLocked(id, true);
+
+        if (m)
+        {
+            m->status = (uint8_t)status;
+            m->pending = true;
+        }
+        ++sMarkSerial;
+        busy = sBusy;
+    }
+    Unlock();
+    WriteMarks();
+    CtrLog_Write(CTR_LOG_FS, "online: review mark of %04x kept (%s)%s", id, sMarkWords[status],
+                 busy ? ", sent after this job" : "");
+    if (busy || !CtrOnline_Linked()) return true;
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_FLUSH;
+    Start(&job);
+    return true;
+}
+
+unsigned CtrOnline_Review(uint16_t id, bool *pending)
+{
+    unsigned status = CTR_ONLINE_REVIEW_NONE;
+    bool waiting = false;
+
+    Lock();
+    {
+        Mark *m = MarkLocked(id, false);
+
+        if (m)
+        {
+            status = m->status;
+            waiting = m->pending;
+        }
+    }
+    Unlock();
+    if (pending) *pending = waiting;
+    return status;
+}
+
+unsigned CtrOnline_ReviewSerial(void)
+{
+    unsigned serial;
+
+    Lock();
+    serial = sMarkSerial;
+    Unlock();
+    return serial;
+}
+
 bool CtrOnline_FetchIndex(void)
 {
     Job job;
@@ -2608,7 +2873,7 @@ unsigned CtrOnline_Serial(void)
  * other, ten seconds after start and each once the job before it ended: "wait <frames>", "pair <code>", "upload <key>",
  * "uploadall", "sync", "unlink", "versions <key>",
  * "use <key> <version>", "vote <key> [<version> [<version>]]", "index", "flush",
- * "count <key>" (what the console knows of a picture), "editor", "dex" (the
+ * "count <key>" (what the console knows of a picture, its review mark too), "editor", "dex" (the
  * editor, or straight into its Pokédex), "verscreen" (its voting view),
  * "press <hex CTR_KEY_ bits>", "tap <x> <y>" and "cstick <x>" (keys, a touch there, the C-stick pushed),
  * "topshot" (the top screen to dump.raw). Each step and its result go to port.log.
@@ -2741,10 +3006,13 @@ static void TestFrame(void)
         bool pending = false;
         unsigned n = CtrOnline_Favourites(IdOf(arg), fav, &pending);
         unsigned count = CtrOnline_VersionCount(IdOf(arg), &voted);
+        bool markPending;
+        unsigned mark = CtrOnline_Review(IdOf(arg), &markPending);
 
-        CtrLog_Write(CTR_LOG_FS, "online test:    %s: %u versions%s, votes %u (%lu %lu %lu)%s, card version %lu", arg,
-                     count, voted ? ", voted" : "", n, (unsigned long)fav[0], (unsigned long)fav[1],
-                     (unsigned long)fav[2], pending ? " PENDING" : "", (unsigned long)CtrOnline_CardVersion(IdOf(arg)));
+        CtrLog_Write(CTR_LOG_FS, "online test:    %s: %u versions%s, votes %u (%lu %lu %lu)%s, card version %lu, mark %s%s",
+                     arg, count, voted ? ", voted" : "", n, (unsigned long)fav[0], (unsigned long)fav[1],
+                     (unsigned long)fav[2], pending ? " PENDING" : "", (unsigned long)CtrOnline_CardVersion(IdOf(arg)),
+                     mark ? sMarkWords[mark] : "none", markPending ? " PENDING" : "");
     }
     else if (strncmp(line, "use", 3) == 0)
     {

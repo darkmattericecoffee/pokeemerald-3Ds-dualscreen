@@ -223,7 +223,9 @@ static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS, S_CONFIRM_FORK, S_CONFIRM_PROPAGATE, S_CONFIRM_MERGE };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
 enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_PROPAGATE, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
-enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_COUNT };
+/* SHOW_FIX: the pictures marked as needing work before the beta (the
+ * review button beside SAVE, or the web app). */
+enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_FIX, SHOW_COUNT };
 /* What the keyboard is typing. */
 enum { KB_SEARCH, KB_AUTHOR };
 /* Frames L is held before a press is a hold (a pick), not a step. */
@@ -324,7 +326,8 @@ static struct
     unsigned chooseOpened, previewIndex, previewWant;
     uint32_t previewSince;
     bool iconsMissing;
-    /* SHOW_ALL, SHOW_EDITED, or SHOW_NEW: what the last sync brought. */
+    /* SHOW_ALL, SHOW_EDITED, SHOW_NEW (what the last sync brought) or
+     * SHOW_FIX (marked as needing work). */
     uint8_t show;
     bool editedFirst;
     char query[QUERY_MAX + 1];
@@ -394,7 +397,7 @@ static struct
     uint16_t focusId, cardFor, askedFor;
     uint32_t focusSince, askedAt, indexAskedAt;
     uint32_t cardVersion;
-    unsigned cardSerial, cardReloads, indexSerial;
+    unsigned cardSerial, cardReloads, indexSerial, reviewSerial;
     bool versionsLoaded;
     int cycleWanted;
     /* The globe: a sync it started (and the new pictures' serial then),
@@ -1643,6 +1646,9 @@ static void BuildList(void)
             if ((id & 0xC000) == CTR_STEREO_ID_BACK && other) continue;
             if (sE.show == SHOW_EDITED && !edited) continue;
             if (sE.show == SHOW_NEW && !CtrOnline_IsNew(id) && !(other && CtrOnline_IsNew(other))) continue;
+            if (sE.show == SHOW_FIX && CtrOnline_Review(id, NULL) != CTR_ONLINE_REVIEW_FIX
+                && !(other && CtrOnline_Review(other, NULL) == CTR_ONLINE_REVIEW_FIX))
+                continue;
             /* Edited first: those on the first pass, the rest on the second. */
             if (sE.editedFirst && sE.show == SHOW_ALL ? edited != (pass == 0) : pass == 1) continue;
             if (sE.query[0] && !Matches(i)) continue;
@@ -2159,6 +2165,18 @@ static void TryBattle(void)
     Toast("DRAW ON. START AGAIN TO COME BACK");
 }
 
+/* The review before the beta, beside the save (the web app's "Needs work" /
+ * "Good enough", shared by everybody): a tap goes on from none to FIX to OK
+ * and round again. Kept on the card and sent as the votes are. */
+static void ReviewTap(void)
+{
+    const unsigned next = (CtrOnline_Review(sE.id, NULL) + 1) % 3;
+
+    CtrOnline_SetReview(sE.id, next);
+    Toast(next == CTR_ONLINE_REVIEW_FIX ? "NEEDS WORK BEFORE THE BETA"
+          : next == CTR_ONLINE_REVIEW_OK ? "GOOD ENOUGH FOR THE BETA" : "BETA MARK CLEARED");
+}
+
 /* The bar along the picture's top: a tap on one of its buttons. */
 static bool BarAct(int x, int y)
 {
@@ -2169,6 +2187,7 @@ static bool BarAct(int x, int y)
     else if (x >= UNDO_X && x < UNDO_X + UNDO_W) { sE.pressed = P_UNDO; Undo(); }
     else if (x >= REDO_X && x < REDO_X + UNDO_W) { sE.pressed = P_REDO; Redo(); }
     else if (x >= SAVE_X && x < SAVE_X + SAVE_W) { sE.pressed = P_SAVE; SaveTap(); }
+    else if (x >= VOTE_X && x < VOTE_X + VOTE_W) { sE.pressed = P_VOTE; ReviewTap(); }
     else return false;
     return true;
 }
@@ -2555,6 +2574,14 @@ static void OnlineFrame(void)
             CtrOnline_FetchIndex();
             busy = true;
         }
+    }
+    /* The review marks (the button beside the save, the Pokédex's dots):
+     * drawn again when one changes, here or from the server. */
+    if (CtrOnline_ReviewSerial() != sE.reviewSerial)
+    {
+        sE.reviewSerial = CtrOnline_ReviewSerial();
+        sE.dirtyDraw = true;
+        if (sE.show == SHOW_FIX && sE.screen == S_CHOOSE) BuildList();
     }
     /* The Pokédex's counts and votes, fetched again after two minutes. */
     if (sE.screen == S_CHOOSE)
@@ -4284,6 +4311,26 @@ static void DrawBar(void)
         DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
         DrawDisc(SAVE_X + SAVE_W - 5, BAR_Y + 5, 3, dot);
     }
+    /* Left of the save: the review before the beta - FIX in red, OK on
+     * green, a grey ? while nobody judged it; the orange dot while the mark
+     * waits on the card. */
+    {
+        bool pending;
+        const unsigned mark = CtrOnline_Review(sE.id, &pending);
+        const bool down = sE.pressed == P_VOTE;
+
+        CtrBottomDraw_Plate(VOTE_X, BAR_Y, VOTE_W, BAR_H, mark == CTR_ONLINE_REVIEW_OK ? 1 : 0, down);
+        CtrBottomDraw_TextCentred(CTR_DRAW_FONT_SMALL,
+                                  mark == CTR_ONLINE_REVIEW_FIX ? "FIX" : mark == CTR_ONLINE_REVIEW_OK ? "OK" : "?",
+                                  VOTE_X + VOTE_W / 2, BAR_Y + 6 + down,
+                                  mark == CTR_ONLINE_REVIEW_FIX ? CTR_DRAW_RED : mark == CTR_ONLINE_REVIEW_OK ? CTR_DRAW_WHITE
+                                                                                                       : CTR_DRAW_OFF);
+        if (pending)
+        {
+            DrawDisc(VOTE_X + VOTE_W - 5, BAR_Y + 5, 4, Rgb(1, 2, 2));
+            DrawDisc(VOTE_X + VOTE_W - 5, BAR_Y + 5, 3, Rgb(31, 40, 4));
+        }
+    }
     /* Over the grid's button: the strays' rings on or off (a box icon, lit
      * when on). */
     PlateIcon(GRID_X, STRAYS_Y, SAVE_W, BAR_H, sE.straysOn ? 1 : 0, sE.straysOn || sE.pressed == P_RIGHT + B_STRAYS, ICON_BOX,
@@ -4862,7 +4909,8 @@ static void DrawChooser(void)
                        sE.query[0] ? CTR_DRAW_WHITE : CTR_DRAW_OFF);
     CtrBottomDraw_Plate(CH_SHOW_X, 2, CH_SHOW_W, 20, sE.show != SHOW_ALL ? 1 : 0, sE.show != SHOW_ALL);
     Icon(sE.show == SHOW_EDITED ? ICON_EDIT : ICON_FILTER, false, CH_SHOW_X + 4, 6, InkOn(sE.show != SHOW_ALL));
-    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, sE.show == SHOW_EDITED ? "EDITED" : sE.show == SHOW_NEW ? "NEW" : "ALL",
+    CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL,
+                       sE.show == SHOW_EDITED ? "EDITED" : sE.show == SHOW_NEW ? "NEW" : sE.show == SHOW_FIX ? "FIX" : "ALL",
                        CH_SHOW_X + 19, 5, sE.show != SHOW_ALL ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
     CtrBottomDraw_Plate(CH_SORT_X, 2, CH_SORT_W, 20, sE.editedFirst ? 1 : 0, sE.editedFirst);
     Icon(ICON_SORT, false, CH_SORT_X + 4, 6, InkOn(sE.editedFirst));
@@ -4876,7 +4924,8 @@ static void DrawChooser(void)
     sE.iconsMissing = false;
     if (count == 0)
         CtrBottomDraw_TextCentred(CTR_DRAW_FONT_NORMAL, sE.show == SHOW_EDITED ? "NO EDITED PICTURES YET"
-                                  : sE.show == SHOW_NEW ? "NOTHING NEW FROM THE SERVER" : "NOTHING BY THAT NAME",
+                                  : sE.show == SHOW_NEW ? "NOTHING NEW FROM THE SERVER"
+                                  : sE.show == SHOW_FIX ? "NOTHING MARKED FIX" : "NOTHING BY THAT NAME",
                                   W / 2, H / 2 - 8, CTR_DRAW_DARK);
     for (unsigned cell = 0; cell < CH_PER_PAGE; ++cell)
     {
@@ -4907,6 +4956,18 @@ static void DrawChooser(void)
         else snprintf(line, sizeof(line), "%c%03u %s", kind == CTR_STEREO_ID_BACK ? 'B' : kind == CTR_STEREO_ID_TRAINER ? 'T' : 'P',
                       number, name);
         CtrBottomDraw_Text(CTR_DRAW_FONT_SMALL, line, x + 36, y + 2, cur ? CTR_DRAW_WHITE : CTR_DRAW_DARK);
+        /* The review before the beta, top left over the icon: red when a
+         * side needs work, green when every side is good enough. */
+        {
+            uint16_t other = CtrStereoMon_Counterpart(id);
+            unsigned mine = CtrOnline_Review(id, NULL), theirs = other ? CtrOnline_Review(other, NULL) : CTR_ONLINE_REVIEW_OK;
+
+            if (mine == CTR_ONLINE_REVIEW_FIX || theirs == CTR_ONLINE_REVIEW_FIX || (mine == CTR_ONLINE_REVIEW_OK && theirs == CTR_ONLINE_REVIEW_OK))
+            {
+                DrawDisc(x + 7, y + 5, 4, Rgb(1, 2, 2));
+                DrawDisc(x + 7, y + 5, 3, mine == CTR_ONLINE_REVIEW_OK && theirs == CTR_ONLINE_REVIEW_OK ? Rgb(8, 56, 10) : Rgb(31, 12, 8));
+            }
+        }
         /* What the server has of it (the front's and the back's), and whose
          * it is when the card has no edit of its own. */
         {

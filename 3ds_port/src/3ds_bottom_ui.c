@@ -1402,6 +1402,13 @@ static int DrawStr(const Font *font, const u8 *str, int x, int y, u16 fg, u16 sh
     return x;
 }
 
+/* Centred on cx by its advance width (the plane editor's labels; dev
+ * dropped its own copy). */
+static void DrawStrCentered(const Font *font, const u8 *str, int cx, int y, u16 fg, u16 shadow)
+{
+    DrawStr(font, str, cx - StrWidth(font, str) / 2, y, fg, shadow);
+}
+
 static void DrawStrRight(const Font *font, const u8 *str, int right, int y, u16 fg, u16 shadow)
 {
     DrawStr(font, str, right - StrWidth(font, str), y, fg, shadow);
