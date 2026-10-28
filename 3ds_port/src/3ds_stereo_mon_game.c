@@ -535,9 +535,9 @@ void CtrStereoMonGame_Frame(void)
     }
     else if (sGallery && (down & CTR_KEY_SELECT) && !(held & CTR_KEY_START) && CtrOnline_Linked())
     {
-        /* SELECT: everybody's current planes down from the server (the top
-         * screen shows how it goes; 3ds_online.c). */
-        CtrOnline_Sync();
+        /* SELECT: SYNC, the one button: this card's new edits up, everybody's
+         * current planes down (the top screen shows how it goes; 3ds_online.c). */
+        CtrOnline_SyncAll();
     }
     if (sGallery)
     {

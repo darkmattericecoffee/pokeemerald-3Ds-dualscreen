@@ -63,6 +63,10 @@ bool CtrOnline_UploadPair(uint16_t id, uint16_t other);
 bool CtrOnline_Delete(uint16_t id, uint32_t version);
 bool CtrOnline_UploadAll(void);
 bool CtrOnline_Sync(void);
+/* SYNC, the one button: UploadAll, then Sync, the Pokédex's index, and the
+ * votes and review marks waiting on the card. Nothing else starts a job
+ * by itself (but FOLLOW WEB's poll, while it is switched on). */
+bool CtrOnline_SyncAll(void);
 /*
  * A picture's versions on the server, the most votes first (among equals
  * the newest): who uploaded each, its votes, whether it is current, voted
@@ -121,8 +125,12 @@ unsigned CtrOnline_VersionCount(uint16_t id, bool *voted);
 /* Who uploaded the picture's current version (from the same list). */
 bool CtrOnline_CurrentAuthor(uint16_t id, char *out, unsigned size);
 /* The server's number of the version on the card (0: none, or the card's
- * own edit the server does not have). Reads the card: not every frame. */
+ * own edit the server does not have). A lookup: the card's digests are
+ * remembered (read once, or told by CardSaved). */
 uint32_t CtrOnline_CardVersion(uint16_t id);
+/* The edit file just saved by the editor, by its SHA-256 (hex); NULL when
+ * the file was removed. */
+void CtrOnline_CardSaved(uint16_t id, const char *sha);
 bool CtrOnline_Busy(void);
 /* TEST SERVER: the server in use checked as tools/tlsprobe does - the HTTPS
  * handshake with the pinned root (and, when it fails, again without the

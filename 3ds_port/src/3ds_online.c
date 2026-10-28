@@ -45,6 +45,7 @@
 #include "3ds_platform.h"
 #include "3ds_stereo_mon.h"
 #include "3ds_online_root.h"
+#include "3ds_card_writer.h"
 
 #define DATA_DIR "sdmc:/3ds/emerald3ds"
 #define LINK_PATH DATA_DIR "/online.txt"
@@ -58,8 +59,6 @@
 #define REVIEWS_PATH DATA_DIR "/online_reviews.txt"
 #define MAX_REVIEWS 1024
 #define MAX_INDEX 1024
-/* A vote kept on the card is tried again this often while it waits. */
-#define FLUSH_RETRY_MS 60000
 #define MAX_NEW 512
 #define EDIT_DIR DATA_DIR "/" CTR_STEREO_EDIT_DIR
 #define BACKUP_DIR EDIT_DIR "/backup"
@@ -96,7 +95,7 @@ typedef struct
 } Link;
 
 enum { JOB_PAIR, JOB_UPLOAD, JOB_UPLOAD_ALL, JOB_SYNC, JOB_VERSIONS, JOB_USE, JOB_FLUSH, JOB_INDEX, JOB_DELETE, JOB_TEST,
-       JOB_NAME, JOB_FILES, JOB_FOCUS };
+       JOB_NAME, JOB_FILES, JOB_FOCUS, JOB_SYNC_ALL };
 
 typedef struct
 {
@@ -283,11 +282,14 @@ static uint16_t IdOf(const char *key)
 
 static uint8_t *ReadWhole(const char *path, uint32_t max, uint32_t *size)
 {
-    FILE *f = fopen(path, "rb");
+    FILE *f;
     uint8_t *data;
     long n;
 
     *size = 0;
+    /* A save still queued for the card (3ds_card_writer.c) goes first. */
+    CtrCardWriter_Flush();
+    f = fopen(path, "rb");
     if (f == NULL) return NULL;
     fseek(f, 0, SEEK_END);
     n = ftell(f);
@@ -425,84 +427,146 @@ typedef struct
     uint32_t version; /* the server's version number, 0 when unknown */
 } Sent;
 
-typedef struct
-{
-    Sent *items;
-    unsigned count;
-    bool changed;
-} SentList;
+/* online_sent.txt in memory, read once (guarded by sLock) and written
+ * whole by the worker after a change: the game thread never parses it. */
+static Sent *sSent;
+static unsigned sSentCount;
+static bool sSentRead, sSentChanged;
 
-static void SentLoad(SentList *list)
+/* Called with sLock held. */
+static void SentEnsureLocked(void)
 {
-    FILE *f = fopen(SENT_PATH, "r");
+    FILE *f;
     char line[96];
 
-    list->items = calloc(MAX_SENT, sizeof(Sent));
-    list->count = 0;
-    list->changed = false;
-    if (f == NULL || list->items == NULL)
+    if (sSentRead) return;
+    sSentRead = true;
+    sSentCount = 0;
+    if (sSent == NULL && (sSent = calloc(MAX_SENT, sizeof(Sent))) == NULL) return;
+    CtrCardWriter_Flush();
+    if ((f = fopen(SENT_PATH, "r")) == NULL) return;
+    while (sSentCount < MAX_SENT && fgets(line, sizeof(line), f))
     {
-        if (f) fclose(f);
-        return;
-    }
-    while (list->count < MAX_SENT && fgets(line, sizeof(line), f))
-    {
-        Sent *s = &list->items[list->count];
-
+        Sent *e = &sSent[sSentCount];
         unsigned long version = 0;
 
-        if (sscanf(line, "%7s %64s %lu", s->key, s->sha, &version) >= 2 && strlen(s->sha) == 64)
+        if (sscanf(line, "%7s %64s %lu", e->key, e->sha, &version) >= 2 && strlen(e->sha) == 64)
         {
-            s->version = (uint32_t)version;
-            ++list->count;
+            e->version = (uint32_t)version;
+            ++sSentCount;
         }
     }
     fclose(f);
 }
 
-static bool SentHas(const SentList *list, const char *key, const char *sha)
+static bool SentHas(const char *key, const char *sha)
 {
-    for (unsigned i = 0; i < list->count; ++i)
-        if (strcmp(list->items[i].key, key) == 0) return strcmp(list->items[i].sha, sha) == 0;
-    return false;
+    bool has = false;
+
+    Lock();
+    SentEnsureLocked();
+    for (unsigned i = 0; i < sSentCount; ++i)
+        if (strcmp(sSent[i].key, key) == 0)
+        {
+            has = strcmp(sSent[i].sha, sha) == 0;
+            break;
+        }
+    Unlock();
+    return has;
 }
 
-static void SentPut(SentList *list, const char *key, const char *sha, uint32_t version)
+static void SentPut(const char *key, const char *sha, uint32_t version)
 {
     unsigned i;
 
-    if (list->items == NULL) return;
-    for (i = 0; i < list->count && strcmp(list->items[i].key, key) != 0; ++i) {}
-    if (i == list->count)
+    Lock();
+    SentEnsureLocked();
+    if (sSent == NULL)
     {
-        if (list->count == MAX_SENT) return;
-        ++list->count;
-        list->items[i].version = 0;
-        list->items[i].sha[0] = 0;
+        Unlock();
+        return;
+    }
+    for (i = 0; i < sSentCount && strcmp(sSent[i].key, key) != 0; ++i) {}
+    if (i == sSentCount)
+    {
+        if (sSentCount == MAX_SENT)
+        {
+            Unlock();
+            return;
+        }
+        ++sSentCount;
+        sSent[i].version = 0;
+        sSent[i].sha[0] = 0;
     }
     /* The same file without a number (an older line) keeps the one it had. */
-    if (version || strcmp(list->items[i].sha, sha) != 0) list->items[i].version = version;
-    snprintf(list->items[i].key, sizeof(list->items[i].key), "%s", key);
-    snprintf(list->items[i].sha, sizeof(list->items[i].sha), "%s", sha);
-    list->changed = true;
+    if (version || strcmp(sSent[i].sha, sha) != 0) sSent[i].version = version;
+    snprintf(sSent[i].key, sizeof(sSent[i].key), "%s", key);
+    snprintf(sSent[i].sha, sizeof(sSent[i].sha), "%s", sha);
+    sSentChanged = true;
+    Unlock();
 }
 
-static void SentSave(SentList *list)
+/* Worker thread: the list to the card when it changed. */
+static void SentSave(void)
 {
-    char *text;
+    char *text = NULL;
     size_t n = 0;
 
-    if (list->items && list->changed && (text = malloc(list->count * 80 + 1)) != NULL)
+    Lock();
+    if (sSent && sSentChanged && (text = malloc(sSentCount * 80 + 1)) != NULL)
     {
-        for (unsigned i = 0; i < list->count; ++i)
-            n += (size_t)sprintf(text + n, "%s %s %lu\n", list->items[i].key, list->items[i].sha,
-                                 (unsigned long)list->items[i].version);
-        if (!WriteWhole(SENT_PATH, text, (uint32_t)n))
-            CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", SENT_PATH);
+        for (unsigned i = 0; i < sSentCount; ++i)
+            n += (size_t)sprintf(text + n, "%s %s %lu\n", sSent[i].key, sSent[i].sha, (unsigned long)sSent[i].version);
+        sSentChanged = false;
+    }
+    Unlock();
+    if (text)
+    {
+        if (!WriteWhole(SENT_PATH, text, (uint32_t)n)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", SENT_PATH);
         free(text);
     }
-    free(list->items);
-    list->items = NULL;
+}
+
+/* ── The card's files' digests, remembered ─────────────────────────── */
+
+/* The SHA-256 of each edit file as the card holds it, learnt when the
+ * file is read once, saved (CtrOnline_CardSaved) or written by a job: what
+ * the game thread asks after every job (CtrOnline_CardVersion) is then a
+ * lookup, not a read of the card. An empty digest is a picture known to
+ * have no file. Guarded by sLock. */
+#define CARD_CACHE 160
+typedef struct
+{
+    uint16_t id;
+    char sha[65];
+} Card;
+static Card sCards[CARD_CACHE];
+static unsigned sCardCount, sCardNext;
+
+static void CardSha(uint16_t id, char sha[65]);
+
+static Card *CardLocked(uint16_t id)
+{
+    for (unsigned i = 0; i < sCardCount; ++i)
+        if (sCards[i].id == id) return &sCards[i];
+    return NULL;
+}
+
+static void CardPutLocked(uint16_t id, const char *sha)
+{
+    Card *c = CardLocked(id);
+
+    if (c == NULL)
+    {
+        if (sCardCount < CARD_CACHE) c = &sCards[sCardCount++];
+        else
+        {
+            c = &sCards[sCardNext];
+            sCardNext = (sCardNext + 1) % CARD_CACHE;
+        }
+        c->id = id;
+    }
+    snprintf(c->sha, sizeof(c->sha), "%s", sha ? sha : "");
 }
 
 /* ── HTTP ───────────────────────────────────────────────────────────── */
@@ -900,7 +964,7 @@ static void DoPair(const Job *job, Link *link)
     ReplyFree(&reply);
 }
 
-static int UploadOne(const Link *link, uint16_t id, SentList *sent, bool *stop)
+static int UploadOne(const Link *link, uint16_t id, bool *stop)
 {
     char key[8], path[64], urlPath[48], sha[65];
     uint8_t *data;
@@ -918,6 +982,9 @@ static int UploadOne(const Link *link, uint16_t id, SentList *sent, bool *stop)
         return -1;
     }
     Sha256Hex(data, size, sha);
+    Lock();
+    CardPutLocked(id, sha);
+    Unlock();
     snprintf(urlPath, sizeof(urlPath), "/api/mons/%s/versions", key);
     if (!Http(link, HTTPC_METHOD_POST, urlPath, data, size, "application/octet-stream", &reply))
     {
@@ -930,7 +997,7 @@ static int UploadOne(const Link *link, uint16_t id, SentList *sent, bool *stop)
 
         JsonNumber((const char *)reply.body, "version_id", &version);
         JsonNumber((const char *)reply.body, "current", &current);
-        SentPut(sent, key, sha, (uint32_t)version);
+        SentPut(key, sha, (uint32_t)version);
         CtrLog_Write(CTR_LOG_FS, "online: %s %s as version %ld%s", key, reply.status == 201 ? "uploaded" : "already there",
                      version, current ? ", current" : "");
         result = reply.status == 201 ? 1 : 0;
@@ -948,41 +1015,44 @@ static int UploadOne(const Link *link, uint16_t id, SentList *sent, bool *stop)
 
 static void DoUpload(const Job *job, const Link *link)
 {
-    SentList sent;
     bool stop;
     int result;
 
     SetStatus(CTR_ONLINE_BUSY, "UPLOADING...");
-    SentLoad(&sent);
-    result = UploadOne(link, job->id, &sent, &stop);
+    result = UploadOne(link, job->id, &stop);
     /* The other side too (a front's back), when asked for. */
     if (job->id2 && result >= 0 && !stop)
     {
-        int second = UploadOne(link, job->id2, &sent, &stop);
+        int second = UploadOne(link, job->id2, &stop);
 
         if (second < 0) result = -1;
         else if (second > 0) result = 1;
     }
     if (result > 0) SetStatus(CTR_ONLINE_DONE, "UPLOADED");
     else if (result == 0) SetStatus(CTR_ONLINE_DONE, "ALREADY ON SERVER");
-    SentSave(&sent);
+    SentSave();
 }
 
-static void DoUploadAll(const Link *link)
+/* Every edit file the server does not have yet. `sentOut` how many went,
+ * `failedOut` whether any could not. */
+static void DoUploadAll(const Link *link, unsigned *sentOut, bool *failedOut)
 {
     uint16_t *ids = malloc(MAX_SENT * sizeof(uint16_t));
     unsigned count = 0, done = 0, known = 0, failed = 0;
-    SentList sent;
     DIR *d;
     struct dirent *e;
 
+    *sentOut = 0;
+    *failedOut = false;
     SetStatus(CTR_ONLINE_BUSY, "UPLOADING...");
     if (ids == NULL)
     {
         SetStatus(CTR_ONLINE_ERROR, "OUT OF MEMORY");
+        *failedOut = true;
         return;
     }
-    SentLoad(&sent);
+    /* A save still queued for the card is a file to send too. */
+    CtrCardWriter_Flush();
     if ((d = opendir(EDIT_DIR)) != NULL)
     {
         while ((e = readdir(d)) != NULL && count < MAX_SENT)
@@ -1000,31 +1070,30 @@ static void DoUploadAll(const Link *link)
     }
     for (unsigned i = 0; i < count; ++i)
     {
-        char key[8], path[64], sha[65];
-        uint8_t *data;
-        uint32_t size;
+        char key[8], sha[65];
         bool stop = false;
         int result;
 
         KeyOf(ids[i], key, sizeof(key));
-        snprintf(path, sizeof(path), EDIT_DIR "/%s.bin", key);
-        if ((data = ReadWhole(path, MAX_EDIT, &size)) == NULL) continue;
-        Sha256Hex(data, size, sha);
-        free(data);
-        if (SentHas(&sent, key, sha))
+        /* The digest from the cache when the file was seen before. */
+        CardSha(ids[i], sha);
+        if (sha[0] == 0) continue;
+        if (SentHas(key, sha))
         {
             ++known;
             continue;
         }
         SetStatus(CTR_ONLINE_BUSY, "SENDING %u OF %u", i + 1, count);
-        result = UploadOne(link, ids[i], &sent, &stop);
+        result = UploadOne(link, ids[i], &stop);
         if (result > 0) ++done;
         else if (result == 0) ++known;
         else ++failed;
         if (stop) break;
     }
-    SentSave(&sent);
+    SentSave();
     free(ids);
+    *sentOut = done;
+    *failedOut = failed != 0;
     CtrLog_Write(CTR_LOG_FS, "online: upload all: %u files, %u sent, %u known, %u failed", count, done, known, failed);
     if (failed) return; /* the failure's own status stays */
     if (count == 0) SetStatus(CTR_ONLINE_DONE, "NO EDITS TO SEND");
@@ -1091,17 +1160,19 @@ static void PutNew(const uint16_t *ids, unsigned count)
     Unlock();
 }
 
-static void DoSync(Link *link)
+/* `gotOut` how many pictures came down, `failedOut` whether it stopped. */
+static void DoSync(Link *link, unsigned *gotOut, bool *failedOut)
 {
     char urlPath[48];
     Reply list;
-    SentList sent;
     const char *p;
     long seq = 0;
     unsigned got = 0, kept = 0, same = 0, items = 0, own = 0;
     bool ok = true;
     static uint16_t fetched[MAX_NEW];
 
+    *gotOut = 0;
+    *failedOut = true;
     SetStatus(CTR_ONLINE_BUSY, "SYNCING...");
     snprintf(urlPath, sizeof(urlPath), "/api/sync?since=%u", link->seq);
     if (!Http(link, HTTPC_METHOD_GET, urlPath, NULL, 0, NULL, &list) || list.status != 200
@@ -1112,7 +1183,6 @@ static void DoSync(Link *link)
         return;
     }
     mkdir(EDIT_DIR, 0777);
-    SentLoad(&sent);
     for (const char *item = strchr(p, '{'); item != NULL && ok; item = strchr(item + 1, '{'))
     {
         char object[320], key[16], sha[65], localSha[65], path[64], versionPath[40];
@@ -1134,9 +1204,12 @@ static void DoSync(Link *link)
         if (local)
         {
             Sha256Hex(local, localSize, localSha);
+            Lock();
+            CardPutLocked(IdOf(key), localSha);
+            Unlock();
             if (strcmp(localSha, sha) == 0)
             {
-                SentPut(&sent, key, sha, (uint32_t)version);
+                SentPut(key, sha, (uint32_t)version);
                 ++same;
                 free(local);
                 continue;
@@ -1144,7 +1217,7 @@ static void DoSync(Link *link)
             /* The card's file is no server version (an edit of this card's
              * own, not sent yet): it stays. A sync once put the server's
              * current over nine such edits, which went to backup unseen. */
-            if (!SentHas(&sent, key, localSha))
+            if (!SentHas(key, localSha))
             {
                 ++own;
                 CtrLog_Write(CTR_LOG_FS, "online: %s: the card's own edit kept, not the server's current", key);
@@ -1181,7 +1254,10 @@ static void DoSync(Link *link)
             }
             else
             {
-                SentPut(&sent, key, sha, (uint32_t)version);
+                SentPut(key, sha, (uint32_t)version);
+                Lock();
+                CardPutLocked(IdOf(key), sha);
+                Unlock();
                 if (got < MAX_NEW) fetched[got] = IdOf(key);
                 ++got;
                 kept += local != NULL;
@@ -1193,7 +1269,8 @@ static void DoSync(Link *link)
         free(local);
     }
     ReplyFree(&list);
-    SentSave(&sent);
+    SentSave();
+    *gotOut = got;
     if (got)
     {
         Lock();
@@ -1204,11 +1281,28 @@ static void DoSync(Link *link)
     CtrLog_Write(CTR_LOG_FS, "online: sync since %u: %u items, %u fetched, %u kept in backup, %u the same, %u own edits kept%s", link->seq,
                  items, got, kept, same, own, ok ? "" : ", STOPPED");
     if (!ok) return; /* the failure's status stays, and the next sync starts from the same place */
+    *failedOut = false;
     link->seq = (unsigned)seq;
     if (!PutLink(link)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", LINK_PATH);
     if (got == 0) SetStatus(CTR_ONLINE_DONE, "UP TO DATE");
     else if (kept) SetStatus(CTR_ONLINE_DONE, "GOT %u. BACKUP %u", got, kept);
     else SetStatus(CTR_ONLINE_DONE, "GOT %u NEW", got);
+}
+
+/* SYNC (the one button): what is new on the card up, what is new on the
+ * server down; the Worker adds the index and the waiting votes and marks. */
+static void DoSyncAll(Link *link)
+{
+    unsigned sent = 0, got = 0;
+    bool upFailed = false, syncFailed = false;
+
+    DoUploadAll(link, &sent, &upFailed);
+    if (sNetFailed) return; /* no server: the upload's status says so */
+    DoSync(link, &got, &syncFailed);
+    if (syncFailed) return;
+    if (upFailed) SetStatus(CTR_ONLINE_ERROR, "NOT ALL SENT. GOT %u", got);
+    else if (sent == 0 && got == 0) SetStatus(CTR_ONLINE_DONE, "UP TO DATE");
+    else SetStatus(CTR_ONLINE_DONE, "SENT %u. GOT %u NEW", sent, got);
 }
 
 /* The card's file of an id: its SHA-256, or "" without one. */
@@ -1217,7 +1311,13 @@ static void CardSha(uint16_t id, char sha[65])
     char key[8], path[64];
     uint32_t size;
     uint8_t *data;
+    Card *c;
 
+    Lock();
+    c = CardLocked(id);
+    if (c) memcpy(sha, c->sha, 65);
+    Unlock();
+    if (c) return;
     KeyOf(id, key, sizeof(key));
     snprintf(path, sizeof(path), EDIT_DIR "/%s.bin", key);
     sha[0] = 0;
@@ -1226,6 +1326,9 @@ static void CardSha(uint16_t id, char sha[65])
         Sha256Hex(data, size, sha);
         free(data);
     }
+    Lock();
+    CardPutLocked(id, sha);
+    Unlock();
 }
 
 /* The numbers in a JSON array named `name`, up to `max`. */
@@ -1307,13 +1410,11 @@ static bool ParseVersions(uint16_t id, const char *json)
     for (unsigned i = 0; i < list.count; ++i)
         if (list.v[i].onCard)
         {
-            SentList sent;
             char key[8];
 
             KeyOf(id, key, sizeof(key));
-            SentLoad(&sent);
-            SentPut(&sent, key, shas[i], list.v[i].version);
-            SentSave(&sent);
+            SentPut(key, shas[i], list.v[i].version);
+            SentSave();
             break;
         }
     Lock();
@@ -1366,7 +1467,6 @@ static void DoUse(const Job *job, const Link *link)
     Reply reply;
     uint8_t *local;
     uint32_t localSize;
-    SentList sent;
 
     SetStatus(CTR_ONLINE_BUSY, "LOADING %lu...", (unsigned long)job->version);
     KeyOf(job->id, key, sizeof(key));
@@ -1410,10 +1510,10 @@ static void DoUse(const Job *job, const Link *link)
     if (!WriteWhole(path, reply.body, reply.length)) SetStatus(CTR_ONLINE_ERROR, "CANNOT WRITE SD");
     else
     {
-        SentLoad(&sent);
-        SentPut(&sent, key, sha, job->version);
-        SentSave(&sent);
+        SentPut(key, sha, job->version);
+        SentSave();
         Lock();
+        CardPutLocked(job->id, sha);
         for (unsigned i = 0; i < sVersions.count && sVersions.id == job->id; ++i)
             sVersions.v[i].onCard = sVersions.v[i].version == job->version;
         ++sVersionsSerial;
@@ -1611,7 +1711,8 @@ static void WriteFavs(void)
         n += (size_t)snprintf(text + n, size - n, "\n");
     }
     Unlock();
-    if (!WriteWhole(VOTES_PATH, text, (uint32_t)n)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", VOTES_PATH);
+    /* Off the game thread (3ds_card_writer.c): a tap on a star does not wait. */
+    CtrCardWriter_Queue(VOTES_PATH, text, (uint32_t)n, false);
     free(text);
 }
 
@@ -1677,7 +1778,7 @@ static void WriteMarks(void)
         n += (size_t)snprintf(text + n, size - n, "%s %u %u\n", key, sMarks[i].status, sMarks[i].pending ? 1u : 0u);
     }
     Unlock();
-    if (!WriteWhole(REVIEWS_PATH, text, (uint32_t)n)) CtrLog_Write(CTR_LOG_ERROR, "online: cannot write %s", REVIEWS_PATH);
+    CtrCardWriter_Queue(REVIEWS_PATH, text, (uint32_t)n, false);
     free(text);
 }
 
@@ -1969,18 +2070,18 @@ static void DoDelete(const Job *job, const Link *link)
     }
     else
     {
-        SentList sent;
-
         /* The card keeps its file; the server no longer has it. */
-        SentLoad(&sent);
-        for (unsigned i = 0; i < sent.count; ++i)
-            if (strcmp(sent.items[i].key, key) == 0 && sent.items[i].version == job->version)
+        Lock();
+        SentEnsureLocked();
+        for (unsigned i = 0; i < sSentCount; ++i)
+            if (strcmp(sSent[i].key, key) == 0 && sSent[i].version == job->version)
             {
                 /* Still counted as sent: UPLOAD ALL does not put it back. */
-                sent.items[i].version = 0;
-                sent.changed = true;
+                sSent[i].version = 0;
+                sSentChanged = true;
             }
-        SentSave(&sent);
+        Unlock();
+        SentSave();
         ParseVersions(job->id, (const char *)reply.body);
         CtrLog_Write(CTR_LOG_FS, "online: %s version %lu deleted from the server", key, (unsigned long)job->version);
         SetStatus(CTR_ONLINE_DONE, "DELETED FROM SERVER");
@@ -2144,8 +2245,23 @@ static void Worker(void *arg)
         {
         case JOB_PAIR: DoPair(&job, &link); break;
         case JOB_UPLOAD: DoUpload(&job, &link); break;
-        case JOB_UPLOAD_ALL: DoUploadAll(&link); break;
-        case JOB_SYNC: DoSync(&link); break;
+        case JOB_UPLOAD_ALL:
+        {
+            unsigned sent;
+            bool failed;
+
+            DoUploadAll(&link, &sent, &failed);
+            break;
+        }
+        case JOB_SYNC:
+        {
+            unsigned got;
+            bool failed;
+
+            DoSync(&link, &got, &failed);
+            break;
+        }
+        case JOB_SYNC_ALL: DoSyncAll(&link); break;
         case JOB_VERSIONS: DoVersions(&job, &link); break;
         case JOB_USE: DoUse(&job, &link); break;
         case JOB_FLUSH: DoFlush(&link); break;
@@ -2160,7 +2276,7 @@ static void Worker(void *arg)
         if (job.type != JOB_NAME && sNamePending && !sNetFailed && link.token[0]) DoName(&link);
         /* After a sync, the Pokédex's counts; and any vote still on the
          * card goes along while the server is there. */
-        if (job.type == JOB_SYNC && !sNetFailed) DoIndex(&link);
+        if ((job.type == JOB_SYNC || job.type == JOB_SYNC_ALL) && !sNetFailed) DoIndex(&link);
         if (job.type != JOB_FLUSH && job.type != JOB_PAIR && !sNetFailed && link.token[0] && PendingVotes())
             DoFlush(&link);
         httpcExit();
@@ -2465,6 +2581,15 @@ bool CtrOnline_Sync(void)
     return Start(&job);
 }
 
+bool CtrOnline_SyncAll(void)
+{
+    Job job;
+
+    memset(&job, 0, sizeof(job));
+    job.type = JOB_SYNC_ALL;
+    return Start(&job);
+}
+
 bool CtrOnline_FetchVersions(uint16_t id)
 {
     Job job;
@@ -2568,7 +2693,6 @@ bool CtrOnline_UseVersion(uint16_t id, uint32_t version)
 
 bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count)
 {
-    Job job;
     bool busy;
 
     /* Kept on the card first, so a vote is never lost; then sent. */
@@ -2600,11 +2724,8 @@ bool CtrOnline_Vote(uint16_t id, const uint32_t *versions, unsigned count)
     }
     Unlock();
     WriteFavs();
-    CtrLog_Write(CTR_LOG_FS, "online: favourites of %04x kept (%u)%s", id, count, busy ? ", sent after this job" : "");
-    if (busy || !CtrOnline_Linked()) return true;
-    memset(&job, 0, sizeof(job));
-    job.type = JOB_FLUSH;
-    Start(&job);
+    CtrLog_Write(CTR_LOG_FS, "online: favourites of %04x kept (%u)%s", id, count,
+                 busy ? ", sent after this job" : ", sent with the next SYNC");
     return true;
 }
 
@@ -2632,7 +2753,6 @@ unsigned CtrOnline_PendingVotes(void) { return PendingVotes(); }
 
 bool CtrOnline_SetReview(uint16_t id, unsigned status)
 {
-    Job job;
     bool busy;
 
     if (status > CTR_ONLINE_REVIEW_OK) return false;
@@ -2652,11 +2772,7 @@ bool CtrOnline_SetReview(uint16_t id, unsigned status)
     Unlock();
     WriteMarks();
     CtrLog_Write(CTR_LOG_FS, "online: review mark of %04x kept (%s)%s", id, sMarkWords[status],
-                 busy ? ", sent after this job" : "");
-    if (busy || !CtrOnline_Linked()) return true;
-    memset(&job, 0, sizeof(job));
-    job.type = JOB_FLUSH;
-    Start(&job);
+                 busy ? ", sent after this job" : ", sent with the next SYNC");
     return true;
 }
 
@@ -2736,18 +2852,25 @@ unsigned CtrOnline_VersionCount(uint16_t id, bool *voted)
 
 uint32_t CtrOnline_CardVersion(uint16_t id)
 {
-    SentList sent;
     char key[8], card[65];
     uint32_t version = 0;
 
     CardSha(id, card);
     if (card[0] == 0) return 0;
     KeyOf(id, key, sizeof(key));
-    SentLoad(&sent);
-    for (unsigned i = 0; i < sent.count; ++i)
-        if (strcmp(sent.items[i].key, key) == 0 && strcmp(sent.items[i].sha, card) == 0) version = sent.items[i].version;
-    free(sent.items);
+    Lock();
+    SentEnsureLocked();
+    for (unsigned i = 0; i < sSentCount; ++i)
+        if (strcmp(sSent[i].key, key) == 0 && strcmp(sSent[i].sha, card) == 0) version = sSent[i].version;
+    Unlock();
     return version;
+}
+
+void CtrOnline_CardSaved(uint16_t id, const char *sha)
+{
+    Lock();
+    CardPutLocked(id, sha);
+    Unlock();
 }
 
 bool CtrOnline_Busy(void)
@@ -2809,7 +2932,7 @@ bool CtrOnline_LastWasSync(void)
     bool sync;
 
     Lock();
-    sync = sLastJob == JOB_SYNC;
+    sync = sLastJob == JOB_SYNC || sLastJob == JOB_SYNC_ALL;
     Unlock();
     return sync;
 }
@@ -3059,24 +3182,8 @@ void CtrOnline_Frame(void)
         aptSetSleepAllowed(!busy);
         sSleepHeld = busy;
     }
-    /* Votes left on the card by a missing connection: tried again now and then. */
-    {
-        static uint64_t lastTry;
-        uint64_t now = CtrPlatform_Milliseconds();
-
-        if (!busy && now - lastTry > FLUSH_RETRY_MS)
-        {
-            lastTry = now;
-            if (PendingVotes() && CtrOnline_Linked())
-            {
-                Job job;
-
-                memset(&job, 0, sizeof(job));
-                job.type = JOB_FLUSH;
-                Start(&job);
-            }
-        }
-    }
+    /* Votes and marks wait on the card for the next SYNC (or any job the
+     * player starts): nothing starts by itself here. */
     if (written) CtrStereoMon_EditsChanged();
     /* A version picked on the console: the picture on show (the editor's
      * too) is read from the card again. */

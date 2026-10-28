@@ -54,7 +54,7 @@ SOURCES += src/3ds_video.c src/3ds_video_decode.c src/3ds_bottom_screen.c
 SOURCES += src/3ds_stereo_mon.c src/3ds_stereo_mon_decode.c src/3ds_stereo_battle.c src/3ds_stereo_strip.c
 # Sharing plane edits over Wi-Fi (include/3ds_online.h). ONLINE_SERVER=https://...
 # compiles in the server's address; sdmc:/3ds/emerald3ds/online.txt's server= wins.
-SOURCES += src/3ds_online.c src/3ds_online_crypto.c
+SOURCES += src/3ds_online.c src/3ds_online_crypto.c src/3ds_card_writer.c
 ifdef ONLINE_SERVER
 CPPFLAGS += -DCTR_ONLINE_SERVER=\"$(ONLINE_SERVER)\"
 endif

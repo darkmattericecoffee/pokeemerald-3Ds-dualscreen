@@ -289,7 +289,20 @@ CtrOnlineStatus CtrOnline_Status(char *text, unsigned size);  /* IDLE/BUSY/DONE/
   No compiled-in server unless built with `make ONLINE_SERVER=https://...`; without either,
   LINK CONSOLE asks for the address with the system keyboard first.
 - **`online_sent.txt`**: key and SHA-256 of every file the server is known to have (uploaded,
-  already there, or synced down). UPLOAD ALL sends only the rest.
+  already there, or synced down). UPLOAD ALL sends only the rest. Read once into memory and
+  written whole by the worker; the game thread never parses it. The card's own files' digests
+  are remembered too (`CtrOnline_CardSaved` from the editor's save, or learnt once), so
+  "which version is on the card" is a lookup, not a read of the card.
+- **Nothing by itself**: SYNC (the editor's OPTIONS row, SELECT in the gallery, the ONLINE
+  tab's SYNC and status rows) is the one job the console starts: UPLOAD ALL, then the sync,
+  then the index and the votes and review marks waiting on the card. Looking at a picture,
+  opening the Pokédex or tapping a star asks the server for nothing (the versions screen
+  still fetches its own two lists and pictures; FOLLOW WEB polls only while switched on;
+  COPY AND EDIT fetches the one list it needs).
+- **The card off the game thread**: the edit file, `stereo/index.txt`, the edit log,
+  `online_votes.txt` and `online_reviews.txt` go through `3ds_card_writer.c`, a queue
+  written by a thread of its own; a read of one of them flushes the queue first, and so does
+  the shutdown. The index is rewritten only when an entry actually changed.
 - **Sync**: compares each changed item's SHA-256 with the card's file, downloads only the
   differing ones, checks their SHA-256 and magic, copies a differing card file to
   `stereo/backup/<key>-<time>.bin`, writes `<key>.bin.part` and renames it over. `seq` moves
@@ -352,7 +365,7 @@ pinned GlobalSign root, and a version made on the PC synced down. Then, on the u
   START filters ALL/EDITED/NEW, Y searches. Tiles show the number of versions ("3V") and a
   star where this account voted (`GET /api/mons` gives `versions` and `mine`). The top screen
   shows the controls, the page ("PAGE 3 OF 43"), and the version on the card.
-- **Menus**: the third tab is ONLINE (status, LOAD NEW ONES, SEE AND VOTE, UPLOAD ALL EDITS,
+- **Menus**: the third tab is ONLINE (status, SYNC, SEE AND VOTE, UPLOAD ALL EDITS,
   LINK, UNLINK); OPEN NEW ONES, UPLOAD ON FINAL and EDITOR CONTROLS moved to SETTINGS.
 - **Website**: polls `/api/rev` and refreshes the grid and Pokémon pages in place; Docker
   (`Dockerfile`, `docker-compose.yml` with quick and named tunnel profiles).

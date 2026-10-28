@@ -331,9 +331,11 @@ static void OnlineUploadAll(void)
     PlaySE(CtrOnline_UploadAll() ? SE_SELECT : SE_FAILURE);
 }
 
+/* SYNC, the one button (3ds_online.c): the card's new edits up, the
+ * server's new pictures down, the index, the votes and marks waiting. */
 static void OnlineSync(void)
 {
-    PlaySE(CtrOnline_Sync() ? SE_SELECT : SE_FAILURE);
+    PlaySE(CtrOnline_SyncAll() ? SE_SELECT : SE_FAILURE);
 }
 
 static const u8 *OnlineSendText(void)
@@ -343,7 +345,7 @@ static const u8 *OnlineSendText(void)
 
 static const u8 *OnlineSyncText(void)
 {
-    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO FETCH", "TOCA PARA BAJAR", "RECEVOIR", "RICEVI", "TAP TO FETCH", "TAP TO FETCH", "TAP TO FETCH") : "-");
+    return OnlineGame(CtrOnline_Linked() ? CTR_TEXT("TAP TO SYNC", "TOCA PARA SINCR.", "SYNCHRONISER", "SINCRONIZZA", "TAP TO SYNC", "TAP TO SYNC", "TAP TO SYNC") : "-");
 }
 
 static const u8 *OnlineStatusText(void)
@@ -401,10 +403,10 @@ static const u8 *OnlineTestText(void)
     return OnlineGame(CTR_TEXT("TAP TO CHECK", "TOCA PARA PROBAR", "VERIFIER", "VERIFICA", "TAP TO CHECK", "TAP TO CHECK", "TAP TO CHECK"));
 }
 
-/* The status row's refresh button: fetch what is new on the server. */
+/* The status row's refresh button: SYNC. */
 static void OnlineStatusTap(void)
 {
-    PlaySE(CtrOnline_Linked() && CtrOnline_Sync() ? SE_SELECT : SE_FAILURE);
+    PlaySE(CtrOnline_Linked() && CtrOnline_SyncAll() ? SE_SELECT : SE_FAILURE);
 }
 
 /* YOUR NAME: the author's name with the system keyboard; once linked, the
@@ -514,13 +516,13 @@ const CtrExtra gCtrExtras[] =
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SYNC CLOCK", "SINCR. RELOJ", "SYNCHRO HORLOGE", "SINCR. OROLOGIO", "SINCR. RELÓGIO", "UHR SYNCHR.", "とけいを あわせる"), "clock_sync", 0, 0, sClockSync, SyncClock, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("WILD POKEMON", "POKéMON SALV.", "POKÉMON SAUV.", "POKéMON SELV.", "POKéMON SELV.", "WILDE POKéMON", "やせいの ポケモン"), "timed_encounters", 2, 0, sTimedEncounters, NULL, NULL, NULL},
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("SHOW CLOCK", "VER RELOJ", "VOIR HORLOGE", "MOSTRA OROLOGIO", "MOSTRAR RELÓGIO", "UHR ZEIGEN", "とけい ひょうじ"), "show_clock", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
-    /* Sharing the plane editor's edits (3ds_online.c): the third tab, only
-     * to load what is new and to send what is done (voting is in the
-     * editor's Pokédex). The status takes the first row whole (with the
+    /* Sharing the plane editor's edits (3ds_online.c): the third tab. SYNC
+     * sends what is new on the card and loads what is new on the server in
+     * one go (nothing goes by itself; voting is in the editor's Pokédex). The status takes the first row whole (with the
      * pictures the last sync brought; 3ds_bottom_ui.c); gaps keep the
      * cells in two short columns. */
     {CTR_EXTRAS_ONLINE, CTR_TEXT("STATUS", "ESTADO", "ÉTAT", "STATO", "STATUS", "STATUS", "STATUS"), "online_status", 0, 0, NULL, OnlineStatusTap, NULL, OnlineStatusText},
-    {CTR_EXTRAS_ONLINE, CTR_TEXT("LOAD NEW ONES", "BAJAR NUEVOS", "CHARGER NOUV.", "SCARICA NUOVI", "LOAD NEW ONES", "LOAD NEW ONES", "LOAD NEW ONES"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
+    {CTR_EXTRAS_ONLINE, CTR_TEXT("SYNC", "SINCRONIZAR", "SYNCHRO", "SINCRONIZZA", "SINCRONIZAR", "SYNCHRON.", "どうき"), "online_sync", 0, 0, NULL, OnlineSync, NULL, OnlineSyncText},
     {CTR_EXTRAS_ONLINE, CTR_TEXT("SEE AND VOTE", "VER Y VOTAR", "VOIR, VOTER", "VEDI E VOTA", "SEE AND VOTE", "SEE AND VOTE", "SEE AND VOTE"), "online_new", 0, 0, NULL, OnlineOpenNew, NULL, OnlineNewText},
     /* The server: poke.cloudnoud.nl unless another is typed (3ds_online.c). */
     {CTR_EXTRAS_ONLINE, CTR_TEXT("SERVER", "SERVIDOR", "SERVEUR", "SERVER", "SERVER", "SERVER", "SERVER"), "online_server", 0, 0, NULL, OnlineServer, NULL, OnlineServerText},

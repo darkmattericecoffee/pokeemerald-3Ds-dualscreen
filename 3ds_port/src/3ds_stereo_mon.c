@@ -24,6 +24,8 @@
 #include "3ds_log.h"
 #include "3ds_stereo_mon.h"
 #include "3ds_online.h"
+#include "3ds_online_crypto.h"
+#include "3ds_card_writer.h"
 #include "3ds_button_sprites.h"
 #include "3ds_stereo_strip.h"
 
@@ -486,9 +488,18 @@ static void IdsNote(uint16_t id, bool on)
     unsigned i;
 
     for (i = 0; i < sEditIdCount && sEditIds[i] != id; ++i) {}
-    if (on && i == sEditIdCount && sEditIdCount < 2 * CTR_STEREO_MON_MAX_COUNT) sEditIds[sEditIdCount++] = id;
-    else if (!on && i < sEditIdCount) sEditIds[i] = sEditIds[--sEditIdCount];
-    sIndexDirty = true;
+    if (on && i == sEditIdCount && sEditIdCount < 2 * CTR_STEREO_MON_MAX_COUNT)
+    {
+        sEditIds[sEditIdCount++] = id;
+        sIndexDirty = true;
+    }
+    else if (!on && i < sEditIdCount)
+    {
+        sEditIds[i] = sEditIds[--sEditIdCount];
+        sIndexDirty = true;
+    }
+    /* Known already: the index on the card is as it was (it used to be
+     * rewritten on every picture opened). */
 }
 /* The first three letters of each edit file's signer, by the mark's index
  * (fronts by id, backs by their file index): the Pokédex's tags. */
@@ -498,9 +509,12 @@ static void SetWho(uint16_t id, const char *author)
 {
     unsigned bit, side = (id & 0xC000) == 0 ? 0 : 1;
 
+    char who[4] = {0};
+
     if (MarkOf(id, &bit, false) == NULL || bit >= CTR_STEREO_MON_MAX_COUNT) return;
-    memset(sEditWho[side][bit], 0, 4);
-    for (unsigned k = 0; k < 3 && author && author[k] && author[k] != ' '; ++k) sEditWho[side][bit][k] = author[k];
+    for (unsigned k = 0; k < 3 && author && author[k] && author[k] != ' '; ++k) who[k] = author[k];
+    if (memcmp(sEditWho[side][bit], who, 4) == 0) return;
+    memcpy(sEditWho[side][bit], who, 4);
     sIndexDirty = true;
 }
 
@@ -531,6 +545,8 @@ static FILE *OpenEdit(uint16_t id, const char *ext, const char *mode)
     char path[64];
 
     EditPath(id, ext, path, sizeof(path));
+    /* A save still queued for the card (3ds_card_writer.c) goes first. */
+    if (mode[0] == 'r') CtrCardWriter_Flush();
     return fopen(path, mode);
 }
 
@@ -564,8 +580,8 @@ static void SetMarkOf(uint16_t id, bool final, bool on)
     uint8_t *marks = MarkOf(id, &bit, final);
 
     if (marks == NULL) return;
-    if (final) sIndexDirty = true;
-    else IdsNote(id, on);
+    if (final && (((marks[bit >> 3] >> (bit & 7)) & 1) != 0) != on) sIndexDirty = true;
+    if (!final) IdsNote(id, on);
     if (on) marks[bit >> 3] |= (uint8_t)(1 << (bit & 7));
     else marks[bit >> 3] &= (uint8_t)~(1 << (bit & 7));
 }
@@ -1018,18 +1034,23 @@ static uint16_t sLogId;
 bool CtrStereoMon_SaveEdit(void)
 {
     uint8_t header[EDIT_HEADER_BYTES] = {0};
-    FILE *f;
     unsigned frames = sShown.frames < sFrames ? sShown.frames : sFrames;
     bool ok;
+    /* The file whole: the header, the planes, the trailer(s). Queued for
+     * the card (3ds_card_writer.c): SAVE no longer waits on the card. */
+    uint8_t *file;
+    uint32_t fileSize = 0;
+    char path[64];
 
     if (!sActive) return false;
-    EnsureEditDir();
-    f = OpenEdit(sId, "bin", "wb");
-    if (f == NULL)
+    file = malloc(sizeof(header) + (size_t)frames * EDIT_FRAME_BYTES + 2 * META_BYTES);
+    if (file == NULL)
     {
-        CtrLog_Write(CTR_LOG_ERROR, "stereo: cannot write #%u's edit file", sId);
+        CtrLog_Write(CTR_LOG_ERROR, "stereo: no memory to save #%u's edit file", sId);
         return false;
     }
+    EnsureEditDir();
+    EditPath(sId, "bin", path, sizeof(path));
     memcpy(header, CTR_STEREO_EDIT_MAGIC, 8);
     header[8] = (uint8_t)sId;
     header[9] = (uint8_t)(sId >> 8);
@@ -1069,12 +1090,31 @@ bool CtrStereoMon_SaveEdit(void)
         t[11] = (uint8_t)(revision >> 8);
         for (unsigned b = 0; b < 4; ++b) t[12 + b] = (uint8_t)(saved >> (8 * b));
         memcpy(t + 16, CtrStereoMon_Author(), strlen(CtrStereoMon_Author()));
-        ok = fwrite(header, 1, sizeof(header), f) == sizeof(header)
-          && fwrite(sPlanes, 1, frames * EDIT_FRAME_BYTES, f) == frames * EDIT_FRAME_BYTES
-          && fwrite(t, 1, sizeof(t), f) == sizeof(t)
-          && (!base[0] || fwrite(t2, 1, sizeof(t2), f) == sizeof(t2));
+        memcpy(file, header, sizeof(header));
+        fileSize = sizeof(header);
+        memcpy(file + fileSize, sPlanes, frames * EDIT_FRAME_BYTES);
+        fileSize += frames * EDIT_FRAME_BYTES;
+        memcpy(file + fileSize, t, sizeof(t));
+        fileSize += sizeof(t);
+        if (base[0])
+        {
+            memcpy(file + fileSize, t2, sizeof(t2));
+            fileSize += sizeof(t2);
+        }
+        ok = CtrCardWriter_Queue(path, file, fileSize, false);
         if (ok)
         {
+            /* Which server version the card holds is told from this
+             * digest (3ds_online.c), not read back from the card. */
+            CtrSha256 sha;
+            uint8_t digest[32];
+            char hex[65];
+
+            CtrSha256_Init(&sha);
+            CtrSha256_Update(&sha, file, fileSize);
+            CtrSha256_Final(&sha, digest);
+            CtrHex(digest, 32, hex);
+            CtrOnline_CardSaved(sId, hex);
             sMeta.revision = revision;
             sMeta.saved = saved;
             snprintf(sMeta.author, sizeof(sMeta.author), "%s", CtrStereoMon_Author());
@@ -1083,7 +1123,7 @@ bool CtrStereoMon_SaveEdit(void)
             sMeta.baseRevision = baseRevision;
         }
     }
-    fclose(f);
+    free(file);
     if (ok)
     {
         sEdited = true;
@@ -1107,10 +1147,12 @@ bool CtrStereoMon_ResetEdit(void)
 
     if (!sActive) return false;
     if (sLogId == sId) sLogLen = 0;
+    CtrCardWriter_Flush();
     EditPath(sId, "bin", path, sizeof(path));
     remove(path);
     EditPath(sId, "log", path, sizeof(path));
     remove(path);
+    CtrOnline_CardSaved(sId, NULL);
     if (index < 0 || !ReadPlanesInto(pf, (unsigned)index, sPlanes, sizeof(sPlanes), &entryFrames)) return false;
     sShown = pf->header;
     sShown.frames = (uint8_t)entryFrames;
@@ -1136,12 +1178,13 @@ typedef struct { uint16_t id; uint8_t final; char who[4]; } IndexEntry;
 
 static void IndexWrite(void)
 {
-    FILE *f;
+    char *text;
+    size_t n = 0, size;
 
     if (!sIndexDirty) return;
     sIndexDirty = false;
-    f = fopen(EDIT_INDEX, "w");
-    if (f == NULL) return;
+    size = (size_t)sEditIdCount * 12 + 1;
+    if ((text = malloc(size)) == NULL) return;
     for (unsigned i = 0; i < sEditIdCount; ++i)
     {
         unsigned bit;
@@ -1149,9 +1192,12 @@ static void IndexWrite(void)
         char who[4];
 
         CtrStereoMon_EditAuthor3(sEditIds[i], who);
-        fprintf(f, "%04x %u %s\n", sEditIds[i], final && ((final[bit >> 3] >> (bit & 7)) & 1) ? 1 : 0, who);
+        n += (size_t)snprintf(text + n, size - n, "%04x %u %s\n", sEditIds[i],
+                              final && ((final[bit >> 3] >> (bit & 7)) & 1) ? 1 : 0, who);
     }
-    fclose(f);
+    /* Off the game thread (3ds_card_writer.c): the frame does not wait. */
+    CtrCardWriter_Queue(EDIT_INDEX, text, (uint32_t)n, false);
+    free(text);
 }
 
 void CtrStereoMon_EditScan(void)
@@ -1163,6 +1209,7 @@ void CtrStereoMon_EditScan(void)
     FILE *f;
 
     if (sEditScanned) return;
+    CtrCardWriter_Flush();
     memset(sEditMarks, 0, sizeof(sEditMarks));
     memset(sBackMarks, 0, sizeof(sBackMarks));
     memset(sFinalMarks, 0, sizeof(sFinalMarks));
@@ -1301,16 +1348,12 @@ bool CtrStereoMon_HasEdit(uint16_t id)
 
 void CtrStereoMon_FlushLog(void)
 {
-    FILE *f;
+    char path[64];
 
     if (sLogLen == 0) return;
     EnsureEditDir();
-    f = OpenEdit(sLogId, "log", "a");
-    if (f)
-    {
-        fwrite(sLogBuf, 1, sLogLen, f);
-        fclose(f);
-    }
+    EditPath(sLogId, "log", path, sizeof(path));
+    CtrCardWriter_Queue(path, sLogBuf, sLogLen, true);
     sLogLen = 0;
 }
 

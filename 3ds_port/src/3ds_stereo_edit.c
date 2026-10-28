@@ -230,7 +230,7 @@ static const uint16_t sPlaneColours[PLANES] = CTR_STEREO_EDIT_COLOURS;
 
 enum { S_EDIT, S_OPTIONS, S_CHOOSE, S_CONFIRM_RESET, S_CONFIRM_FINAL, S_KEYBOARD, S_VERSIONS, S_CONFIRM_FORK, S_CONFIRM_PROPAGATE, S_CONFIRM_MERGE };
 /* (The author's name moved to OPTIONS, ONLINE, YOUR NAME: it is the site's name too.) */
-enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_PROPAGATE, O_COLLAPSE, O_RESET, O_CLOSE, O_COUNT };
+enum { O_CONTROLS, O_MUSIC, O_STRAYS, O_PROPAGATE, O_COLLAPSE, O_RESET, O_SYNC, O_CLOSE, O_COUNT };
 /* SHOW_FIX: the pictures marked as needing work before the beta (the
  * review button beside SAVE, or the web app). */
 enum { SHOW_ALL, SHOW_EDITED, SHOW_NEW, SHOW_FIX, SHOW_COUNT };
@@ -2567,29 +2567,17 @@ static void OnlineFrame(void)
             sE.dirtyDraw = true;
         }
     }
-    /* The list of the picture being edited, once it has been looked at
-     * for two seconds (browsing with the C-stick asks for nothing); the
-     * Pokédex shows the index's counts and authors and asks for no lists. */
-    if ((!sE.versionsLoaded || sE.versions.id != id) && !busy && id != 0 && sE.screen != S_CHOOSE
-        && sE.tick - sE.focusSince >= (sE.forkPending ? 2u : 120u)
+    /* Nothing is asked of the server for a picture merely looked at: the
+     * lists come with the versions screen, the index with SYNC. The one
+     * exception is COPY AND EDIT, which needs the server's current version
+     * of the picture being edited. */
+    if (sE.forkPending && (!sE.versionsLoaded || sE.versions.id != id) && !busy && id != 0 && sE.screen != S_CHOOSE
         && (sE.askedFor != id || sE.tick - sE.askedAt > 600))
     {
         sE.askedFor = id;
         sE.askedAt = sE.tick;
         CtrOnline_FetchVersions(id);
         busy = true;
-    }
-    /* Who did what (the index, for the C-stick's question): asked once when
-     * there is none yet. */
-    {
-        unsigned age;
-
-        if (CtrOnline_IndexSerial(&age) == 0 && !busy && sE.tick - sE.indexAskedAt > 600)
-        {
-            sE.indexAskedAt = sE.tick;
-            CtrOnline_FetchIndex();
-            busy = true;
-        }
     }
     /* The review marks (the button beside the save, the Pokédex's dots):
      * drawn again when one changes, here or from the server. */
@@ -2599,7 +2587,7 @@ static void OnlineFrame(void)
         sE.dirtyDraw = true;
         if (sE.show == SHOW_FIX && sE.screen == S_CHOOSE) BuildList();
     }
-    /* The Pokédex's counts and votes, fetched again after two minutes. */
+    /* The Pokédex's counts and votes: as the last SYNC left them. */
     if (sE.screen == S_CHOOSE)
     {
         unsigned is = CtrOnline_IndexSerial(&age);
@@ -2609,12 +2597,6 @@ static void OnlineFrame(void)
             sE.indexSerial = is;
             sE.dirtyDraw = true;
             sE.helpDirty = true;
-        }
-        if (age > 120000 && !busy && sE.tick - sE.indexAskedAt > 600)
-        {
-            sE.indexAskedAt = sE.tick;
-            CtrOnline_FetchIndex();
-            busy = true;
         }
     }
 }
@@ -2644,6 +2626,24 @@ static void OptionAct(int row, bool rightHalf)
         break;
     case O_RESET:
         sE.screen = S_CONFIRM_RESET;
+        break;
+    case O_SYNC:
+        /* The one button for the server: this picture saved, every new edit
+         * up, every new picture down, the votes and marks along (3ds_online.c). */
+        sE.screen = S_EDIT;
+        if (sE.dirtyFile) Save(true);
+        if (CtrOnline_SyncAll())
+        {
+            sE.onlineWatch = true;
+            sE.onlineSerial = 0;
+        }
+        else
+        {
+            char text[CTR_ONLINE_TEXT];
+
+            if (CtrOnline_Status(text, sizeof(text)) == CTR_ONLINE_BUSY) Toast("STILL BUSY WITH THE LAST ONE");
+            else Toast(text);
+        }
         break;
     case O_RESET + 100:
         if (CtrStereoMon_ResetEdit())
@@ -5046,7 +5046,7 @@ static void StripLabels(void)
 
 static void DrawOptions(void)
 {
-    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "PROPAGATE PLANES", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "CLOSE"};
+    static const char *const names[O_COUNT] = {"SHOW CONTROLS", "MUSIC: TAP LEFT/RIGHT", "FIX STRAY PIXELS", "PROPAGATE PLANES", "COLLAPSE TO 1 LAYER", "RESET TO PACK", "SYNC WITH THE SERVER", "CLOSE"};
     char value[24];
 
     CtrBottomDraw_Box(0, OPT_X, OPT_Y, OPT_W / 8, (8 + O_COUNT * OPT_ROW + 15) / 8, false);
@@ -5062,6 +5062,14 @@ static void DrawOptions(void)
         if (row == O_PROPAGATE && sE.frames > 1) snprintf(value, sizeof(value), "F%u TO F%u", sE.frame + 1, (sE.frame + 1) % sE.frames + 1);
         else if (row == O_PROPAGATE) snprintf(value, sizeof(value), "ONE FRAME");
         else if (row == O_STRAYS) snprintf(value, sizeof(value), "NONE");
+        if (row == O_SYNC)
+        {
+            unsigned waiting = CtrOnline_PendingVotes();
+
+            if (!CtrOnline_Linked()) snprintf(value, sizeof(value), "NOT LINKED");
+            else if (CtrOnline_Busy()) snprintf(value, sizeof(value), "BUSY");
+            else if (waiting) snprintf(value, sizeof(value), "%u TO SEND", waiting);
+        }
         if (row == O_MUSIC && CtrExtras_Find(CTR_EDITOR_MUSIC_KEY))
         {
             const CtrExtra *music = CtrExtras_Find(CTR_EDITOR_MUSIC_KEY);

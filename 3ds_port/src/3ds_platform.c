@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <string.h>
 #include "3ds_platform.h"
+#include "3ds_card_writer.h"
 #include "3ds_daynight.h"
 #include "3ds_data.h"
 #include "3ds_audio.h"
@@ -28,6 +29,9 @@ void CtrStereoEdit_SaveNow(void) __attribute__((weak));
 static void SaveEditor(void)
 {
     if (CtrStereoEdit_SaveNow) CtrStereoEdit_SaveNow();
+    /* Whatever the editor queued for the card (3ds_card_writer.c) is on it
+     * before anything is torn down. */
+    CtrCardWriter_Flush();
 }
 
 static void Lifecycle(APT_HookType type, void *parameter)
